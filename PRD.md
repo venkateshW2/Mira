@@ -4,6 +4,9 @@
 **Date:** 2026-09-09
 **Machine:** Apple M1 Pro, 16 GB, macOS 15.5. Fully local.
 **Language:** C++20 + ONNX Runtime. Native app, no server, no browser. See §2d.
+**Licence:** mira is published as **AGPL-3.0**, open source, no commercial distribution.
+This is a deliberate choice, not a default — it is what makes Essentia (AGPL-3.0) and
+JUCE's free tier (AGPLv3) usable together with no fee and no revenue cap. See §12 Q9.
 **Scope:** Part 1 only — analysis, classification, similarity search.
 Caption generation for LoRA training is **out of scope for v1** and lands as Phase 4
 (§9, §11). It is the eventual destination, and not only for Stable Audio 3 — the analysis
@@ -136,9 +139,9 @@ a substituted heuristic. Confidence of exactly 1.0 is treated as a bug signal.
 of key, and on polyphonic music or field recordings it tracks whichever partial dominates.
 That is very likely the root of the pitch problems on longer files and field recordings.
 
-**v2 rule:** key comes from `TuningFrequency` → `KeyExtractor` (chroma/HPCP based, designed
-for the job). CREPE stays available, but only for genuinely monophonic content, and is
-never rendered as "key".
+**v2 rule:** key comes from a chroma/HPCP-based detector designed for the job —
+`libKeyFinder` (§12b), not a monophonic pitch tracker. CREPE stays available, but only for
+genuinely monophonic content, and is never rendered as "key".
 
 Related: the genre head `Genre Discogs 400` requires `discogs-effnet` **embeddings** as
 input, and no embedding model appears in that model list — another likely silent failure.
@@ -222,18 +225,21 @@ specific field recording, texture, or anything outside their vocabulary. CLAP sc
 arbitrary text labels against audio with no training. Adds a `torch` dependency, so it is
 Phase 3, but it is the only route to open-vocabulary labelling.
 
-**Licence status — resolve before any non-private use:** MTG-Jamendo heads and MuQ weights
-are likely non-commercial (CC BY-NC-SA / CC-BY-NC 4.0). CED, AudioSet and Essentia's own
-algorithms are more permissive. Unverified; private use is unaffected.
+**Licence status — resolved by publishing AGPL-3.0 (see header, §12 Q9).** MTG-Jamendo
+heads are CC BY-NC-ND 4.0 (non-commercial, corrected from an earlier "-SA" misreading) —
+fine, since mira is not commercial. `libKeyFinder` and `Chordino` are GPL — fine under
+AGPL. Nothing in the stack is blocked on this path.
 
 **Non-neural, and better than a model for these:**
 
 | Task | Algorithm |
 |---|---|
-| Tempo/beats | `RhythmExtractor2013` (multifeature) — also `TempoCNN` (`deeptemp-k4/k16`, already in the old repo) as a cross-check |
-| Key | `TuningFrequency` → `KeyExtractor` (profiles: `temperley`/`krumhansl`/`edma`/`bgate`) |
+| Tempo/beats | `RhythmExtractor2013` (multifeature) **plus `beat_this_cpp`** (ONNX, MIT) run in parallel — disagreement between them is the confidence signal (§14.1), not a tie-break |
+| **Key** | **not Essentia.** `libKeyFinder` (Mixxx's, GPL-3.0, C++11, FFTW-only) — see §12b, rewritten |
+| **Chords** | **not Essentia** — its own docs admit the NNLS-Chroma path is GPL-encumbered even for paying commercial licensees. `Chordino`/`NNLS-Chroma` (GPL-2.0+, pure C++, no model file) instead |
 | Loudness | `LoudnessEBUR128` |
 | Monophonic f0 | `PredominantPitchMelodia`, or CREPE — gated to monophonic content only |
+| **Note transcription** | **Basic Pitch** (`nmp.onnx`, 230 KB, Apache-2.0) — the CQT is baked into the graph, so this needs only ONNX Runtime, no new dependency. See §12b |
 
 **Optional later:** `genre_discogs519` (MAEST transformer, better, slower); `msd-musicnn`
 as a second opinion; CLAP / MuQ-MuLan as alternative similarity spaces (§4).
@@ -464,11 +470,22 @@ of one-shot similarity.
 in parallel and their disagreement is the confidence signal** (§14.1): `RhythmExtractor2013`
 (multifeature) and **Beat This!** (ONNX). Beat This also yields **downbeats**, which
 Essentia does not give well and which unlock bar-aligned slicing and time signature.
-`RhythmExtractor2013` for BPM + beats +
-confidence; `TuningFrequency` → `KeyExtractor` for tuning-corrected key with profile
-choice; `BeatsLoudness`; `Danceability`. **Key is gated on harmonic content** and never run
-blindly — a rhythm stem has no meaningful key, and a bass-led stem correlates strongly but
-misleadingly (§12b).
+`BeatsLoudness`; `Danceability`.
+
+**Key and chords are not Essentia's job** (§12b). **`libKeyFinder`** (GPL-3.0, C++11,
+FFTW-only — Mixxx's own key detector) produces key; **`Chordino`/`NNLS-Chroma`**
+(GPL-2.0+, pure C++) produces a chord sequence. Both are **gated on harmonic content** and
+never run blindly — a rhythm stem has no meaningful key or chords, and a bass-led stem
+correlates strongly but misleadingly.
+
+**Note transcription — a first-class feature, not a MIR afterthought.** `Basic Pitch`
+(`nmp.onnx`, Apache-2.0, 230 KB) turns audio into notes — contours, note events, onsets —
+under ONNX Runtime alone; the CQT is baked into the graph, so no new DSP dependency.
+Audio-to-MIDI on stems and loops is a real deliverable for a producer's drive, and its
+posteriorgrams are reused as `Chordino`'s input where useful, following the same
+transcription-then-harmonise principle that took MIREX 2009 chord accuracy from 74% to
+80%. **Transcription is not used for key** — every SOTA key detector is direct
+spectrogram-to-key, and no published system beats that by transcribing first (§12b).
 
 **C. Neural** (music content) — one `discogs-effnet-bs64` pass produces the embedding,
 which is reused for **both** similarity search **and** as input to every classifier head.
@@ -533,7 +550,10 @@ vendored source file, with one exception, flagged.
 | Build | **CMake ≥3.22** | first-class in JUCE 9 (`juce_add_gui_app`); Projucer is legacy |
 | GUI, audio I/O, waveform, **drag-out** | **JUCE 9.0.2** | four requirements met by first-party classes — §13 |
 | Neural inference | **ONNX Runtime 1.29.0**, `onnxruntime-osx-arm64-1.29.0.tgz` | official prebuilt C++ package; **CoreML EP available from C++** |
-| MIR (tempo, key, loudness, HPCP, descriptors) | **Essentia C++, built from source, `--no-tensorflow`** | ⚠️ the one hard build — see §16.1 and the risk table |
+| MIR (tempo, loudness, HPCP, descriptors) | **Essentia C++, built from source, `--no-tensorflow`** | ⚠️ the one hard build — see §16.1 and the risk table |
+| Key | **`libKeyFinder`** (GPL-3.0, C++11, FFTW-only) | not Essentia's `KeyExtractor` — better accuracy, see §12b |
+| Chords | **`Chordino`/`NNLS-Chroma`** (GPL-2.0+, pure C++) | not Essentia — its own docs flag this path as GPL-encumbered even commercially |
+| Note transcription | **Basic Pitch** (`nmp.onnx`, Apache-2.0) | CQT baked into the ONNX graph; no new dependency |
 | Mel-spectrogram frontend for the neural models | **Essentia `TensorflowInputMusiCNN`** | survives a no-TF build. Do **not** reimplement it |
 | Beat + downbeat tracking | **`beat_this_cpp`** (MIT) | 79 MB ONNX committed in-tree, C++ mel frontend (PocketFFT), and madmom's DBN reimplemented in MIT C++ |
 | Index | **SQLite 3.53.4 amalgamation**, vendored | ⚠️ **do not link macOS's `libsqlite3`** — Apple builds it with `SQLITE_OMIT_LOAD_EXTENSION` |
@@ -562,15 +582,16 @@ shape for ONNX-based native apps, and it is what `beat_this_cpp` itself does. It
 
 | Component | Licence | Private local tool | Shipped / commercial |
 |---|---|---|---|
-| **Essentia** | **AGPL-3.0-only** | fine | AGPL your app, or buy a UPF commercial licence |
-| **Essentia model zoo** | **CC BY-NC-SA 4.0** | fine | **blocked** — non-commercial. Proprietary licence on request |
-| JUCE 9 | AGPLv3 **or** free *Starter* tier | fine | **Starter is free and perpetual, all features, closed source, revenue ≤ $20k.** No splash-screen requirement in any JUCE 9 tier |
-| `beat_this_cpp` + Beat This weights | **MIT** throughout | fine | fine |
-| ONNX Runtime, SQLite, SQLiteCpp, `sqlite-vec` | MIT / Apache-2.0 / public domain | fine | fine |
-| `AudioMuse-AI-DCLAP` (optional) | **AGPL-3.0** | fine | blocked |
+| **Essentia** | AGPL-3.0-only | mira is published AGPL-3.0 — no conflict |
+| **Essentia model zoo** | CC BY-NC-ND 4.0 | non-commercial — fine, mira is not commercial |
+| **JUCE 9** | AGPLv3 (chosen) | free, perpetual, no revenue cap under this licence |
+| **`libKeyFinder`, `Chordino`** | GPL-3.0 / GPL-2.0+ | fine under AGPL |
+| `beat_this_cpp` + Beat This weights, Basic Pitch | MIT / Apache-2.0 | fine regardless |
+| ONNX Runtime, SQLite, SQLiteCpp, `sqlite-vec` | MIT / Apache-2.0 / public domain | fine regardless |
 
-The AGPL/NC pair (Essentia + its models) is the constraint that matters. **This is a private
-tool, so nothing is blocked today** — but it must be a conscious decision, not a discovery.
+**Decided (§12 Q9): mira is AGPL-3.0, open source, not commercial.** This is what makes the
+whole stack above usable with no fee. The one obligation it carries: mira's own source
+must stay public, which is the intent anyway.
 
 ---
 
@@ -602,7 +623,7 @@ cheapest. Detail and the fallback in §16.7.
 
 | Day | Prove | If it fails |
 |---|---|---|
-| **1–2** | **Essentia C++ builds arm64 no-TF, and links from an external CMake project.** 30 lines calling `essentia::init()` → `MonoLoader` → `RhythmExtractor2013` + `KeyExtractor` + `LoudnessEBUR128` | **stop and reconsider.** Fallback: `--lightweight= --include-algos`, or drop Essentia for hand-rolled DSP + `beat_this_cpp` |
+| **1–2** | **Essentia C++ builds arm64 no-TF, and links from an external CMake project.** 30 lines calling `essentia::init()` → `MonoLoader` → `RhythmExtractor2013` + `LoudnessEBUR128` | **stop and reconsider.** Fallback: `--lightweight= --include-algos`, or drop Essentia for hand-rolled DSP + `beat_this_cpp` |
 | **3** | **ONNX end-to-end + numerical parity.** `TensorflowInputMusiCNN` → `[n,128,96]` → `discogs-effnet-bsdynamic-1.onnx` → 1280-d → moodtheme head → 56 classes. **Diff the embeddings against Python `essentia-tensorflow` to ~1e-4** | the mel framing is wrong; fix before anything else depends on it |
 | **4** | **Drag-out.** Minimal JUCE 9 app, `shouldDropFilesWhenDraggedExternally`, drag a WAV into **Ableton, Logic and Finder** on macOS 15.5 | founding requirement — reconsider the GUI toolkit |
 | **5** | `beat_this_cpp` on arm64 against ORT 1.29.0; SQLite amalgamation + `sqlite-vec` with 10 k synthetic 1280-d vectors; `AudioThumbnailCache` survives a relaunch | contained; each has an alternative |
@@ -645,7 +666,7 @@ remaining renderers: ACE-Step JSON, three caption registers, segment slicing.
 | **Essentia C++ static build + external CMake link on macOS arm64** | **highest** | upstream CI builds arm64 on every release, so it is possible — but **nobody documents consuming it from an outside project**, `brew install` is confirmed broken on Apple Silicon with no fix, and the only CMake fork does not cover macOS. **This is the day-1 spike, and the one item that could eat a week** |
 | `beat_this_cpp` unproven on arm64 | med | no CI, no releases, no published accuracy parity, pinned to ORT 1.18.0 with placeholder SHA256s. Mitigated: 90 KB of MIT code we can own outright. Build against 1.29.0 via `USE_SYSTEM_ONNXRUNTIME` |
 | `tf2onnx` is seeking a new maintainer | low | needed only for two models (§16.3), build-time only, and the converted `.onnx` is committed |
-| Essentia AGPL + models CC BY-NC-SA | **open** | fine for a private tool; blocks any distribution or commercial use. Decide consciously (§7) |
+| ~~Essentia AGPL + models CC BY-NC-ND~~ | resolved | mira publishes AGPL-3.0 (§12 Q9) — no conflict |
 | Drag-out has no standalone-app precedent | med | day-4 spike against Ableton, Logic and Finder before anything is built on it |
 | discogs-effnet poor on one-shots | high | content-type routing; DSP descriptors carry one-shot similarity; Phase 3 A/B |
 | Tempo double/half-time errors | med | store confidence; `inspect` flags; never silently trust |
@@ -655,10 +676,10 @@ remaining renderers: ACE-Step JSON, three caption registers, segment slicing.
 | Sibling-set stem detection misfires on unrelated same-length files | low | manual `--as stem` declaration always overrides; content type is stored and editable |
 | Octave / half-time tempo errors reach a caption and teach a false mapping | **high** | dual estimator (§14.1); 2×/0.5× disagreement flagged; renderer omits low-confidence BPM (§12.6) |
 | Essentia is dormant — no 2025/26 releases, no `effnet-discogs` update | med | plan around it; ONNX is the second runtime for anything newer (Beat This, DCLAP) |
-| DCLAP is AGPL-3.0 and its retrieval quality vs full CLAP is unpublished | low | optional index behind a flag; fine privately, resolve before any distribution |
+| DCLAP's retrieval quality vs full CLAP is unpublished | low | optional index behind a flag — AGPL licence no longer a concern (§12 Q9), quality still unverified |
 | Taxonomy labels unusable raw | med | normalisation layer + regression tests; keep `raw` |
 | TF inference CPU-only, slow on long tracks | low | acceptable; cache aggressively; resumable |
-| Model licences (MTG-Jamendo may be CC BY-NC-SA) | **open** | verify before any non-private use |
+| ~~Model licences (MTG-Jamendo)~~ | resolved | confirmed CC BY-NC-ND 4.0; fine, mira is not commercial |
 | Slakh-based similarity results may not generalise | n/a | source separation removed from scope (§4); no longer a risk we carry |
 
 ---
@@ -713,7 +734,9 @@ fields are universally useful versus model-specific is an open research item (§
       to build well.
    3. **Declaration** — `mira scan ./cue03/stems --as stem`. Always correct; overrides
       detection.
-4. ~~Key profile~~ — **`edma` default, configurable.** Explained in §12b.
+4. ~~Key profile~~ — **superseded: not Essentia's `KeyExtractor` at all.** See §12b, rewritten
+   after research showed Essentia's key accuracy (72–72.4 weighted MIREX) is beaten by
+   permissively-licensed alternatives regardless of the licence question.
 5. ~~Similarity dimensions~~ — **derive our own**, decided. Not Sononym's five. Dimensions
    come from what our embeddings and descriptors actually separate on real material
    (Phase 3), rather than inheriting another tool's taxonomy.
@@ -730,34 +753,82 @@ fields are universally useful versus model-specific is an open research item (§
    See §15.
 8. ~~UI~~ — **JUCE, one native window, in the same process as the analysis.** Decided in
    §13. Visual design still to settle.
-9. **Distribution** — open, and it is a licence question, not a packaging one. Essentia is
-   AGPL-3.0 and its model zoo is CC BY-NC-SA 4.0 (§7). Private use is unaffected; anything
-   shipped or commercial needs either a UPF commercial licence or different components.
+9. ~~Distribution~~ — **decided: mira is AGPL-3.0, open source, published, not
+   commercial.** This is what unblocks Essentia, `libKeyFinder`, `Chordino` and JUCE's free
+   tier all at once — see header. The one obligation is that mira's own source stays
+   public, which was the intent regardless.
 
-### 12b. Key profiles — what the choice means
+### 12b. Key, chords, transcription — research findings (2026-09-09)
 
-Key detection builds a pitch-class distribution for the audio (chroma / HPCP — how much
-energy sits on each of the 12 notes), then correlates it against a **template profile** for
-every candidate key and picks the best match. The *profile* is that template: 12 numbers
-saying how prominent each scale degree should be in a given key.
+Resolved after research showed Essentia's own key accuracy is not a high bar, and that
+better options exist independent of the licence question (which is separately resolved —
+mira is AGPL-3.0, so GPL/AGPL dependencies are all fine, see header and Q9).
 
-Essentia ships four, derived from different evidence:
+**Essentia's `KeyExtractor` is mediocre, verified from the literature, not assumed.**
+Korzeniowski & Widmer's own comparison table puts Essentia's `bgate` profile at **72.4
+weighted MIREX** on the KeyFinder dataset; their CNN scores 76.1. Faraldo (2016) places
+Essentia's `edmm` profile around **72.0** on GiantSteps, behind `libKeyFinder`. Mixed In
+Key — the commercial reference point — lands around **75.7**, itself within noise of open
+alternatives. None of this is a large gap, but it means "Essentia's key detection" was
+never the ceiling.
 
-| Profile | Derived from | Suits |
-|---|---|---|
-| `temperley` | music-theoretic weighting | classical, notated music |
-| `krumhansl` | 1980s listener probe-tone experiments | general tonal music |
-| `edma` | **electronic dance music corpora** | electronic, loop-based, bass-led material |
-| `bgate` | gating variant that discards low-confidence frames | sparse or noisy material |
+**Key: `libKeyFinder`.** GPL-3.0-or-later, C++11, FFTW3-only, no other dependencies — this
+is the algorithm Mixxx itself ships and the Mixxx developers rate it above the Queen Mary
+(`qm-dsp`) detector. Chosen for v1 because it is a drop-in C++ library with no model to
+train or export, and its accuracy is not meaningfully behind Essentia's.
 
-They disagree often — most where the tonic is implied by a bass line rather than stated
-harmonically, which is common in electronic and cinematic work. `edma` was built for that
-case, so it is the default; the profile is exposed per run and **recorded in provenance**,
-so results stay comparable when it changes.
+*Documented upgrade path, not built for v1:* export a Korzeniowski-architecture CNN
+(MIT-licensed reimplementations exist — [MusicalKeyCNN](https://github.com/a1ex90/MusicalKeyCNN),
+[openkeyscan-analyzer](https://github.com/rekordcloud/openkeyscan-analyzer)) to ONNX, with
+the CQT baked into the graph the way Spotify's Basic Pitch does it. Expected **73.5–74.6
+weighted GiantSteps**, a real but modest gain over `libKeyFinder`, and it removes the last
+GPL dependency in the key path if that ever matters. No pre-exported ONNX key detector
+exists anywhere (HuggingFace or GitHub, searched directly) — this would be a one-time
+`lab/` export, never a runtime Python dependency.
 
-Stems sharpen the point: a **rhythm stem has no meaningful key**, and a bass-led stem
-correlates strongly but misleadingly. Key must be **gated on harmonic content**, never run
-blindly — the same discipline as §2b Finding 3.
+**Chords: `Chordino`/`NNLS-Chroma`** (Mauch & Dixon), GPL-2.0-or-later, pure C++, no model
+file. Essentia was never a good source for this regardless of the licence question — its
+own licensing page names NNLS-Chroma as bundled GPL code it cannot fully sublicense even
+under a paid commercial licence. Chordino's own published result (74% → 80% MIREX 2009,
+against the prior best) is itself evidence for the design principle below.
+
+*Documented upgrade path:* export **BTC** (MIT, WCSR maj-min 83.8) to ONNX, same pattern as
+the key CNN.
+
+**Transcription: `Basic Pitch`.** Apache-2.0, `nmp.onnx` verified at 230,444 bytes, with
+the CQT frontend baked directly into the ONNX graph — nothing to write, nothing beyond
+ONNX Runtime. Audio-to-MIDI is added as a first-class mira feature (§5), not only an
+internal signal: a producer's-drive tool should be able to hand you the notes out of a
+stem or loop.
+
+**Why transcription feeds chords but not key** — asymmetric, and this is a real research
+finding, not a guess:
+- **Chords: transcription-first wins.** Chordino's own history is exactly this — an
+  approximate note transcription ahead of chroma mapping took MIREX 2009 accuracy from
+  74% to 80%. mira's design follows the same principle: Basic Pitch's posteriorgrams feed
+  `Chordino`.
+- **Key: no evidence transcription helps, and every SOTA system skips it.** Every
+  competitive key detector — Korzeniowski, KeyMyna, S-KEY — goes directly from spectrogram
+  to key. Basic Pitch's own paper does not evaluate key or chord tasks at all. No
+  published comparison of transcription-then-key against direct key detection was found
+  either way; the absence of anyone publishing the transcription route as competitive is
+  itself the signal.
+
+**Camelot / Open Key notation — add it, it is nearly free.** Both are a straight
+relabelling of the same 24 keys (a 24-entry lookup table), which is what DJs and most
+producers actually read. *Unverified, check before shipping:* sources disagree on the
+exact Camelot↔Open Key numeric offset —
+[openkeyscan-analyzer](https://github.com/rekordcloud/openkeyscan-analyzer) implements
+both and is the cheapest ground truth to check against.
+
+**Stems still sharpen the gating requirement.** A **rhythm stem has no meaningful key or
+chords**, and a bass-led stem correlates strongly but misleadingly on both. Both detectors
+are gated on harmonic content and never run blindly — the same discipline as §2b Finding 3.
+
+**What is measured, not yet:** neither Basic Pitch's nor `beat_this_cpp`'s inference speed
+has a published benchmark on Apple Silicon. Compute for transcription is dominated by the
+CQT step baked into the graph. This is a half-day measurement that decides whether
+transcription runs across a whole drive by default or stays on-demand — flagged in Phase 0.
 
 ---
 
@@ -788,7 +859,7 @@ here and it is not close (§16.5):
 │ ░░████████░░░░░░░░░████████████░░░░░░░░░░░░  ← active regions   │
 │ ¦   ¦   ¦   ¦   ¦   ¦   ¦   ¦   ¦   ¦   ¦    ← beats/downbeats  │
 ├─────────────────────────────────────────────────────────────────┤
-│ BPM 119.9 ⚠ estimators disagree 2×   key Cmin 0.81  edma        │
+│ BPM 119.9 ⚠ estimators disagree 2×   key Cmin 0.81 (8A)         │
 │ folder defaults ▾  Genre [cinematic orchestral                ] │
 │                    Inst  [strings, brass, timpani             ] │
 │ trigger [vnkxstr]  SA3 preview: 218/256 tokens                  │
@@ -963,16 +1034,15 @@ text tower. **512-dim shared text/audio space, onnxruntime + librosa + numpy, no
 
 That buys something `discogs-effnet` structurally cannot: **natural-language search over the
 drive** — "find my dusty broken-tape piano loops". Adopt as an **additional index behind a
-flag**, not a replacement, because (a) **AGPL-3.0** — fine for a private tool, a problem if
-mira is ever distributed, and (b) **no published retrieval metrics vs full CLAP**, so the
-distillation is trusted blind.
+flag**, not a replacement. Its AGPL-3.0 licence is no longer a constraint (§12 Q9), but
+**no published retrieval metrics vs full CLAP** exist, so the distillation is trusted blind
+either way.
 
 **Essentia is stable-to-dormant** — no releases in 2025 or 2026, no update to
-`effnet-discogs`. Plan around it rather than expecting upstream improvement. One correction
-in our favour: `KeyExtractor` *has* been updated (new profiles, detuning correction, spectral
-whitening) and its upstream default is now **`bgate`**, not `edma`. §12.4 keeps `edma` for
-electronic/bass-led material, which is the right call for this library, but the divergence
-from upstream should be recorded in provenance — as §12.4 already requires.
+`effnet-discogs`. Plan around it rather than expecting upstream improvement. *(Its
+`KeyExtractor` was also updated upstream, but this is now moot for mira — key detection
+moved to `libKeyFinder`, §12b, on accuracy grounds independent of Essentia's release
+cadence.)*
 
 ### 14.6 Deferred, with reasons
 
@@ -980,7 +1050,7 @@ from upstream should be recorded in provenance — as §12.4 already requires.
 |---|---|
 | **SongFormer** (structure, ACC 0.807 vs All-in-One 0.740) | **v1.5 at the earliest.** Head is trivial (4 layers, 512 dim) but needs **two SSL backbones (MuQ + MusicFM), torch-only**. Worth a spike: can MuQ/MusicFM be ONNX-exported? *Nobody has tried, as far as the research could tell.* Structure labels would be transformative for captioning long tracks and finding loop points — this is the one place to eventually pay the torch tax |
 | **MuQ-MuLan** (similarity, MTAT ROC-AUC 79.3) | only if DCLAP disappoints. Torch-only, no ONNX, and MAEB's ranking of it is confusing enough to re-read first |
-| **KeyMyna** (key, CC-BY) | **no.** 72% GiantSteps is a low ceiling, torch-only, and the delta over Essentia's updated `bgate` + whitening is unverified. Bad trade |
+| **KeyMyna** (key, unclear licence — no LICENSE file in repo) | **no.** 75.91 weighted GiantSteps is good but not decisively ahead of the MIT alternatives in §12b, torch-only (22M-param ViT), and needs Google Drive weights. `libKeyFinder` now, an MIT CNN export later — both simpler and clean licence |
 | **DeepRhythm** (tempo, 95.9% Acc1) | **no.** AGPL-3.0 + torch + nnAudio, and Beat This gives downbeats too |
 | **LP-MusicCaps** | **no.** CC-BY-NC, torch, 2023-quality output. Superseded |
 
@@ -1135,9 +1205,11 @@ Read from `src/wscript`: with TensorFlow absent, **only** these enter `ALGOIGNOR
 the ONNX models expect, with no libtensorflow anywhere. This is what makes the whole design
 work.
 
-Every §5 algorithm is present and TF-free: `RhythmExtractor2013`, `KeyExtractor`,
-`TuningFrequency`, `LoudnessEBUR128`, `BeatsLoudness`, `Danceability`, `HPCP`, `MFCC`,
-`Chromagram`, `MonoLoader`, `EqualLoudness`, the spectral descriptors, `PredominantPitchMelodia`.
+Every §5 algorithm is present and TF-free: `RhythmExtractor2013`, `TuningFrequency`,
+`LoudnessEBUR128`, `BeatsLoudness`, `Danceability`, `HPCP`, `MFCC`, `Chromagram`,
+`MonoLoader`, `EqualLoudness`, the spectral descriptors, `PredominantPitchMelodia`.
+(`KeyExtractor` is also present, but unused — key detection uses `libKeyFinder` instead,
+§12b. `HPCP`/`Chromagram` remain in use as chroma input to key/chord detection.)
 
 ### 16.3 The scariest assumption was wrong — MTG already publishes ONNX
 
@@ -1234,6 +1306,8 @@ CAF, 3GP, AMR). The old MP3 patent warning is gone from the JUCE 9 sources.
 GPLv3**, and JUCE is owned by **PACE Anti-Piracy** (acquired 2020). Tiers: **Starter is free
 and perpetual, all features, closed source, revenue ≤ $20k**; Indie $800 ≤ $300k; Pro $3,500.
 **No splash-screen requirement in any JUCE 9 tier** — that obligation died with JUCE 8.
+**mira takes the free AGPLv3 tier** (§12 Q9), which is what makes it compatible with
+Essentia and every other AGPL/GPL dependency in this document at no cost.
 
 **Why JUCE and not the alternatives:**
 
