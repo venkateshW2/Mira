@@ -1,0 +1,41 @@
+# ── Never commit: model weights and caches (13 GB+) ──────────────────────────
+*.npz
+*.pb
+*.onnx
+*.safetensors
+*.ckpt
+sa3-studio/.hf/
+sa3-studio/.uvcache/
+models/
+
+# ── Virtualenvs (path-specific, rebuild with uv) ─────────────────────────────
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+
+# ── Vendored upstream repos (cloned, not authored here) ──────────────────────
+sa3-studio/stable-audio-3/
+sa3-studio/underfit/
+
+# ── Runtime state, datasets, outputs ─────────────────────────────────────────
+sa3-studio/datasets/
+sa3-studio/loras/
+sa3-studio/**/state/
+output/
+*.wav
+*.mp3
+*.flac
+*.aif
+*.aiff
+
+# ── Local analysis artefacts ─────────────────────────────────────────────────
+*.sqlite
+*.sqlite3
+*.db
+embeddings.npy
+
+# ── macOS / editors ──────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
