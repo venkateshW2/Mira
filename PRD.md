@@ -494,12 +494,45 @@ constraint is the design's main test.
 
 ## 12. Open questions
 
-1. **Name** — `mira` is a placeholder.
-2. **Repo** — own repo, or sibling of `underfit/`? Leaning own; it is not SA3-specific.
-3. **Library scale** — roughly how many files, and what mix of samples vs full tracks?
-   Changes routing priorities and the Phase 3 A/B.
-4. **Key profile** — `temperley` / `krumhansl` / `edma` / `bgate`; `edma` is usually best
-   for electronic material. Needs an A/B on real tracks.
-5. **Similarity dimensions** — mirror Sononym's five, or derive our own from what the
-   embeddings actually separate?
-6. **Confidence thresholds** — what `p` admits a tag? Tune empirically, don't guess.
+1. ~~Name~~ — **`mira`**, decided.
+2. ~~Repo~~ — **own repo**, decided: `/Users/justmac/w2app/mira`, SA3 studio nested at
+   `sa3-studio/`.
+3. **Library scale — unbounded.** No fixed count; content is full tracks, **stems**, and
+   samples. Two consequences: (a) analysis must be **resumable and incremental**, because a
+   run may cover any number of files and will be interrupted; (b) **stems are a first-class
+   content type**, not an afterthought — a stem is a full-length file containing one
+   isolated source, so it needs track-path MIR (tempo/key over long windows) but behaves
+   like a one-shot for instrument identity. The router must treat it as its own class
+   rather than forcing it into track-or-oneshot.
+4. ~~Key profile~~ — **`edma` default, configurable.** Explained in §12b.
+5. ~~Similarity dimensions~~ — **derive our own**, decided. Not Sononym's five. Dimensions
+   come from what our embeddings and descriptors actually separate on real material
+   (Phase 3), rather than inheriting another tool's taxonomy.
+6. **Confidence thresholds** — still open. §3c showed a *correct* top instrument scoring
+   only `0.298`, so per-head calibration on real files is required before fixing any
+   threshold.
+
+### 12b. Key profiles — what the choice means
+
+Key detection builds a pitch-class distribution for the audio (chroma / HPCP — how much
+energy sits on each of the 12 notes), then correlates it against a **template profile** for
+every candidate key and picks the best match. The *profile* is that template: 12 numbers
+saying how prominent each scale degree should be in a given key.
+
+Essentia ships four, derived from different evidence:
+
+| Profile | Derived from | Suits |
+|---|---|---|
+| `temperley` | music-theoretic weighting | classical, notated music |
+| `krumhansl` | 1980s listener probe-tone experiments | general tonal music |
+| `edma` | **electronic dance music corpora** | electronic, loop-based, bass-led material |
+| `bgate` | gating variant that discards low-confidence frames | sparse or noisy material |
+
+They disagree often — most where the tonic is implied by a bass line rather than stated
+harmonically, which is common in electronic and cinematic work. `edma` was built for that
+case, so it is the default; the profile is exposed per run and **recorded in provenance**,
+so results stay comparable when it changes.
+
+Stems sharpen the point: a drum stem has no meaningful key, and a bass stem correlates
+strongly but misleadingly. Key must be **gated on harmonic content**, never run blindly —
+the same discipline as §2b Finding 3.
