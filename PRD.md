@@ -4,7 +4,9 @@
 **Date:** 2026-09-09
 **Machine:** Apple M1 Pro, 16 GB, macOS 15.5. Fully local. Slow is acceptable.
 **Scope:** Part 1 only — analysis, classification, similarity search.
-Caption generation for LoRA training is explicitly **out of scope** (see §11).
+Caption generation for LoRA training is **out of scope for v1** and lands as Phase 4
+(§9, §11). It is the eventual destination, and not only for Stable Audio 3 — the analysis
+document must be renderable into the caption format of any trainable base model.
 
 **Lineage:** a local-first rewrite of
 [drive-audio-analyzer](https://github.com/venkateshW2/drive-audio-analyzer) (Google Drive)
@@ -32,7 +34,8 @@ a consequence of doing this well, not a requirement shaping it.
 
 ### Goals
 - One analysis pass per file, cached, incremental, resumable
-- Works on both **one-shots/loops** and **full tracks** (different paths, one document)
+- Works across **one-shots, loops, full tracks and delivery stems** (different paths, one
+  document)
 - Similarity search over a personal-scale library with no server, no cloud
 - Everything local on Apple Silicon; slow is fine, wrong is not
 - Output is a plain, versioned JSON document — greppable, scriptable, diffable
@@ -41,7 +44,11 @@ a consequence of doing this well, not a requirement shaping it.
 - Real-time / plugin-hosted analysis
 - Training our own models
 - A GUI (CLI + library API; a UI can come later on top of the same index)
-- Caption rendering for generative models
+- Caption rendering for generative models (Phase 4)
+- **Lyric transcription** — see §15. Puts lyric-bearing material out of reach for the
+  song-model family; instrumental content is unaffected
+- **Local prose captioning** — no music captioner has a working on-device port for this
+  machine (§14.3). Prose comes from an offline batch job, if at all
 
 ---
 
@@ -313,11 +320,18 @@ From the 2026 literature on
 
 - **LAION-CLAP** and **MuQ-MuLan**, both 512-dim, score ~71.9% and ~72.4% perceptual
   agreement with plain cosine similarity — competitive with supervised baselines.
-- **Stem-separated, instrument-weighted similarity reaches 90.4%** — a large jump over
+- **Source-separated, instrument-weighted similarity reaches 90.4%** — a large jump over
   whole-track cosine, and it enables per-instrument "importance sliders" (drum-similarity
   vs guitar-similarity).
 - *Caveat the authors state plainly:* results are on Slakh (synthetic multitrack) and may
   not generalise to real recordings.
+
+> **Terminology — two different things called "stem".** The paper above means
+> *source separation*: running Demucs over a finished mix to manufacture isolated
+> instrument tracks. **mira does not do this, in any phase.** In this project a
+> **stem** always means a *delivery submix* printed from a scoring session for the mix
+> engineer — a strings stem, a rhythm stem, a vocal stem. It already exists as a file.
+> We only ever analyse what is on the drive. See §12.3.
 
 Two design consequences:
 
@@ -326,38 +340,77 @@ Two design consequences:
    Essentia classifier head. It is unlikely to be good at one-shot drum hits, where
    timbral/spectral descriptors and a general-audio model matter more. Plan for
    **multiple embedding spaces**, selected by content type, and A/B them on real files.
-2. **Stem separation is the biggest known quality lever** for track similarity — and it is
-   expensive. Deferred to Phase 4, designed for but not built in v1.
+2. **Source separation is out of scope.** It is the literature's biggest quality lever, but
+   it is expensive, unvalidated outside synthetic multitrack, and irrelevant to this
+   library: the user's stems are delivery submixes of whole sections (all strings, all
+   rhythm), not isolated sources, so they neither require separation nor serve as
+   ground truth for it. Per-dimension similarity is pursued instead, in Phase 3.
 
 ---
 
 ## 5. Architecture
 
 ```
-scan ──► route by content type ──► analyse ──► store ──► query
-          (one-shot / loop / track)      │        │
-                                         │        ├── SQLite: metadata, tags, descriptors
-                                         │        └── .npy memmap: embedding matrix
-                                         │
-              ┌──────────────────────────┴───────────────────────┐
-              │ A. DSP descriptors   (always, cheap)             │
-              │ B. MIR               (loops + tracks)            │
-              │ C. Neural embedding + heads (music content)      │
-              └──────────────────────────────────────────────────┘
+scan ──► route by content type ──► active regions ──► analyse ──► store ──► query
+      (one-shot / loop / track / stem)        │            │        │
+                                              │            │        ├── SQLite: metadata,
+                                              │            │        │   tags, descriptors
+                                              │            │        └── .npy memmap:
+                                              │            │            embedding matrix
+                                              │            │
+                    ┌─────────────────────────┴────────────┴──────────┐
+                    │ A. DSP descriptors   (always, cheap)            │
+                    │ B. MIR               (loops / tracks / stems)   │
+                    │ C. Neural embedding + heads (music content)     │
+                    └─────────────────────────────────────────────────┘
 ```
 
-**Content-type router** decides the analysis path. Duration, onset density, and loop-point
-heuristics separate one-shot / loop / full track. Running key detection on a 300 ms kick is
-wasted work and produces confident nonsense — routing prevents that.
+**Content-type router** decides the analysis path across **four classes — one-shot, loop,
+track, stem**. Duration, onset density and loop-point heuristics separate one-shot / loop /
+track. Stems are identified by the three routes in §12.3 (declaration, sibling-set
+detection, or filename pattern) rather than by signal heuristics, because a delivery stem is
+indistinguishable from a sparse track on duration alone. Running key detection on a 300 ms
+kick is wasted work and produces confident nonsense — routing prevents that.
+
+### Active-region detection — required, not an optimisation
+An energy gate over frames finds the **non-silent spans** of a file before any analysis
+runs; descriptors, MIR and the embedding then see only those spans. `active_ratio` and the
+span list are stored.
+
+This exists because of delivery stems. A strings stem is timeline-aligned to a whole cue, so
+a three-minute stem may hold forty seconds of strings and one hundred and forty of digital
+black. Without gating:
+
+| Stage | Failure on a mostly-silent file |
+|---|---|
+| `discogs-effnet` embedding | averages over mostly silence — the similarity vector points at "quiet", not "strings" |
+| LRA, crest factor | meaningless. (R128 gating already protects *integrated* LUFS) |
+| `RhythmExtractor2013` | a sparse pad with three entries yields a confident BPM from nothing — §2b Finding 2's exact failure class |
+| CED content gate | scores silence against music over the full duration and gates the file out of music analysis entirely |
+
+**When it runs:** always for anything routed as a **stem**, regardless of duration — a stem
+for a 90-second cue is still mostly silence. For every other content type, when duration
+exceeds **5 minutes**. It is a frame-energy gate with no model, so the cost is negligible
+either way; it also pays off on ordinary tracks with long intros, tails and gaps.
+
+**Loudness on stems is not a judgement.** A stem is mixed *relative to the cue*, so a
+correct strings stem can sit at −38 LUFS integrated. Absolute loudness is recorded but
+never used to flag a stem as quiet, thin or faulty.
 
 **A. DSP descriptors** (all content) — duration, sample rate, channels, integrated LUFS,
 loudness range, true peak, crest factor, spectral centroid (brightness), spectral flatness
 (noisiness), harmonicity, onset rate, attack time. Cheap, interpretable, and the backbone
 of one-shot similarity.
 
-**B. MIR** (loops + tracks) — `RhythmExtractor2013` (multifeature) for BPM + beats +
+**B. MIR** (loops, tracks, stems — over active regions only) — **two tempo estimators run
+in parallel and their disagreement is the confidence signal** (§14.1): `RhythmExtractor2013`
+(multifeature) and **Beat This!** (ONNX). Beat This also yields **downbeats**, which
+Essentia does not give well and which unlock bar-aligned slicing and time signature.
+`RhythmExtractor2013` for BPM + beats +
 confidence; `TuningFrequency` → `KeyExtractor` for tuning-corrected key with profile
-choice; `BeatsLoudness`; `Danceability`.
+choice; `BeatsLoudness`; `Danceability`. **Key is gated on harmonic content** and never run
+blindly — a rhythm stem has no meaningful key, and a bass-led stem correlates strongly but
+misleadingly (§12b).
 
 **C. Neural** (music content) — one `discogs-effnet-bs64` pass produces the embedding,
 which is reused for **both** similarity search **and** as input to every classifier head.
@@ -388,6 +441,15 @@ re-analysing audio.
 - **SQLite** — one row per file: path, sha256, mtime, content type, descriptors, tags
   (JSON columns), provenance. Gives free filtering, sorting, and joins, plus safe
   concurrent reads.
+- **Active regions** — `active_ratio` plus the span list, per file. Every descriptor is
+  understood to be computed over those spans.
+- **Beat positions** — the full beat array from `RhythmExtractor2013`, not just the BPM
+  scalar. Cheap to store and required to draw beat markers in the UI (§13); also lets a
+  human see *why* a tempo estimate is wrong rather than just that it is.
+- **Stem grouping** — a nullable `group_id` linking the stems of one cue. Not a correctness
+  requirement (a strings stem and a rhythm stem are genuinely dissimilar, so siblings do not
+  flood `similar`); it exists so you can ask "what cue is this from" and so `similar` can
+  return one hit per cue instead of six pieces of the same one.
 - **`embeddings.npy`** — memory-mapped `float32 [N, D]`, row index stored in SQLite.
   Loads lazily; the benchmark above is the whole search engine.
 - **Per-file `.json` sidecar** (optional, `--emit-sidecars`) — for portability and for the
@@ -410,6 +472,7 @@ Lets a later model upgrade identify exactly which files need re-analysis.
 | Env | `uv`, own venv | isolated from MLX (3.11) and underfit (3.10) venvs |
 | MIR + music models | `essentia-tensorflow==2.1b6.dev1389` | C++ core, verified arm64, MIR + music heads in one dep |
 | General-audio models | `onnxruntime` (1.29, arm64) | runs CED/AudioSet models Essentia doesn't ship; **CPU EP only — CoreML measured no faster** |
+| Beat/downbeat tracking | **Beat This! prebuilt ONNX** (§14.1) | 2024-SOTA beats *and downbeats*, MIT weights, ~10–83 MB, **no torch** — runs under the onnxruntime already present |
 | Decode | `ffmpeg` (present) + `soundfile` | anything → canonical PCM |
 | Vectors | `numpy` + memmap | benchmarked sufficient to 500k |
 | Index/meta | `sqlite3` (stdlib) | zero deps, transactional, queryable |
@@ -427,7 +490,8 @@ DSP, MIR and inference; a second DSP stack means two answers to the same questio
 
 ```bash
 mira scan <dir>...            [--jobs N] [--follow-symlinks]     # index files, no analysis
-mira analyze [--limit N] [--content-type track|loop|oneshot] [--force] [--resume]
+mira scan <dir> --as stem     # declare a folder as delivery stems (§12.3 route 3)
+mira analyze [--limit N] [--content-type track|loop|oneshot|stem] [--force] [--resume]
 mira similar <file|id> [--by overall|timbre|rhythm|spectrum] [--n 20] [--filter "bpm>120"]
 mira search  "--filter" expressions over tags/descriptors
 mira inspect <file|id>        # human-readable report, flags low-confidence fields
@@ -438,7 +502,8 @@ mira stats                    # library composition, coverage, unmapped labels
 - `analyze` is idempotent and resumable — skips files whose `sha256` **and** model versions
   are unchanged
 - `similar` accepts an external file not in the library (analyse-then-query)
-- `inspect` surfaces low-confidence tempo/key rather than hiding it
+- `inspect` surfaces low-confidence tempo/key rather than hiding it, and reports
+  `active_ratio` so a mostly-silent stem is visibly mostly silent
 
 ---
 
@@ -447,8 +512,10 @@ mira stats                    # library composition, coverage, unmapped labels
 **Phase 0 — skeleton.** Venv, model download, SQLite schema, pydantic models, CLI stubs,
 fixture clips covering one-shot / loop / track.
 
-**Phase 1 — describe.** Scanner, content-type router, DSP descriptors, MIR, `inspect`.
-No neural yet. Already useful: BPM/key/loudness across a drive.
+**Phase 1 — describe.** Scanner, four-class content-type router, **active-region
+detection**, DSP descriptors, MIR, `inspect`. No neural yet. Already useful:
+BPM/key/loudness across a drive. Active-region detection lands here rather than later
+because every descriptor downstream depends on it.
 
 **Phase 2 — classify + search.** discogs-effnet embedding, five heads, normalisation
 mappings + tests, embedding store, `similar`, `search`. **This is the Sononym-parity
@@ -458,8 +525,11 @@ milestone.**
 *your* library; per-dimension similarity (timbre/rhythm/spectrum); confidence calibration;
 segment-level analysis instead of whole-track averages.
 
-**Phase 4 — stem-aware similarity.** Demucs separation + per-instrument weighting, per the
-90.4% result. Expensive; only if Phase 3 shows whole-track similarity is the limit.
+**Phase 4 — captioning.** Rendering the analysis document into training captions for
+generative base models (§11). A renderer over stored analysis: no re-analysis, no changes to
+Phase 1–3.
+
+*(Source separation was the previous Phase 4 and has been removed — see §4.)*
 
 **Phase 5 — surfaces.** Optional local web UI over the same index. Caption rendering
 (§11) plugs in here as one consumer among several.
@@ -475,20 +545,32 @@ segment-level analysis instead of whole-track averages.
 | Tempo double/half-time errors | med | store confidence; `inspect` flags; never silently trust |
 | Key unreliable, esp. non-tonal material | med | store `strength`; expose profile; route away from one-shots |
 | Whole-track averaging blurs long/varied tracks | med | Phase 3 segmentation |
+| Mostly-silent delivery stems poison descriptors and embeddings | **high** | active-region detection in Phase 1; `active_ratio` stored and surfaced |
+| Sibling-set stem detection misfires on unrelated same-length files | low | manual `--as stem` declaration always overrides; content type is stored and editable |
+| Octave / half-time tempo errors reach a caption and teach a false mapping | **high** | dual estimator (§14.1); 2×/0.5× disagreement flagged; renderer omits low-confidence BPM (§12.6) |
+| Essentia is dormant — no 2025/26 releases, no `effnet-discogs` update | med | plan around it; ONNX is the second runtime for anything newer (Beat This, DCLAP) |
+| DCLAP is AGPL-3.0 and its retrieval quality vs full CLAP is unpublished | low | optional index behind a flag; fine privately, resolve before any distribution |
 | Taxonomy labels unusable raw | med | normalisation layer + regression tests; keep `raw` |
 | TF inference CPU-only, slow on long tracks | low | acceptable; cache aggressively; resumable |
 | Model licences (MTG-Jamendo may be CC BY-NC-SA) | **open** | verify before any non-private use |
-| Slakh-based similarity results may not generalise | med | validate on real files before investing in Phase 4 |
+| Slakh-based similarity results may not generalise | n/a | source separation removed from scope (§4); no longer a risk we carry |
 
 ---
 
-## 11. Deferred: caption generation (explicitly out of scope)
+## 11. Deferred: caption generation (out of scope for v1, now Phase 4)
 
 Research already done and retained in `NOTES.md` §4 — SA3's training-time prompt
 augmentation, the 45-word / 256-token ceilings, the instrumental bias, and which fields are
 in-vocabulary (BPM, genre, moods, instruments). When we return to it, captioning becomes a
 **renderer over the same analysis document** — no re-analysis, no changes to Part 1. That
 constraint is the design's main test.
+
+**Not SA3-only.** SA3 is the trainer already set up (`sa3-studio/`, MLX, `underfit`), but it
+must not be the thing the schema is shaped around. Other open-weights base models permit
+local inference and LoRA training, and they do not agree on caption format — some expect
+comma-joined key-value tags, some free prose, some a fixed vocabulary, with differing token
+ceilings. The design requirement is therefore: **one analysis document, N renderers.** Which
+fields are universally useful versus model-specific is an open research item (§12.7).
 
 ---
 
@@ -497,20 +579,51 @@ constraint is the design's main test.
 1. ~~Name~~ — **`mira`**, decided.
 2. ~~Repo~~ — **own repo**, decided: `/Users/justmac/w2app/mira`, SA3 studio nested at
    `sa3-studio/`.
-3. **Library scale — unbounded.** No fixed count; content is full tracks, **stems**, and
-   samples. Two consequences: (a) analysis must be **resumable and incremental**, because a
-   run may cover any number of files and will be interrupted; (b) **stems are a first-class
-   content type**, not an afterthought — a stem is a full-length file containing one
-   isolated source, so it needs track-path MIR (tempo/key over long windows) but behaves
-   like a one-shot for instrument identity. The router must treat it as its own class
-   rather than forcing it into track-or-oneshot.
+3. ~~Library scale~~ / ~~stems~~ — **unbounded, and stems are a first-class content type.**
+   Decided; see below.
+
+   **Scale.** No fixed count; content is full tracks, delivery stems, loops and samples.
+   Analysis must therefore be **resumable and incremental**, because a run may cover any
+   number of files and will be interrupted.
+
+   **What a stem is here.** A **delivery submix printed from a scoring session for the mix
+   engineer** — a strings stem, a rhythm stem, a vocal stem. Not a source-separated
+   instrument track; mira never separates anything (§4). Analytically it is:
+   full cue length and timeline-aligned; **mostly silent**; a submix of a whole section
+   rather than a single instrument; and mixed *relative to the cue*, so its absolute
+   loudness carries no judgement about it.
+
+   **Consequences for the build.** A fourth router class; **active-region detection as a
+   mandatory pipeline stage** (§5) rather than an optimisation; key gated on harmonic
+   content; loudness recorded but never used to judge a stem; and a nullable `group_id`
+   for cue grouping (§6).
+
+   **How a stem is identified — three routes, all supported:**
+   1. **Filename or folder pattern**, where one happens to exist (`CUE_03_STRINGS.wav`, a
+      `STEMS/` folder). Cheapest and exact, but **the user's naming differs every time**, so
+      this is opportunistic only.
+   2. **Sibling-set detection** — N files of identical length in one folder, optionally
+      summing to another file of the same length. This is the **general case** and the one
+      to build well.
+   3. **Declaration** — `mira scan ./cue03/stems --as stem`. Always correct; overrides
+      detection.
 4. ~~Key profile~~ — **`edma` default, configurable.** Explained in §12b.
 5. ~~Similarity dimensions~~ — **derive our own**, decided. Not Sononym's five. Dimensions
    come from what our embeddings and descriptors actually separate on real material
    (Phase 3), rather than inheriting another tool's taxonomy.
-6. **Confidence thresholds** — still open. §3c showed a *correct* top instrument scoring
-   only `0.298`, so per-head calibration on real files is required before fixing any
-   threshold.
+6. ~~Confidence thresholds~~ — **store everything; gate at render time.** Resolved by
+   research (§14.2). The store keeps top-k with raw scores and never thresholds — §3c's
+   correct-but-`0.298` instrument stays. Thresholds exist in exactly one place: the
+   **caption renderer omits a field whose confidence is below threshold**, because a
+   caption asserting "85 BPM" over a 170 BPM track teaches the LoRA a false mapping,
+   and hallucinated captions are measurably worse than absent fields. Per-head threshold
+   *values* still need calibration on real files, but the architectural question is
+   settled: uncertainty is preserved in the index and resolved at the boundary.
+7. ~~Caption-format portability~~ — **resolved: field dict + prose, never a frozen
+   caption string.** Two render targets, SA3 and ACE-Step, bracket the design space.
+   See §15.
+8. ~~UI~~ — **one React app with three panes, full write access.** Shape decided in §13;
+   the pane-by-pane build order and visual design are still to settle.
 
 ### 12b. Key profiles — what the choice means
 
@@ -533,6 +646,323 @@ harmonically, which is common in electronic and cinematic work. `edma` was built
 case, so it is the default; the profile is exposed per run and **recorded in provenance**,
 so results stay comparable when it changes.
 
-Stems sharpen the point: a drum stem has no meaningful key, and a bass stem correlates
-strongly but misleadingly. Key must be **gated on harmonic content**, never run blindly —
-the same discipline as §2b Finding 3.
+Stems sharpen the point: a **rhythm stem has no meaningful key**, and a bass-led stem
+correlates strongly but misleadingly. Key must be **gated on harmonic content**, never run
+blindly — the same discipline as §2b Finding 3.
+
+---
+
+## 13. UI — one app, three panes
+
+Decided: **not three separate tools.** A library browser is the shell you need in order to
+select anything; the inspector is what you open when a row looks wrong; caption editing is
+what you do once you trust the row. They are panes of one window, so the shell is built
+first because it contains the other two.
+
+```
+┌─ mira ──────────────────────────────────────────────────────────┐
+│ ┌───────────┬───────────────────────────────────────────────┐   │
+│ │ folders   │  A. file list — virtualised, sortable         │   │
+│ │  (tree)   │     bpm · key · lufs · type · active_ratio    │   │
+│ │           │     [find similar] per row                    │   │
+│ ├───────────┴───────────────────────────────────────────────┤   │
+│ │ B. inspector — waveform + spectrogram + beat markers      │   │
+│ │    active regions shaded · transport · confidences        │   │
+│ ├───────────────────────────────────────────────────────────┤   │
+│ │ C. caption editor — human fields, trigger token,          │   │
+│ │    per-model preview, export sidecars                     │   │
+│ └───────────────────────────────────────────────────────────┘   │
+│ jobs: analyzing 412/12,481 ▓▓▓░░░░░░  ⏸  ✕                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Stack
+
+| Concern | Choice | Why |
+|---|---|---|
+| Framework | **React + TypeScript, Vite** | asked for; the file list, inspector and editor share selection state, which is exactly what component state is for |
+| Server | **FastAPI** — JSON API + serves the built static bundle | same process, same venv, same SQLite the CLI writes. No second language at runtime |
+| Waveform / spectrogram / playback | **wavesurfer.js v7** + `regions` and `spectrogram` plugins | gives all three of waveform, beat markers and shaded active regions from one library; decodes in-browser, so no server-side image rendering |
+| Long lists | **TanStack Virtual** | the library is unbounded; a 12k-row table must not mount 12k rows |
+| Server state | **TanStack Query** | caching and invalidation for a read-mostly index; no global store needed |
+| Job progress | **SSE** (`text/event-stream`) | progress is server→client only. WebSockets buy nothing here |
+
+**The Node dependency is build-time only.** `npm run build` produces static assets that ship
+in the repo; the running tool needs Python and a browser, nothing else. That is the whole
+justification for accepting a build step.
+
+### Write scope — full, including triggering analysis
+
+The UI can `scan`, `analyze`, re-analyse and download models, not just read. Consequences
+that must be designed rather than discovered:
+
+- **A job runner is now in scope.** Analysis is long-running and interruptible, so jobs need
+  a queue, a persisted state row, cancel, and resume — which the CLI's `--resume` already
+  requires (§8). One implementation serves both surfaces.
+- **`machine` fields are never writable over the API.** The write endpoints cover `human`
+  fields, content-type override (marking a folder as stems, §12.3 route 3), and job control.
+  The §6 split is enforced at the API boundary, not by convention.
+- **Single-writer discipline.** SQLite tolerates concurrent readers, not concurrent writers.
+  The server process owns writes; a CLI `analyze` running at the same time as the UI is a
+  conflict, so the UI holds the lock and the CLI fails loudly rather than corrupting.
+
+### Two gotchas worth naming now
+
+1. **Browsers cannot decode much of a producer's drive.** 32-bit float WAV, AIFF and some
+   FLAC variants will not play natively. The audio endpoint therefore needs an **ffmpeg
+   transcode fallback** (HTTP range for what plays natively, streamed transcode for what
+   does not). ffmpeg is already a dependency (§7).
+2. **In-browser spectrograms are expensive on long files.** Rendering a 40-minute stem's
+   spectrogram means decoding the whole file client-side. Render on demand, per active
+   region rather than whole-file, and never eagerly for the selected row.
+
+### Where it sits in the phases
+
+The UI is **Phase 5** in §9 and does not move: it is a consumer of the index, and building
+it before Phase 2 exists would mean designing a view over data that has no shape yet. What
+*does* move earlier is the **job runner**, since `analyze --resume` needs it in Phase 1
+regardless of whether a UI ever calls it.
+
+---
+
+## 14. Research findings — MIR and captioning (2026-09-09)
+
+Two deep-research passes. Everything here was fetched from primary sources; items the
+research could not verify are marked and must not be treated as settled.
+
+### 14.1 Beat This! — the one clear upgrade, and it costs no new runtime
+
+`RhythmExtractor2013` is not embarrassing. On the DeepRhythm benchmark (953 tracks):
+
+| Method | Acc1 (±2%) | Acc2 (harmonics OK) | s/track |
+|---|---|---|---|
+| Essentia multifeature | 87.9% | **97.5%** | 2.72 |
+| Essentia `degara` | 86.5% | 97.2% | 1.38 |
+| `TempoCNN` (deeptemp) | 84.8% | 97.7% | 1.21 |
+| librosa | 66.8% | 75.1% | 0.48 |
+
+Read the Acc1→Acc2 gap: **~10 points of Essentia's error is octave/half-time errors**, not
+noise. That is precisely the error class that poisons a caption, and precisely what a drive
+of half-time hip-hop and 170 BPM DnB will produce.
+
+**Adopt [Beat This!](https://github.com/CPJKU/beat_this) (ISMIR 2024, still SOTA) via the
+prebuilt ONNX** committed in [beat_this_cpp](https://github.com/mosynthkey/beat_this_cpp) —
+MIT, ~10–83 MB, deps are **onnxruntime only**. No torch. It also gives **downbeats**, which
+Essentia does not, unlocking bar-aligned slicing, time signature and loop boundaries.
+
+**Do not pick a winner between them.** Beat This's documented failure mode
+([SMC Blind Spot](https://arxiv.org/html/2605.12287v1)) is *confident-but-wrong* activations
+on expressively-timed music; Essentia's is octave errors. **Run both; treat disagreement —
+especially a 2× / 0.5× ratio — as the confidence signal.** The disagreement is worth more
+than either estimate alone, and it is §2b Finding 2 implemented rather than asserted.
+
+*Unverified:* no direct Beat This vs `RhythmExtractor2013` tempo-Acc1 table exists. **Measure
+it on 50 of our own files** — the project sessions carry true tempo, which is better ground
+truth than any published benchmark.
+
+### 14.2 Caption quality → LoRA quality — five findings that shape the renderer
+
+1. **Metadata → LLM rendering is a validated architecture, not a shortcut.**
+   [arXiv:2602.03023](https://arxiv.org/html/2602.03023) decouples exactly as mira does:
+   predict structured metadata, then render it as language. **Parity with end-to-end
+   captioners at 46.3% of the GPU hours**, **>20% gain from prompt refinement alone**, and
+   metadata imputation recovering up to 33% on individual fields. This is external
+   validation of the whole design: **the DB is the source of truth; captioning is a cheap
+   re-runnable pass over the DB, never over the audio.** Restyling costs a re-render, not a
+   re-analysis — and retargeting to a 2027 base model is a new template.
+2. **Confidence-gate every rendered field.** Hallucinated captions measurably degrade
+   training ([TAC](https://arxiv.org/html/2602.15766v1) ties clip-level summarisation to
+   higher hallucination). Combined with 14.1's octave errors: **omit BPM/key from the caption
+   when confidence is low.** Costs nothing, and it resolves §12.6.
+3. **Prose beats tag templates — but only in the register the base model was trained on.**
+   [arXiv:2605.21433](https://arxiv.org/html/2605.21433): LLM prose 0.943 val loss vs
+   template 0.968, a gain the authors say "exceeds any single training technique" they
+   tested. *Their own caveat:* eval prompts were also LLM-generated, so part of it is
+   train/test text alignment. The transferable rule is therefore **match the target model's
+   caption register**, not "prose is better".
+4. **Emit multiple variants at randomised lengths.**
+   [arXiv:2506.16679](https://arxiv.org/html/2506.16679v1): dense captions improve text
+   alignment but *reduce* aesthetic quality and diversity — a real problem for something as
+   capacity-limited as a LoRA — and **randomising caption length eliminates the trade-off.**
+   [SonicCaps](https://arxiv.org/html/2609.02343) (~24 captions/clip, 4 registers) confirms
+   multiple granularities compose. Note their lengths are **short**: main captions average
+   **11.2 words**, not paragraphs. So emit three registers — `tags` (~3–4 terms), `short`
+   (~10 words), `long` (~40 words, one fact per clause) — and let the trainer sample.
+   **Do not do persona-based captioning: it measurably hurt prompt-following.**
+5. **Write captions as independently droppable clauses.** Trainers apply sentence-level
+   masking and conditioning dropout as a matter of course. *Unverified:* the exact
+   5–20% / 20–50% figures are field convention, not a proven optimum for music LoRAs — but
+   the structural implication holds regardless.
+
+### 14.3 There is no local music captioner for this machine, and that is an absence of ports
+
+Checked both on-device runtimes directly:
+
+- **llama.cpp** audio-capable GGUFs are Ultravox, Voxtral, Qwen3-ASR — **all speech/ASR.
+  Zero music captioners.**
+- **mlx-vlm**'s only documented working audio model is `gemma-3n-E2B-it-4bit`.
+- The Qwen3-Omni MLX port is **17.2 GB** (over total unified memory) **and text-only** — the
+  audio encoder still needs torch.
+
+Every captioner worth using is 7–8B+ with a torch-only audio encoder, and the two best
+music-specific ones ([Music Flamingo](https://huggingface.co/nvidia/music-flamingo-2601-hf),
+[AF-Next](https://huggingface.co/nvidia/audio-flamingo-next-captioner-hf)) are **NVIDIA
+OneWay Noncommercial** on A100-class hardware.
+
+**Consequence: local prose captioning is not a v1 feature, and mira should not pretend
+otherwise.** The route that fits: run
+[`ACE-Step/acestep-captioner`](https://huggingface.co/ACE-Step/acestep-captioner) — **7B,
+MIT**, and the model that actually labelled ACE-Step 1.5's own training data, so its register
+matches the base model — as an **occasional offline batch job on borrowed GPU time**. Its
+prose lands in the DB as one more field, and mira's renderer fuses it with mira's *measured*
+BPM/key. That is exactly the 2602.03023 architecture, and it plays to the division of labour:
+**the captioner guesses, mira measures.**
+
+### 14.4 Segmentation, not timestamps
+
+The research has moved decisively to temporal grounding (FUTGA → FUTGA-MIR → TAC →
+MusTBench, which finds current audio LLMs struggle badly at precise temporal alignment). **The
+trainers have not.** ACE-Step's LoRA dataset is one caption per file; MusicGen's trainer is
+`segment_000.wav` / `segment_000.txt` pairs. YuE's `msa` field is the sole exception (§15).
+
+So temporal richness reaches trainers **as segmentation**: slice long content into
+**30–120 s segments** (ACE-Step's documented range) and caption each segment whole. Active
+regions (§5) are what makes the slicing correct rather than arbitrary — and for a
+mostly-silent delivery stem, whole-file captioning produces a caption describing silence or
+hallucinating content. **Never caption a stem whole-file.**
+
+Dataset scale, from ACE-Step's tutorial: **20 samples minimum for basic style capture,
+50–100 for robust generalisation**, WAV/FLAC ≥44.1 kHz. Consistent with SA3's "~20–50 clips".
+
+### 14.5 Similarity — a torch-free CLAP exists, with a licence catch
+
+[AudioMuse-AI-DCLAP](https://github.com/NeptuneHub/AudioMuse-AI-DCLAP) is a **distilled
+LAION-CLAP** (audio tower ~80M → ~7M params) shipped as ONNX alongside the unmodified CLAP
+text tower. **512-dim shared text/audio space, onnxruntime + librosa + numpy, no torch.**
+
+That buys something `discogs-effnet` structurally cannot: **natural-language search over the
+drive** — "find my dusty broken-tape piano loops". Adopt as an **additional index behind a
+flag**, not a replacement, because (a) **AGPL-3.0** — fine for a private tool, a problem if
+mira is ever distributed, and (b) **no published retrieval metrics vs full CLAP**, so the
+distillation is trusted blind.
+
+**Essentia is stable-to-dormant** — no releases in 2025 or 2026, no update to
+`effnet-discogs`. Plan around it rather than expecting upstream improvement. One correction
+in our favour: `KeyExtractor` *has* been updated (new profiles, detuning correction, spectral
+whitening) and its upstream default is now **`bgate`**, not `edma`. §12.4 keeps `edma` for
+electronic/bass-led material, which is the right call for this library, but the divergence
+from upstream should be recorded in provenance — as §12.4 already requires.
+
+### 14.6 Deferred, with reasons
+
+| Candidate | Verdict |
+|---|---|
+| **SongFormer** (structure, ACC 0.807 vs All-in-One 0.740) | **v1.5 at the earliest.** Head is trivial (4 layers, 512 dim) but needs **two SSL backbones (MuQ + MusicFM), torch-only**. Worth a spike: can MuQ/MusicFM be ONNX-exported? *Nobody has tried, as far as the research could tell.* Structure labels would be transformative for captioning long tracks and finding loop points — this is the one place to eventually pay the torch tax |
+| **MuQ-MuLan** (similarity, MTAT ROC-AUC 79.3) | only if DCLAP disappoints. Torch-only, no ONNX, and MAEB's ranking of it is confusing enough to re-read first |
+| **KeyMyna** (key, CC-BY) | **no.** 72% GiantSteps is a low ceiling, torch-only, and the delta over Essentia's updated `bgate` + whitening is unverified. Bad trade |
+| **DeepRhythm** (tempo, 95.9% Acc1) | **no.** AGPL-3.0 + torch + nnAudio, and Beat This gives downbeats too |
+| **LP-MusicCaps** | **no.** CC-BY-NC, torch, 2023-quality output. Superseded |
+
+*Research could not verify:* MAEB's leaderboard (extracted numbers were self-contradictory);
+KeyMyna's margin over updated Essentia; whether MuQ/MusicFM export to ONNX; trigger-token
+efficacy in audio LoRAs (ACE-Step's own docs say "limited effect", and no study exists either
+way); and a search-surfaced claim that LoRA is 15–30% worse than full fine-tuning for audio,
+unconfirmed in the Audiobox PDF.
+
+---
+
+## 15. Caption schema — one document, N renderers
+
+### The rule: never emit a frozen caption string
+
+Every trainer permutes and drops fields **itself**, at training time:
+
+- `underfit` shuffles and subsamples its tag list every step
+- MusicGen's `augment_music_info_description()` shuffles `meta_pairs`, with `drop_desc_p` /
+  `drop_other_p`
+- ACE-Step's `genre_ratio` swaps `caption` for `genre` on a percentage of samples
+
+A pre-rendered sentence destroys all three augmentations. mira therefore emits a
+**normalised field dict plus short prose**, and each trainer gets a thin **field assembler**
+— not a string formatter. There are five incompatible join syntaxes in the wild:
+`"Label: v, Label: v"` (SA3) · `"key: v. bpm: v."` (MusicGen, period-joined) ·
+`"v, v"` (ACE-Step, LeVo) · `"v,v"` (HeartMuLa, no space) · `"v v v"` (YuE, space-delimited).
+
+### Canonical fields
+
+Every key maps 1:1 onto at least one real trainer's field name, so renderers stay trivial.
+
+```
+caption            # prose, three registers (§14.2.4): tags / short ~10w / long ~40w
+genre[]            # universal
+instruments[]      # universal
+moods[]            # universal (MusicGen's plural key name)
+keywords[]         # production / recording / era / texture
+bpm                # number + confidence
+keyscale           # "D major" (ACE-Step's name; MusicGen calls it `key`) + strength
+timesignature      # from Beat This downbeats (§14.1)
+duration           # seconds
+is_instrumental    # bool
+language
+lyrics             # not produced by mira — see below
+segments[]         # {start, end, label}
+trigger            # + placement
+```
+
+| Field | Status across trainers |
+|---|---|
+| genre, instruments, moods, prose, duration, vocal presence | **universal** — every model consumes them under some name |
+| **bpm** | near-universal semantically, **five renderings syntactically**: structured JSON (ACE-Step, MusicGen), a tag (`underfit`), prose (`"140 BPM"` SA3, `"the bpm is 140"` LeVo), absent entirely (YuE, HeartMuLa) |
+| **keyscale** | **only three pipelines** — ACE-Step `keyscale`, MusicGen `key`, Mustango `prompt_key`. **Not in SA3's documented tag vocabulary nor in `underfit`'s `_TAG_DISPLAY`.** Emit it; expect it dropped for over half the targets |
+| **loudness** | **no model in the survey has a loudness field, in any form.** MusicGen just normalises output to −14 LUFS at write time. Loudness is a **curation and filtering signal for mira, never a caption field** — which is consistent with §5's rule that a stem's loudness is not a judgement |
+| **segments** | first-class in **exactly one** training pipeline (YuE's `msa`). Others take structure only as `[Verse]` markers inside lyrics. So active regions stay an **internal correctness device** (§5), not a caption feature |
+| timesignature | ACE-Step only |
+| chords | Mustango and JASCO only — both non-commercial. Not worth building for |
+| **lyrics** | required or central for ACE-Step, YuE, HeartMuLa, LeVo, Muse, DiffRhythm. **mira does not transcribe anything** — see the non-goal below |
+
+### Two render targets, chosen to bracket the space
+
+| Target | Format | Why this one |
+|---|---|---|
+| **Stable Audio 3** via `underfit` | key-value tags + prose inside a **hard 256-token** T5Gemma prompt, plus numeric `seconds_total` (0–384) | the only thing actually trainable on this machine (§14.3 / below) |
+| **ACE-Step 1.5** | structured JSON — `caption`, `bpm`, `keyscale`, `timesignature`, `language`, `is_instrumental` | **MIT-licensed**, commercially unambiguous, official LoRA *and* LoKr/DoRA trainers, and the one pipeline taking BPM/key as structured fields |
+
+Render cleanly into both and MusicGen, LeVo, HeartMuLa and YuE become different join
+characters over subsets of the same dict.
+
+**SA3's 256-token ceiling truncates silently.** The renderer needs a **ranked field order,
+truncating from the tail**: `trigger → TrackType/VocalType → Genre → Instruments → BPM →
+prose → production/era keywords`. (MMAudio is worse: CLIP's 77 tokens.)
+
+**BPM is the sharp edge.** SA3 has *no numeric BPM input* — it must go in the prose string.
+ACE-Step wants `"bpm": 140` as JSON and assembles conditioning itself, so putting
+`BPM: 140` in its `caption` **double-conditions**. Same measurement, two incompatible
+destinations. This is why the field dict, not the string, is the stored artefact.
+
+### What is actually trainable on this machine
+
+| | Trainable on M1 Pro / 16 GB? | Licence |
+|---|---|---|
+| **Stable Audio 3** via `underfit` (MLX) | **Yes** — small comfortably, medium at the documented floor | Stability Community — commercial OK under $1M revenue |
+| ACE-Step 1.5 | **No.** MPS training OOMs (~45 GB needed); LoRA does not apply under the MLX DiT | **MIT** — cleanest in the field |
+| MusicGen / MAGNeT / JASCO | CUDA | **CC-BY-NC** — non-commercial |
+| YuE | 24–80 GB | Apache-2.0 |
+| DiffRhythm 2, HeartMuLa, LeVo | ship no trainer at all | mixed |
+| Suno / Udio | closed, no weights | — |
+
+So SA3 is the only real near-term target, and ACE-Step's schema is **cheap insurance** —
+emitted now, trainable elsewhere later, and MIT.
+
+*Research could not verify:* whether SA3's training captions ever contained a `Key:` field
+(the prompting guide lists `TrackType`, `VocalType`, `Genre`, `Instruments`, `Format` and
+nothing about key) — **treat key as prose-only and possibly out-of-distribution for SA3**.
+LeVo's exact licence also remains unconfirmed (HF card 401s; reported variously as Tencent
+custom non-commercial and NOASSERTION).
+
+### New non-goal: lyrics
+
+mira does not transcribe. That places **ACE-Step, YuE, HeartMuLa, LeVo, Muse and DiffRhythm
+out of reach for lyric-bearing material** regardless of caption quality — they are reachable
+only for instrumental content. Stated as a boundary rather than left as a surprise. Adding
+transcription is a different project.
+
