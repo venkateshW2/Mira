@@ -521,18 +521,22 @@ because every descriptor downstream depends on it.
 mappings + tests, embedding store, `similar`, `search`. **This is the Sononym-parity
 milestone.**
 
-**Phase 3 — quality.** Embedding A/B (discogs-effnet vs CLAP vs MuQ-MuLan) measured on
-*your* library; per-dimension similarity (timbre/rhythm/spectrum); confidence calibration;
-segment-level analysis instead of whole-track averages.
+**Phase 3 — SA3 captioning.** The first renderer: SA3 key-value tags + prose under the
+256-token cap, `seconds_total`, trigger token, folder-level human defaults, sidecar export
+(§15). Ordered here deliberately — **all DSP, MIR and classification complete first**, so the
+renderer has every field it will ever have and is never designed around a missing one.
+Machine fills BPM/duration/active regions; the classifier pre-fills genre/mood/instruments as
+an editable draft; the human field always wins (§6).
 
-**Phase 4 — captioning.** Rendering the analysis document into training captions for
-generative base models (§11). A renderer over stored analysis: no re-analysis, no changes to
-Phase 1–3.
+**Phase 4 — quality.** Embedding A/B (discogs-effnet vs CLAP vs MuQ-MuLan) measured on
+*your* library; per-dimension similarity (timbre/rhythm/spectrum); per-head confidence
+calibration (which sets the render-gate thresholds of §12.6); segment-level analysis instead
+of whole-track averages.
 
-*(Source separation was the previous Phase 4 and has been removed — see §4.)*
+*(Source separation was a previous Phase 4 and has been removed — see §4.)*
 
-**Phase 5 — surfaces.** Optional local web UI over the same index. Caption rendering
-(§11) plugs in here as one consumer among several.
+**Phase 5 — surfaces + multi-target captioning.** The UI (§13) over the same index, and the
+remaining renderers: ACE-Step JSON, three caption registers, segment slicing.
 
 ---
 
@@ -557,7 +561,7 @@ Phase 1–3.
 
 ---
 
-## 11. Deferred: caption generation (out of scope for v1, now Phase 4)
+## 11. Deferred: caption generation (out of scope for v1, now Phase 3)
 
 Research already done and retained in `NOTES.md` §4 — SA3's training-time prompt
 augmentation, the 45-word / 256-token ceilings, the instrumental bias, and which fields are
@@ -622,8 +626,8 @@ fields are universally useful versus model-specific is an open research item (§
 7. ~~Caption-format portability~~ — **resolved: field dict + prose, never a frozen
    caption string.** Two render targets, SA3 and ACE-Step, bracket the design space.
    See §15.
-8. ~~UI~~ — **one React app with three panes, full write access.** Shape decided in §13;
-   the pane-by-pane build order and visual design are still to settle.
+8. ~~UI~~ — **deliberately small: one screen, read + human-field write, no job runner.**
+   Decided in §13. Visual design still to settle.
 
 ### 12b. Key profiles — what the choice means
 
@@ -652,76 +656,97 @@ blindly — the same discipline as §2b Finding 3.
 
 ---
 
-## 13. UI — one app, three panes
+## 13. UI — deliberately small
 
-Decided: **not three separate tools.** A library browser is the shell you need in order to
-select anything; the inspector is what you open when a row looks wrong; caption editing is
-what you do once you trust the row. They are panes of one window, so the shell is built
-first because it contains the other two.
+**The call: one screen, read-mostly, no job runner.** The UI exists to do the one thing the
+CLI genuinely cannot — **let a human look at a waveform and type a caption** — and nothing
+else. Everything that has a working terminal answer stays in the terminal.
+
+### What was cut, and why
+
+| Cut | Cost avoided | Where it lives instead |
+|---|---|---|
+| **Triggering analysis from the UI** | the whole job runner: queue, persisted job state, cancel, SSE progress, and **single-writer locking** against a concurrently running CLI. Easily the largest item in the original scope, and it exists only to move a command from the terminal to a button | `mira analyze` in a terminal |
+| **Spectrogram** | decoding an entire 40-minute stem client-side to draw it. Hundreds of MB of browser memory for something the waveform + shaded active regions already answer | nothing; revisit if a real need appears |
+| **Folder tree** | duplicating a filesystem browser you already have in Finder | a filter box over the index — which is more useful anyway, since the index knows BPM and key and Finder doesn't |
+| **Similarity browsing** | a second interaction model (query → result set → re-query) layered on the file list | `mira similar` |
+
+That leaves a **read + human-field-write** surface. The API has no endpoint that starts work
+or touches a `machine` field.
+
+### What it is
 
 ```
 ┌─ mira ──────────────────────────────────────────────────────────┐
-│ ┌───────────┬───────────────────────────────────────────────┐   │
-│ │ folders   │  A. file list — virtualised, sortable         │   │
-│ │  (tree)   │     bpm · key · lufs · type · active_ratio    │   │
-│ │           │     [find similar] per row                    │   │
-│ ├───────────┴───────────────────────────────────────────────┤   │
-│ │ B. inspector — waveform + spectrogram + beat markers      │   │
-│ │    active regions shaded · transport · confidences        │   │
-│ ├───────────────────────────────────────────────────────────┤   │
-│ │ C. caption editor — human fields, trigger token,          │   │
-│ │    per-model preview, export sidecars                     │   │
-│ └───────────────────────────────────────────────────────────┘   │
-│ jobs: analyzing 412/12,481 ▓▓▓░░░░░░  ⏸  ✕                      │
+│ filter: [ bpm>115 and type=stem            ]      34 of 12,481  │
+├─────────────────────────────────────────────────────────────────┤
+│ ✓ 01_STRINGS   119*  Cmin  −38.2  act 0.29  stem                │
+│   02_RHYTHM    120    —    −31.0  act 0.44  stem                │
+│   03_BRASS     119*  Cmin  −35.7  act 0.18  stem                │
+├─────────────────────────────────────────────────────────────────┤
+│ ▁▁▃█▇▅▃▁▁▁▁▁▁▁▁▁▁▁▂▆█▆▃▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  ▶ 0:12 / 3:00     │
+│ ░░████████░░░░░░░░░████████████░░░░░░░░░░░░  ← active regions   │
+│ ¦   ¦   ¦   ¦   ¦   ¦   ¦   ¦   ¦   ¦   ¦    ← beats/downbeats  │
+├─────────────────────────────────────────────────────────────────┤
+│ BPM 119.9 ⚠ estimators disagree 2×   key Cmin 0.81  edma        │
+│ folder defaults ▾  Genre [cinematic orchestral                ] │
+│                    Mood  [dark, tense                         ] │
+│                    Inst  [strings, brass, timpani             ] │
+│ this file          Inst  [+ solo cello                        ] │
+│ trigger [vnkxstr]  SA3 preview: 218/256 tokens                  │
+│ "vnkxstr cinematic orchestral, strings, brass, timpani, dark…"  │
+│                                          [export 3 sidecars]    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+Four things, in order of why they justify a UI at all:
+
+1. **Waveform + transport + beat markers + shaded active regions.** Impossible in a
+   terminal, and the fastest way to see that a tempo estimate is wrong or that a stem is
+   mostly silence.
+2. **Editable human fields with folder-level defaults and per-file override.** The actual
+   captioning workflow (§15): label a cue folder once, override the exceptions.
+3. **Live SA3 caption preview with a token count**, since the 256-token cap truncates
+   silently and a person should see how close they are.
+4. **A filter box and a virtualised list**, because an unbounded library cannot mount every
+   row and folders are not how you find things.
+
 ### Stack
 
-| Concern | Choice | Why |
-|---|---|---|
-| Framework | **React + TypeScript, Vite** | asked for; the file list, inspector and editor share selection state, which is exactly what component state is for |
-| Server | **FastAPI** — JSON API + serves the built static bundle | same process, same venv, same SQLite the CLI writes. No second language at runtime |
-| Waveform / spectrogram / playback | **wavesurfer.js v7** + `regions` and `spectrogram` plugins | gives all three of waveform, beat markers and shaded active regions from one library; decodes in-browser, so no server-side image rendering |
-| Long lists | **TanStack Virtual** | the library is unbounded; a 12k-row table must not mount 12k rows |
-| Server state | **TanStack Query** | caching and invalidation for a read-mostly index; no global store needed |
-| Job progress | **SSE** (`text/event-stream`) | progress is server→client only. WebSockets buy nothing here |
+| Concern | Choice |
+|---|---|
+| Framework | React + TypeScript, Vite — build-time Node only; the running tool needs Python and a browser |
+| Server | FastAPI, same process and venv, serving the built bundle + a JSON API |
+| Waveform, transport, beat markers, active regions | **wavesurfer.js v7** + `regions` plugin (no `spectrogram` plugin) |
+| Long lists | TanStack Virtual |
+| Server state | TanStack Query |
+| Job progress | **none** — there are no jobs |
 
-**The Node dependency is build-time only.** `npm run build` produces static assets that ship
-in the repo; the running tool needs Python and a browser, nothing else. That is the whole
-justification for accepting a build step.
+### The one thing that cannot be cut
 
-### Write scope — full, including triggering analysis
+**Browsers cannot decode much of a producer's drive** — 32-bit float WAV, AIFF and some FLAC
+variants will not play natively. The audio endpoint needs HTTP range for what plays and an
+**ffmpeg transcode fallback** for what does not. ffmpeg is already a dependency (§7). Without
+this the waveform pane is empty on exactly the files that matter most.
 
-The UI can `scan`, `analyze`, re-analyse and download models, not just read. Consequences
-that must be designed rather than discovered:
+### Write scope
 
-- **A job runner is now in scope.** Analysis is long-running and interruptible, so jobs need
-  a queue, a persisted state row, cancel, and resume — which the CLI's `--resume` already
-  requires (§8). One implementation serves both surfaces.
-- **`machine` fields are never writable over the API.** The write endpoints cover `human`
-  fields, content-type override (marking a folder as stems, §12.3 route 3), and job control.
-  The §6 split is enforced at the API boundary, not by convention.
-- **Single-writer discipline.** SQLite tolerates concurrent readers, not concurrent writers.
-  The server process owns writes; a CLI `analyze` running at the same time as the UI is a
-  conflict, so the UI holds the lock and the CLI fails loudly rather than corrupting.
+- **`human` fields** — genre, mood, instruments, keywords, trigger, folder defaults
+- **content-type override** — marking a folder as stems (§12.3 route 3)
+- **nothing else.** No `machine` field is writable; no endpoint starts analysis. The §6 split
+  is enforced at the API boundary, not by convention
 
-### Two gotchas worth naming now
+### If the job runner is wanted later
 
-1. **Browsers cannot decode much of a producer's drive.** 32-bit float WAV, AIFF and some
-   FLAC variants will not play natively. The audio endpoint therefore needs an **ffmpeg
-   transcode fallback** (HTTP range for what plays natively, streamed transcode for what
-   does not). ffmpeg is already a dependency (§7).
-2. **In-browser spectrograms are expensive on long files.** Rendering a 40-minute stem's
-   spectrogram means decoding the whole file client-side. Render on demand, per active
-   region rather than whole-file, and never eagerly for the selected row.
+It is additive, not a rewrite: `analyze` already needs resumable job state for
+`--resume` (§8), so the persistence exists regardless. Adding a start button and an SSE
+progress stream on top is a contained change — and single-writer locking becomes a real
+problem to solve at that point, not before.
 
 ### Where it sits in the phases
 
-The UI is **Phase 5** in §9 and does not move: it is a consumer of the index, and building
-it before Phase 2 exists would mean designing a view over data that has no shape yet. What
-*does* move earlier is the **job runner**, since `analyze --resume` needs it in Phase 1
-regardless of whether a UI ever calls it.
+The UI is **Phase 5** and does not move: it is a consumer of the index, and building it
+before the schema is settled means designing a view over data that has no shape yet.
 
 ---
 
