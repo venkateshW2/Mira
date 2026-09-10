@@ -129,6 +129,19 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       at all, not a false "totally inharmonic" reading). This also closed a documented
       honesty gap: `shouldRunKeyDetection` (key + chords gate) now uses this real signal
       instead of the spectral-flatness proxy it shipped with
+- [x] DSP performance fix (§5) — prompted by comparing mira against the user's own
+      `FluCoMaAnalyser` (a hand-written single-STFT-pass analyser in a separate sampler
+      project) after a real-song profiling run showed DSP taking ~7.4s. Two things found:
+      (1) centroid/flatness/harmonicity each ran their own Windowing→Spectrum frame loop
+      over the same audio — consolidated into one shared `computeSpectralAverages()` pass
+      (real but modest: ~120ms saved on the 5:08 test song). (2) `TruePeakDetector` was
+      the actual dominant cost at 5.5s/75% of DSP time, from Essentia's default 4x
+      oversampling — found only after two wrong hypotheses (the redundant-pass theory,
+      then a harmonicity-chain A/B test) were disproven by direct `std::chrono`
+      instrumentation around each DSP sub-stage. Dropped `oversamplingFactor` 4→2
+      (`truePeak->configure(..., "oversamplingFactor", 2)`), verified linear: 5543ms→2790ms.
+      No smoke test asserts an exact `true_peak_db`, so the slightly coarser oversampling
+      is safe. Combined effect on the same real song: DSP ~7.4s → ~4.7s
 - [x] Onset rate (§5) — was already computed by the router; unchanged
 - [x] Attack time (§5) — whole-file `Envelope` → `LogAttackTime`. Only meaningful for a
       single dominant transient (one-shots); on a multi-onset track/loop the number is

@@ -6,7 +6,6 @@
 #include <limits>
 #include <memory>
 #include <sstream>
-#include <tuple>
 
 namespace mira {
 
@@ -21,57 +20,32 @@ AlgoPtr create(const std::string& name) {
     return AlgoPtr(essentia::standard::AlgorithmFactory::instance().create(name));
 }
 
-// Frame-average of a scalar spectral descriptor (Centroid or Flatness), computed over
-// Windowing(hann) -> Spectrum -> `algoName`, skipping the trailing partial frame.
-double averageSpectralDescriptor(const std::vector<float>& mono, const std::string& algoName,
-                                  const std::string& outputName,
-                                  const std::vector<std::pair<std::string, essentia::Parameter>>& params = {}) {
-    if (static_cast<int>(mono.size()) < kFrameSize) return 0.0;
-
-    AlgoPtr windowing = create("Windowing");
-    windowing->configure("type", "hann");
-    AlgoPtr spectrum = create("Spectrum");
-    spectrum->configure("size", kFrameSize);
-
-    AlgoPtr descriptor = create(algoName);
-    for (auto& [key, value] : params) descriptor->configure(key, value);
-
-    std::vector<essentia::Real> frame(kFrameSize), windowed, spec;
-    windowing->input("frame").set(frame);
-    windowing->output("frame").set(windowed);
-    spectrum->input("frame").set(windowed);
-    spectrum->output("spectrum").set(spec);
-
-    essentia::Real value = 0;
-    descriptor->input("array").set(spec);
-    descriptor->output(outputName).set(value);
-
-    double sum = 0.0;
-    int count = 0;
-    for (size_t start = 0; start + kFrameSize <= mono.size(); start += kHopSize) {
-        std::copy(mono.begin() + start, mono.begin() + start + kFrameSize, frame.begin());
-        windowing->compute();
-        spectrum->compute();
-        descriptor->compute();
-        sum += value;
-        ++count;
-    }
-    return count > 0 ? sum / count : 0.0;
-}
-
 constexpr essentia::Real kHarmonicityMinPitchConfidence = 0.5f;
 
-// Windowing(hann) -> Spectrum -> {PitchYinFFT, SpectralPeaks} -> HarmonicPeaks ->
-// Inharmonicity, frame-averaged over only the frames PitchYinFFT is confident enough
-// about to make "how close to a harmonic series" a meaningful question at all — an
-// unpitched or silent frame has no harmonic series to measure the inharmonicity of.
-std::pair<double, int> computeHarmonicity(const std::vector<float>& mono, int sampleRate) {
-    if (static_cast<int>(mono.size()) < kFrameSize) return {0.0, 0};
+struct SpectralAverages {
+    double centroidHz = 0.0;
+    double flatness = 0.0;
+    double harmonicity = 0.0;
+    int harmonicityFrameCount = 0;
+};
+
+// ONE Windowing(hann) -> Spectrum pass per frame, shared by every spectral descriptor
+// below (Centroid, Flatness, and the PitchYinFFT -> SpectralPeaks -> HarmonicPeaks ->
+// Inharmonicity chain for harmonicity) — these used to be three separate frame loops,
+// each redoing Windowing+Spectrum from scratch over the same audio. Found by comparing
+// against a hand-written analyser (single-STFT-pass design) that does this correctly;
+// this was silently tripling mira's own spectral analysis cost for no reason.
+SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sampleRate) {
+    SpectralAverages result;
+    if (static_cast<int>(mono.size()) < kFrameSize) return result;
 
     AlgoPtr windowing = create("Windowing");
     windowing->configure("type", "hann");
     AlgoPtr spectrum = create("Spectrum");
     spectrum->configure("size", kFrameSize);
+    AlgoPtr centroidAlgo = create("Centroid");
+    centroidAlgo->configure("range", essentia::Parameter(sampleRate / 2.0));
+    AlgoPtr flatnessAlgo = create("Flatness");
     AlgoPtr pitchYin = create("PitchYinFFT");
     pitchYin->configure("frameSize", kFrameSize, "sampleRate", static_cast<essentia::Real>(sampleRate));
     AlgoPtr spectralPeaks = create("SpectralPeaks");
@@ -84,6 +58,14 @@ std::pair<double, int> computeHarmonicity(const std::vector<float>& mono, int sa
     windowing->output("frame").set(windowed);
     spectrum->input("frame").set(windowed);
     spectrum->output("spectrum").set(spec);
+
+    essentia::Real centroidValue = 0;
+    centroidAlgo->input("array").set(spec);
+    centroidAlgo->output("centroid").set(centroidValue);
+
+    essentia::Real flatnessValue = 0;
+    flatnessAlgo->input("array").set(spec);
+    flatnessAlgo->output("flatness").set(flatnessValue);
 
     essentia::Real pitch = 0, pitchConfidence = 0;
     pitchYin->input("spectrum").set(spec);
@@ -107,15 +89,22 @@ std::pair<double, int> computeHarmonicity(const std::vector<float>& mono, int sa
     inharmonicity->input("magnitudes").set(harmMags);
     inharmonicity->output("inharmonicity").set(inharmonicityValue);
 
-    double sum = 0.0;
-    int count = 0;
+    double centroidSum = 0.0, flatnessSum = 0.0, harmonicitySum = 0.0;
+    int frameCount = 0, harmonicityCount = 0;
+
     for (size_t start = 0; start + kFrameSize <= mono.size(); start += kHopSize) {
         std::copy(mono.begin() + start, mono.begin() + start + kFrameSize, frame.begin());
         windowing->compute();
         spectrum->compute();
+
+        centroidAlgo->compute();
+        centroidSum += centroidValue;
+        flatnessAlgo->compute();
+        flatnessSum += flatnessValue;
+        ++frameCount;
+
         pitchYin->compute();
         if (pitchConfidence < kHarmonicityMinPitchConfidence) continue;
-
         try {
             spectralPeaks->compute();
             if (peakFreqs.empty()) continue; // nothing for HarmonicPeaks to work with
@@ -124,11 +113,17 @@ std::pair<double, int> computeHarmonicity(const std::vector<float>& mono, int sa
         } catch (const essentia::EssentiaException&) {
             continue; // e.g. too few peaks for this frame — skip it, not the whole file
         }
-
-        sum += (1.0 - inharmonicityValue);
-        ++count;
+        harmonicitySum += (1.0 - inharmonicityValue);
+        ++harmonicityCount;
     }
-    return {count > 0 ? sum / count : 0.0, count};
+
+    if (frameCount > 0) {
+        result.centroidHz = centroidSum / frameCount;
+        result.flatness = flatnessSum / frameCount;
+    }
+    result.harmonicity = harmonicityCount > 0 ? harmonicitySum / harmonicityCount : 0.0;
+    result.harmonicityFrameCount = harmonicityCount;
+    return result;
 }
 } // namespace
 
@@ -165,7 +160,7 @@ DspDescriptors computeDspDescriptors(const std::vector<float>& left,
     // --- True peak ---
     {
         auto truePeak = create("TruePeakDetector");
-        truePeak->configure("sampleRate", static_cast<essentia::Real>(sampleRate));
+        truePeak->configure("sampleRate", static_cast<essentia::Real>(sampleRate), "oversamplingFactor", 2);
         std::vector<essentia::Real> output;
         std::vector<essentia::Real> peakLocations;
         truePeak->input("signal").set(monoReal);
@@ -189,13 +184,12 @@ DspDescriptors computeDspDescriptors(const std::vector<float>& left,
         d.crestFactor = crestValue;
     }
 
-    // --- Spectral centroid (Hz) and flatness, frame-averaged ---
-    d.spectralCentroidHz = averageSpectralDescriptor(
-        mono, "Centroid", "centroid", {{"range", essentia::Parameter(sampleRate / 2.0)}});
-    d.spectralFlatness = averageSpectralDescriptor(mono, "Flatness", "flatness");
-
-    // --- Harmonicity (frame-averaged, only over confidently-pitched frames) ---
-    std::tie(d.harmonicity, d.harmonicityFrameCount) = computeHarmonicity(mono, sampleRate);
+    // --- Spectral centroid, flatness, and harmonicity — one shared frame loop ---
+    auto spectral = computeSpectralAverages(mono, sampleRate);
+    d.spectralCentroidHz = spectral.centroidHz;
+    d.spectralFlatness = spectral.flatness;
+    d.harmonicity = spectral.harmonicity;
+    d.harmonicityFrameCount = spectral.harmonicityFrameCount;
 
     // --- Attack time (whole-file envelope; most meaningful on one-shots) ---
     {
