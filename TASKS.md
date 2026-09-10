@@ -127,9 +127,11 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 - [x] Attack time (§5) — whole-file `Envelope` → `LogAttackTime`. Only meaningful for a
       single dominant transient (one-shots); on a multi-onset track/loop the number is
       real but not very informative — documented as a known limitation, not fixed
-- [ ] Loudness-on-stems recorded but never used to flag quiet/thin/faulty (§5) — no
-      caller does any such flagging yet (nothing built that would), so trivially true for
-      now; revisit once `mira inspect` or a similar consumer exists
+- [x] Loudness-on-stems recorded but never used to flag quiet/thin/faulty (§5) —
+      `mira inspect` now exists and displays loudness, and deliberately does not flag a
+      stem's absolute LUFS as low/faulty the way it flags `active_ratio < 0.5` as
+      "mostly silent" — those are different things (a stem mixed relative to its cue can
+      correctly sit at -38 LUFS integrated, PRD §5) and inspect keeps them separate
 - [x] DSP descriptors restricted to active regions only, on stems/long tracks (§5) — see
       "All downstream descriptors/MIR/embedding operate only over active spans" above,
       same change
