@@ -347,24 +347,39 @@ Exit: the Sononym-parity milestone.
       applies elsewhere) — flamenco.wav now scores 0.52, a real 2:06 score cue scores
       0.79. `kContentGateMusicThreshold = 0.45` is a first-pass threshold from these real
       measurements, not a labeled dataset — explicitly flagged for revisiting
-- [ ] `mtg_jamendo_instrument-discogs-effnet-1` head (40 classes) (§2c, §5)
+- [x] `mtg_jamendo_instrument-discogs-effnet-1` head (40 classes) (§2c, §5) —
+      `src/mira/analyze/Instrument.cpp`. Same input/output contract as moodtheme
+      (`model/Placeholder` [1280] → `model/Sigmoid` [40]), which prompted extracting a
+      shared `runClassificationHead()` (`ClassificationHead.cpp`) out of what was
+      moodtheme-only ONNX session boilerplate — three near-identical heads justified the
+      abstraction (the same "don't triple the same work" lesson as the DSP spectral-pass
+      consolidation earlier in Phase 1). Real validation, not just non-crashing: on
+      flamenco.wav (solo classical guitar) top instruments are
+      guitar/classicalguitar/acousticguitar/bass/electricguitar — correctly identifies the
+      actual instrument. Gated the same as moodtheme (ContentGate's `is_music`, 3ms cost)
 - [x] `mtg_jamendo_moodtheme-discogs-effnet-1` head (56 classes) — already downloaded in
-      Phase 0 spikes (§2c, §5). `src/mira/analyze/MoodTheme.cpp`, gated only on
-      ContentGate's `is_music` signal, not on router content_type at all — "Music heads
-      must only run on music" (§2c), same honesty principle as the harmonicity gate for
-      key/chords, just using a real content classifier instead of a DSP proxy. Known,
-      documented simplification: feeds the single whole-file mean-pooled embedding through
-      the head once, rather than running per-patch and averaging *sigmoid outputs* (MTG's
-      own reference pipeline does the latter — averaging before vs. after a nonlinearity
-      are not equivalent). Verified sensible, not just non-crashing, against two real
-      files: a "Dance"-titled score cue scores highest on happy/corporate/uplifting/
-      positive/energetic; label names are raw MTG-Jamendo strings for now (the
-      versioned-YAML normalisation below is separately scoped, not done here)
+      Phase 0 spikes (§2c, §5). `src/mira/analyze/MoodTheme.cpp`, now built on the shared
+      `runClassificationHead()` (see instrument entry above), gated only on ContentGate's
+      `is_music` signal, not on router content_type at all — "Music heads must only run on
+      music" (§2c), same honesty principle as the harmonicity gate for key/chords, just
+      using a real content classifier instead of a DSP proxy. Known, documented
+      simplification: feeds the single whole-file mean-pooled embedding through the head
+      once, rather than running per-patch and averaging *sigmoid outputs* (MTG's own
+      reference pipeline does the latter — averaging before vs. after a nonlinearity are
+      not equivalent). Verified sensible, not just non-crashing, against two real files: a
+      "Dance"-titled score cue scores highest on happy/corporate/uplifting/positive/
+      energetic; label names are raw MTG-Jamendo strings for now (the versioned-YAML
+      normalisation below is separately scoped, not done here)
 - [ ] `genre_discogs400-discogs-effnet-1` head (400 classes) — needs `tf2onnx`
       conversion in `lab/` first, no ONNX published (§2c, §16.3)
 - [ ] `voice_instrumental-discogs-effnet-1` head — needs `tf2onnx` conversion, no ONNX
       at all published (§2c, §16.3)
-- [ ] `danceability-discogs-effnet-1` head (§2c, §5)
+- [x] `danceability-discogs-effnet-1` head (§2c, §5) — `src/mira/analyze/Danceability.cpp`,
+      stored as `danceability_head.danceable_probability` (distinct JSON key from
+      `rhythm.danceability`, Essentia's existing DSP-based `Danceability` algorithm — a
+      second opinion, not a duplicate; `mira inspect` shows both, labeled). Verified
+      against real files: flamenco.wav (solo guitar) scores 0.01, the real "Dance"-titled
+      score cue scores 0.60 — correctly separated
 - [ ] Label normalisation as versioned YAML data files, not code (§5)
 - [ ] Label normalisation regression tests; both `raw` and `label` stored (§5)
 - [ ] Embedding store in `sqlite-vec` (float32[1280] per file) wired into the schema

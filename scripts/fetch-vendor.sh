@@ -139,6 +139,8 @@ clone_if_missing kissfft https://github.com/mborgerding/kissfft.git
 MODELS="$ROOT/models"
 mkdir -p "$MODELS/feature-extractors/discogs-effnet" \
          "$MODELS/classification-heads/mtg_jamendo_moodtheme" \
+         "$MODELS/classification-heads/mtg_jamendo_instrument" \
+         "$MODELS/classification-heads/danceability" \
          "$MODELS/content-gate/ced-small"
 
 fetch_if_missing() {
@@ -165,6 +167,21 @@ fetch_if_missing "$MODELS/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo
   "$MOODTHEME_BASE/mtg_jamendo_moodtheme-discogs-effnet-1.onnx"
 fetch_if_missing "$MODELS/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json" \
   "$MOODTHEME_BASE/mtg_jamendo_moodtheme-discogs-effnet-1.json"
+
+# mtg_jamendo_instrument — same input/output contract as moodtheme (PRD §2c).
+INSTRUMENT_BASE="https://essentia.upf.edu/models/classification-heads/mtg_jamendo_instrument"
+fetch_if_missing "$MODELS/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.onnx" \
+  "$INSTRUMENT_BASE/mtg_jamendo_instrument-discogs-effnet-1.onnx"
+fetch_if_missing "$MODELS/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.json" \
+  "$INSTRUMENT_BASE/mtg_jamendo_instrument-discogs-effnet-1.json"
+
+# danceability — binary [danceable, not_danceable] softmax (PRD §2c). Distinct from
+# Essentia's own DSP-based Danceability algorithm already used in Mir.cpp.
+DANCEABILITY_BASE="https://essentia.upf.edu/models/classification-heads/danceability"
+fetch_if_missing "$MODELS/classification-heads/danceability/danceability-discogs-effnet-1.onnx" \
+  "$DANCEABILITY_BASE/danceability-discogs-effnet-1.onnx"
+fetch_if_missing "$MODELS/classification-heads/danceability/danceability-discogs-effnet-1.json" \
+  "$DANCEABILITY_BASE/danceability-discogs-effnet-1.json"
 
 # CED-small — content gate, "is this even music?" (PRD §2c). Not from essentia.upf.edu
 # like the two above — from k2-fsa/sherpa-onnx's own release, converted from

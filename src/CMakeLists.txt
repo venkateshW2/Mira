@@ -72,6 +72,12 @@ endif()
 if(NOT EXISTS ${MODELS_ROOT}/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx)
   message(FATAL_ERROR "mtg_jamendo_moodtheme model not found — run scripts/fetch-vendor.sh")
 endif()
+if(NOT EXISTS ${MODELS_ROOT}/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.onnx)
+  message(FATAL_ERROR "mtg_jamendo_instrument model not found — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${MODELS_ROOT}/classification-heads/danceability/danceability-discogs-effnet-1.onnx)
+  message(FATAL_ERROR "danceability model not found — run scripts/fetch-vendor.sh")
+endif()
 if(NOT EXISTS ${MODELS_ROOT}/content-gate/ced-small/model.onnx)
   message(FATAL_ERROR "CED-small model not found — run scripts/fetch-vendor.sh")
 endif()
@@ -198,7 +204,10 @@ add_executable(mira
   mira/analyze/Transcription.cpp
   mira/analyze/Embedding.cpp
   mira/analyze/ContentGate.cpp
+  mira/analyze/ClassificationHead.cpp
   mira/analyze/MoodTheme.cpp
+  mira/analyze/Instrument.cpp
+  mira/analyze/Danceability.cpp
 )
 
 target_include_directories(mira PRIVATE
@@ -214,6 +223,8 @@ target_compile_definitions(mira PRIVATE
   MIRA_BASIC_PITCH_MODEL="${BASICPITCH_ROOT}/ort-model/model.onnx"
   MIRA_EFFNET_MODEL="${MODELS_ROOT}/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx"
   MIRA_MOODTHEME_MODEL="${MODELS_ROOT}/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx"
+  MIRA_INSTRUMENT_MODEL="${MODELS_ROOT}/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.onnx"
+  MIRA_DANCEABILITY_MODEL="${MODELS_ROOT}/classification-heads/danceability/danceability-discogs-effnet-1.onnx"
   MIRA_CED_MODEL="${MODELS_ROOT}/content-gate/ced-small/model.onnx"
   # Captured at configure time, not build time — re-run cmake to refresh after new
   # commits if you care about this being exact; "close enough" for a dev build.

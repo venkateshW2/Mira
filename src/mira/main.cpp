@@ -9,6 +9,9 @@
 #include "analyze/Mir.h"
 #include "analyze/MoodTheme.h"
 #include "analyze/MoodThemeLabels.h"
+#include "analyze/Instrument.h"
+#include "analyze/InstrumentLabels.h"
+#include "analyze/Danceability.h"
 #include "analyze/Router.h"
 #include "analyze/Transcription.h"
 #include "db/Database.h"
@@ -383,6 +386,14 @@ int runAnalyze(const std::vector<std::string>& args) {
                 auto moodTheme = mira::classifyMoodTheme(embedding.vector, MIRA_MOODTHEME_MODEL);
                 if (moodTheme.ok) machine << ",\"moodtheme\":" << mira::toJson(moodTheme);
                 timer.mark("moodtheme (mtg_jamendo_moodtheme)");
+
+                auto instrument = mira::classifyInstrument(embedding.vector, MIRA_INSTRUMENT_MODEL);
+                if (instrument.ok) machine << ",\"instrument\":" << mira::toJson(instrument);
+                timer.mark("instrument (mtg_jamendo_instrument)");
+
+                auto danceabilityHead = mira::classifyDanceability(embedding.vector, MIRA_DANCEABILITY_MODEL);
+                if (danceabilityHead.ok) machine << ",\"danceability_head\":" << mira::toJson(danceabilityHead);
+                timer.mark("danceability head (model-based)");
             }
 
             // MIR (PRD §5B) — loops/tracks/stems only. Tempo on a 300ms one-shot is
@@ -572,6 +583,26 @@ int runInspect(const std::vector<std::string>& args) {
             std::cout << scored[i].first << " (" << scored[i].second << ")";
         }
         std::cout << "\n";
+    }
+    if (auto sample = db.jsonExtractDouble(r.machine, "$.instrument.piano")) {
+        (void)sample; // presence check only — same object-keyed-by-label-name shape as moodtheme
+        std::vector<std::pair<std::string, double>> scored;
+        for (int i = 0; i < mira::kInstrumentClassCount; ++i) {
+            std::string path = std::string("$.instrument.") + mira::kInstrumentClassNames[i];
+            if (auto score = db.jsonExtractDouble(r.machine, path))
+                scored.emplace_back(mira::kInstrumentClassNames[i], *score);
+        }
+        std::sort(scored.begin(), scored.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::cout << "  instruments:   ";
+        for (size_t i = 0; i < scored.size() && i < 5; ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << scored[i].first << " (" << scored[i].second << ")";
+        }
+        std::cout << "\n";
+    }
+    if (auto danceableProb = db.jsonExtractDouble(r.machine, "$.danceability_head.danceable_probability")) {
+        std::cout << "  danceable:     " << *danceableProb << " (model-based; see also DSP danceability below)\n";
     }
 
     // These numeric rhythm fields are always serialized (default 0.0 when unmeasured,
