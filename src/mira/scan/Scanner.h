@@ -21,6 +21,7 @@ struct ScanStats {
     int64_t filesUpdated = 0;
     int64_t filesUnchanged = 0;
     int64_t filesSkippedUnsupported = 0;
+    int64_t filesSkippedAppleDouble = 0;
 };
 
 // Indexes audio files under `options.roots` into `db` — path, sha256, mtime, size.
@@ -31,6 +32,14 @@ ScanStats scan(Database& db, const ScanOptions& options);
 // True if the extension (checked case-insensitively) is one of the formats mira's
 // eventual JUCE-based decoder will read (PRD §7): wav, aiff/aif, flac, ogg, mp3, m4a, caf.
 bool hasSupportedAudioExtension(const std::string& path);
+
+// True if the filename is a macOS AppleDouble sidecar ("._Foo.wav") — metadata resource
+// forks macOS writes onto filesystems that can't store them natively (exFAT, network
+// shares, many external drives). They carry the real file's extension, so they'd
+// otherwise pass hasSupportedAudioExtension and get indexed as if they were audio; found
+// by testing against a real exFAT stem-delivery drive, where they outnumbered the real
+// files 1:1 in every folder.
+bool isAppleDoubleSidecar(const std::string& path);
 
 // Streams the file and returns its SHA-256 as a lowercase hex string.
 std::string sha256File(const std::string& path);

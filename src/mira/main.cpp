@@ -92,7 +92,10 @@ int runScan(const std::vector<std::string>& args) {
                << "(" << stats.filesNew << " new, "
                << stats.filesUpdated << " updated, "
                << stats.filesUnchanged << " unchanged), "
-               << stats.filesSkippedUnsupported << " non-audio files skipped" << std::endl;
+               << stats.filesSkippedUnsupported << " non-audio files skipped";
+    if (stats.filesSkippedAppleDouble > 0)
+        std::cout << ", " << stats.filesSkippedAppleDouble << " macOS AppleDouble sidecars skipped";
+    std::cout << std::endl;
     if (options.declareAsStem)
         std::cout << "all scanned files declared as stems (content_type_source=declared)"
                    << std::endl;

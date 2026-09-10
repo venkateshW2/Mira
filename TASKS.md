@@ -52,6 +52,12 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 - [x] `mira scan <dir>...` — walk, hash (sha256 via CommonCrypto), record mtime/size,
       upsert rows, no analysis yet (§8) — `src/mira/scan/Scanner.cpp`, skips re-hashing
       when mtime is unchanged
+- [x] Skip macOS AppleDouble sidecar files (`._Foo.wav`) — found on a real exFAT
+      stem-delivery drive (first real-world test of the whole pipeline): every real
+      `.wav` had a same-named `._` resource-fork sidecar next to it, which passed the
+      extension check and got scanned as audio, only to fail to decode at `analyze`
+      time. `isAppleDoubleSidecar` in `Scanner.cpp`; reported separately in scan output
+      from "non-audio files skipped" so it's clear what's being excluded and why
 - [x] `mira scan <dir> --as stem` — route 3, declaration always overrides detection (§8,
       §12.3) — always excluded from routing, verified by smoke test
 - [ ] Content-type router (partial — see note): one-shot / loop / track / stem, via duration + onset density +

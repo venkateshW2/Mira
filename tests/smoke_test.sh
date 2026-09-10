@@ -123,6 +123,23 @@ assert_eq "identical content hashes identically" "$SHA256" "$SHA256_COPY"
 rm -rf "$DUP_DIR" "$DUPTESTDB" "$DUPTESTDB-wal" "$DUPTESTDB-shm"
 
 echo
+echo "== test: macOS AppleDouble sidecars (._Foo.wav) are not indexed as audio =="
+# Found on a real exFAT stem-delivery drive: every real .wav had a same-named ._.wav
+# resource-fork sidecar sitting next to it, which passed the extension check and got
+# scanned as if it were audio, only to fail to decode later at analyze time.
+APPLEDOUBLE_DIR=$(mktemp -d)
+cp "$ROOT/fixtures/flamenco.wav" "$APPLEDOUBLE_DIR/real.wav"
+printf '\x00\x05\x16\x07\x00\x02\x00\x00' > "$APPLEDOUBLE_DIR/._real.wav" # fake AppleDouble header
+APPLEDOUBLE_DB="$(mktemp -t mira_smoke_appledouble_XXXXXX).db"
+OUT=$("$MIRA" scan "$APPLEDOUBLE_DIR" --db "$APPLEDOUBLE_DB" 2>&1)
+assert_contains "reports 1 real audio file" "$OUT" "1 new"
+assert_contains "reports the sidecar as skipped, not scanned" "$OUT" "1 macOS AppleDouble sidecars skipped"
+FILE_COUNT=$(sqlite3 "$APPLEDOUBLE_DB" "SELECT COUNT(*) FROM files")
+assert_eq "only the real file made it into the database" "1" "$FILE_COUNT"
+rm -rf "$APPLEDOUBLE_DIR"
+rm -f "$APPLEDOUBLE_DB" "$APPLEDOUBLE_DB-wal" "$APPLEDOUBLE_DB-shm"
+
+echo
 echo "== test: analyze routes a file by duration (flamenco.wav -> loop, 14.2s) =="
 "$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1
 OUT=$("$MIRA" analyze --db "$TESTDB" 2>&1)

@@ -37,6 +37,11 @@ bool hasSupportedAudioExtension(const std::string& path) {
     return kSupportedExtensions.count(toLower(fs::path(path).extension().string())) > 0;
 }
 
+bool isAppleDoubleSidecar(const std::string& path) {
+    std::string filename = fs::path(path).filename().string();
+    return filename.size() >= 2 && filename[0] == '.' && filename[1] == '_';
+}
+
 std::string sha256File(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) return "";
@@ -84,6 +89,10 @@ ScanStats scan(Database& db, const ScanOptions& options) {
             if (!entry.is_regular_file(ec)) continue;
 
             const std::string path = entry.path().string();
+            if (isAppleDoubleSidecar(path)) {
+                stats.filesSkippedAppleDouble++;
+                continue;
+            }
             if (!hasSupportedAudioExtension(path)) {
                 stats.filesSkippedUnsupported++;
                 continue;
