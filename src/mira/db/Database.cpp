@@ -131,6 +131,33 @@ std::vector<FileRecord> Database::findFilesForAnalysis(bool force) {
     return results;
 }
 
+std::optional<std::string> Database::jsonExtractString(const std::string& json,
+                                                         const std::string& path) {
+    SQLite::Statement q(db, "SELECT json_extract(?, ?)");
+    q.bind(1, json);
+    q.bind(2, path);
+    if (!q.executeStep() || q.getColumn(0).isNull()) return std::nullopt;
+    return q.getColumn(0).getString();
+}
+
+std::optional<double> Database::jsonExtractDouble(const std::string& json,
+                                                    const std::string& path) {
+    SQLite::Statement q(db, "SELECT json_extract(?, ?)");
+    q.bind(1, json);
+    q.bind(2, path);
+    if (!q.executeStep() || q.getColumn(0).isNull()) return std::nullopt;
+    return q.getColumn(0).getDouble();
+}
+
+std::optional<int64_t> Database::jsonArrayLength(const std::string& json,
+                                                   const std::string& path) {
+    SQLite::Statement q(db, "SELECT json_array_length(?, ?)");
+    q.bind(1, json);
+    q.bind(2, path);
+    if (!q.executeStep() || q.getColumn(0).isNull()) return std::nullopt;
+    return q.getColumn(0).getInt64();
+}
+
 void Database::applyAnalysis(const AnalysisUpdate& update) {
     SQLite::Statement stmt(db,
         "UPDATE files SET "

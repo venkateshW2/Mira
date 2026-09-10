@@ -33,6 +33,16 @@ assert_eq() {
 cleanup() { rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"; }
 trap cleanup EXIT
 
+# macOS has no `timeout` builtin. Runs "$@", killing it after $1 seconds if still alive.
+run_with_timeout() {
+    local secs="$1"; shift
+    "$@" & local pid=$!
+    ( sleep "$secs" && kill -9 "$pid" 2>/dev/null ) & local watchdog=$!
+    wait "$pid" 2>/dev/null; local code=$?
+    kill "$watchdog" 2>/dev/null
+    return $code
+}
+
 echo "== building mira =="
 if ! cmake --build "$BUILD_DIR" --target mira 2>&1 | tail -20; then
     echo "BUILD FAILED — fix compile errors before running the smoke test"
@@ -206,6 +216,29 @@ else
 fi
 
 echo
+echo "== test: transcription of a file with zero notes doesn't hang (regression) =="
+# Found by this suite: drop_overlapping_pitch_bends did `for (size_t i = 0; i < note_events.size() - 1; ...)`
+# — size_t underflow to SIZE_MAX when note_events is empty, turning "no notes" (the
+# common case on truly silent material) into a multi-billion-iteration hang. Random white
+# noise sometimes finds zero notes and sometimes finds one or two, so the bug didn't fire
+# every run — pure digital silence should reliably produce zero, pinning it deterministically.
+if command -v ffmpeg >/dev/null 2>&1; then
+    SILENT_DIR=$(mktemp -d)
+    ffmpeg -y -loglevel error -f lavfi -i "anullsrc=r=44100:cl=mono:d=5" "$SILENT_DIR/silence.wav"
+    SILENT_DB="$(mktemp -t mira_smoke_silentnotes_XXXXXX).db"
+    "$MIRA" scan "$SILENT_DIR" --db "$SILENT_DB" >/dev/null 2>&1
+    if run_with_timeout 15 "$MIRA" analyze --db "$SILENT_DB" >/dev/null 2>&1; then
+        pass "analyze finished within 15s on a silent (zero-note) file"
+    else
+        fail "analyze did not finish within 15s on a silent file — the size_t underflow hang is back"
+    fi
+    rm -rf "$SILENT_DIR"
+    rm -f "$SILENT_DB" "$SILENT_DB-wal" "$SILENT_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping zero-notes hang regression test"
+fi
+
+echo
 echo "== test: MIR is skipped for one-shots (tempo on a 0.5s clip is meaningless) =="
 if command -v ffmpeg >/dev/null 2>&1; then
     ONESHOT_DIR=$(mktemp -d)
@@ -346,6 +379,37 @@ if command -v ffmpeg >/dev/null 2>&1; then
 else
     echo "  SKIP: ffmpeg not found, skipping DSP descriptor sanity test"
 fi
+
+echo
+echo "== test: mira inspect =="
+rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
+"$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$TESTDB" >/dev/null 2>&1
+OUT=$("$MIRA" inspect "$ROOT/fixtures/flamenco.wav" --db "$TESTDB" 2>&1)
+CODE=$?
+assert_eq "exit code" "0" "$CODE"
+assert_contains "shows content_type" "$OUT" "content_type:  loop"
+assert_contains "shows duration" "$OUT" "duration:"
+assert_contains "shows DSP section" "$OUT" "DSP:"
+assert_contains "shows rhythm section" "$OUT" "Rhythm:"
+assert_contains "flags the essentia/beat_this tempo disagreement" "$OUT" "estimators disagree"
+assert_contains "shows key" "$OUT" "Key:"
+assert_contains "shows chord segment count" "$OUT" "Chords:"
+assert_contains "shows transcribed note count" "$OUT" "Notes:"
+
+OUT_BY_ID=$("$MIRA" inspect 1 --db "$TESTDB" 2>&1)
+assert_eq "inspecting by numeric id matches inspecting by path" "$OUT" "$OUT_BY_ID"
+
+OUT_MISSING=$("$MIRA" inspect no-such-file.wav --db "$TESTDB" 2>&1)
+CODE_MISSING=$?
+if [[ "$CODE_MISSING" != "0" ]]; then pass "exit code non-zero for a file not in the library ($CODE_MISSING)"
+else fail "expected non-zero exit code for a missing file, got 0"; fi
+
+NOTYET_DB="$(mktemp -t mira_smoke_notyet_XXXXXX).db"
+"$MIRA" scan "$ROOT/fixtures" --db "$NOTYET_DB" >/dev/null 2>&1
+OUT_NOTYET=$("$MIRA" inspect "$ROOT/fixtures/flamenco.wav" --db "$NOTYET_DB" 2>&1)
+assert_contains "scanned-but-not-analyzed file says so rather than crashing" "$OUT_NOTYET" "not yet analyzed"
+rm -f "$NOTYET_DB" "$NOTYET_DB-wal" "$NOTYET_DB-shm"
 
 echo
 echo "======================================"

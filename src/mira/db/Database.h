@@ -70,6 +70,13 @@ public:
     };
     void applyAnalysis(const AnalysisUpdate& update);
 
+    // Small JSON helpers for reading `machine` (mira inspect's job) — mira has no C++
+    // JSON parser vendored (kept off the dependency list deliberately), so these lean on
+    // SQLite's own json_extract/json_array_length instead of parsing in C++.
+    std::optional<std::string> jsonExtractString(const std::string& json, const std::string& path);
+    std::optional<double> jsonExtractDouble(const std::string& json, const std::string& path);
+    std::optional<int64_t> jsonArrayLength(const std::string& json, const std::string& path);
+
 private:
     void migrate();
 

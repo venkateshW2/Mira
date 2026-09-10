@@ -267,7 +267,12 @@ drop_overlapping_pitch_bends(std::vector<basic_pitch::NoteEvent> &note_events)
     // Sort by start time
     std::sort(note_events.begin(), note_events.end());
 
-    for (size_t i = 0; i < note_events.size() - 1; ++i)
+    // `note_events.size() - 1` on an empty (size_t) vector underflows to SIZE_MAX rather
+    // than going negative — turning "no notes" (the common case on non-tonal/noisy
+    // material, since transcription runs unconditionally, not gated like key/chords)
+    // into a multi-billion-iteration hang. Bug in the upstream code this was adapted
+    // from (github.com/sevagh/basicpitch.cpp); fixed here as `i + 1 < size()` instead.
+    for (size_t i = 0; i + 1 < note_events.size(); ++i)
     {
         for (size_t j = i + 1; j < note_events.size(); ++j)
         {

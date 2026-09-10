@@ -170,16 +170,28 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       PRD suggests before treating this as ground truth, which hasn't been done yet
 
 **CLI**
-- [ ] `mira analyze` — idempotent, resumable (skip unchanged sha256 + model version),
-      `--limit`, `--content-type`, `--force`, `--resume` (§8)
-- [ ] `mira inspect <file|id>` — human-readable report, surfaces low-confidence
-      tempo/key rather than hiding it, reports `active_ratio` (§8)
+- [ ] `mira analyze` (partial) — idempotent and resumable via `analyzed_at IS NULL` +
+      `--force` (§8); `--limit` and `--content-type` filters not implemented, `--resume`
+      is implicit (re-running without `--force` already only processes unanalyzed rows)
+      rather than an explicit flag
+- [x] `mira inspect <file|id>` — human-readable report, surfaces low-confidence
+      tempo/key rather than hiding it, reports `active_ratio` (§8) — `runInspect` in
+      `main.cpp`, reads `machine` via SQLite's `json_extract`/`json_array_length` rather
+      than a C++ JSON parser (none vendored). Flags tempo disagreement (`bpm_ratio` far
+      from 1.0) inline rather than hiding it, matches PRD's example exactly. Handles
+      "not yet analyzed" and "not found" without crashing
 
 **Fixtures + tests**
 - [ ] Fixture clips covering one-shot / loop / track / stem, incl. a mostly-silent stem
-      and non-tonal material (§9 Phase 0 skeleton, carried into Phase 1)
-- [ ] Content-type router regression tests
-- [ ] Numerical-parity tests for the DSP/MIR path, extending `lab/`'s harness pattern
+      and non-tonal material (§9 Phase 0 skeleton, carried into Phase 1) — only
+      `fixtures/flamenco.wav` is checked in; the rest of this section's coverage comes
+      from `tests/smoke_test.sh` synthesizing fixtures on the fly with `ffmpeg` (sine
+      tones, silence, white noise) rather than committing more binary files
+- [x] Content-type router regression tests — informally, via `tests/smoke_test.sh`
+      (72 assertions as of this commit), not a dedicated test binary
+- [ ] Numerical-parity tests for the DSP/MIR path, extending `lab/`'s harness pattern —
+      `lab/`'s harness only covers the Phase 0 ONNX embedding path so far, not any of
+      Phase 1's DSP/MIR work
 
 ---
 

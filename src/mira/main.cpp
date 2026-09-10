@@ -10,9 +10,12 @@
 #include "db/Database.h"
 #include "scan/Scanner.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -45,8 +48,10 @@ void printUsage() {
         "        index files, no analysis; --as stem declares them delivery stems (§12.3)\n"
         "  mira analyze [--db <path>] [--force]\n"
         "        content-type router (one_shot/loop/track/stem) over scanned files\n"
+        "  mira inspect <file|id> [--db <path>]\n"
+        "        human-readable report; flags low-confidence tempo/key, active_ratio\n"
         "\n"
-        "Not yet implemented: similar, search, inspect, models, stats (see TASKS.md)\n";
+        "Not yet implemented: similar, search, models, stats (see TASKS.md)\n";
 }
 
 int runScan(const std::vector<std::string>& args) {
@@ -279,6 +284,136 @@ int runAnalyze(const std::vector<std::string>& args) {
     return 0;
 }
 
+// PRD §8: "human-readable report, flags low-confidence fields... surfaces low-confidence
+// tempo/key rather than hiding it, and reports active_ratio so a mostly-silent stem is
+// visibly mostly silent." Reads `machine` via SQLite's json_extract (Database's small
+// JSON helpers) rather than a C++ JSON parser — mira doesn't vendor one.
+int runInspect(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    std::vector<std::string> positional;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+        else positional.push_back(args[i]);
+    }
+
+    if (positional.empty()) {
+        std::cerr << "mira inspect: a file path or numeric id is required" << std::endl;
+        return 1;
+    }
+    const std::string& target = positional[0];
+
+    mira::Database db(dbPath);
+
+    std::optional<mira::FileRecord> record;
+    bool isNumeric = !target.empty() &&
+                      std::all_of(target.begin(), target.end(), [](unsigned char c) { return std::isdigit(c); });
+    if (isNumeric) record = db.findById(std::stoll(target));
+    if (!record) record = db.findByPath(target);
+
+    if (!record) {
+        std::cerr << "mira inspect: no file found for '" << target << "'" << std::endl;
+        return 1;
+    }
+
+    const auto& r = *record;
+    std::cout << std::fixed << std::setprecision(2);
+
+    std::cout << "path:          " << r.path << "\n";
+    std::cout << "content_type:  " << r.contentType << " (" << r.contentTypeSource << ")\n";
+    std::cout << "sha256:        " << r.sha256 << "\n";
+
+    auto duration = db.jsonExtractDouble(r.machine, "$.duration_seconds");
+    if (duration) {
+        std::cout << "duration:      " << *duration << "s";
+        if (auto sr = db.jsonExtractDouble(r.machine, "$.sample_rate"))
+            std::cout << "   sample_rate: " << static_cast<int>(*sr) << " Hz";
+        if (auto ch = db.jsonExtractDouble(r.machine, "$.num_channels"))
+            std::cout << "   channels: " << static_cast<int>(*ch);
+        std::cout << "\n";
+    } else {
+        std::cout << "duration:      not yet analyzed (run `mira analyze`)\n";
+        return 0;
+    }
+
+    if (r.activeRatio) {
+        std::cout << "active_ratio:  " << *r.activeRatio;
+        if (*r.activeRatio < 0.5) std::cout << "  ⚠ mostly silent";
+        std::cout << "\n";
+    } else {
+        std::cout << "active_ratio:  not computed (only tracked for stems, or files over 5 min — PRD §5)\n";
+    }
+
+    if (auto lufs = db.jsonExtractDouble(r.machine, "$.dsp.integrated_loudness_lufs")) {
+        std::cout << "\nDSP:\n  loudness:      " << *lufs << " LUFS";
+        if (auto lra = db.jsonExtractDouble(r.machine, "$.dsp.loudness_range_lu"))
+            std::cout << "   range " << *lra << " LU";
+        if (auto peak = db.jsonExtractDouble(r.machine, "$.dsp.true_peak_db"))
+            std::cout << "   true peak " << *peak << " dB";
+        std::cout << "\n";
+        if (auto crest = db.jsonExtractDouble(r.machine, "$.dsp.crest_factor"))
+            std::cout << "  crest factor:  " << *crest << "\n";
+        auto centroid = db.jsonExtractDouble(r.machine, "$.dsp.spectral_centroid_hz");
+        auto flatness = db.jsonExtractDouble(r.machine, "$.dsp.spectral_flatness");
+        if (centroid || flatness) {
+            std::cout << "  spectral:      ";
+            if (centroid) std::cout << "centroid " << *centroid << " Hz (brightness)";
+            if (flatness)
+                std::cout << "   flatness " << *flatness << (*flatness > 0.3 ? " (noisy)" : " (tonal)");
+            std::cout << "\n";
+        }
+        if (auto attack = db.jsonExtractDouble(r.machine, "$.dsp.attack_time_seconds"))
+            std::cout << "  attack time:   " << *attack << "s\n";
+    }
+
+    auto essentiaBpm = db.jsonExtractDouble(r.machine, "$.rhythm.essentia_bpm");
+    if (essentiaBpm) {
+        std::cout << "\nRhythm:\n  essentia:      " << *essentiaBpm << " BPM";
+        if (auto conf = db.jsonExtractDouble(r.machine, "$.rhythm.essentia_confidence"))
+            std::cout << "  (confidence " << *conf << ")";
+        std::cout << "\n";
+        if (auto beatThisBpm = db.jsonExtractDouble(r.machine, "$.rhythm.beat_this_bpm"))
+            std::cout << "  beat_this:     " << *beatThisBpm << " BPM\n";
+        if (auto ratio = db.jsonExtractDouble(r.machine, "$.rhythm.bpm_ratio")) {
+            if (std::abs(*ratio - 1.0) > 0.05) {
+                std::cout << std::setprecision(3)
+                           << "  ⚠ estimators disagree (ratio " << *ratio
+                           << ") — treat both with caution (PRD §14.1)\n"
+                           << std::setprecision(2);
+            }
+        }
+        if (auto dance = db.jsonExtractDouble(r.machine, "$.rhythm.danceability"))
+            std::cout << "  danceability:  " << *dance << "\n";
+    } else if (r.contentType == "one_shot") {
+        std::cout << "\nRhythm: not analyzed (one-shots are skipped — tempo on a short clip is meaningless)\n";
+    }
+
+    if (auto keyName = db.jsonExtractString(r.machine, "$.key.key")) {
+        std::cout << "\nKey:    " << *keyName;
+        auto camelot = db.jsonExtractString(r.machine, "$.key.camelot");
+        auto openKey = db.jsonExtractString(r.machine, "$.key.open_key");
+        if (camelot || openKey) {
+            std::cout << "   (";
+            if (camelot) std::cout << "Camelot " << *camelot;
+            if (camelot && openKey) std::cout << ", ";
+            if (openKey) std::cout << "Open Key " << *openKey;
+            std::cout << ")";
+        }
+        std::cout << "\n";
+    } else if (essentiaBpm) {
+        std::cout << "\nKey:    not analyzed (gated on harmonic content — likely noisy/non-tonal)\n";
+    }
+
+    if (auto chordCount = db.jsonArrayLength(r.machine, "$.chords"))
+        std::cout << "Chords: " << *chordCount << " segments\n";
+    if (auto noteCount = db.jsonArrayLength(r.machine, "$.notes"))
+        std::cout << "Notes:  " << *noteCount << " transcribed\n";
+
+    if (r.human != "{}") std::cout << "\nhuman overrides: " << r.human << "\n";
+
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -297,6 +432,9 @@ int main(int argc, char* argv[]) {
     }
     if (command == "analyze") {
         return runAnalyze(rest);
+    }
+    if (command == "inspect") {
+        return runInspect(rest);
     }
 
     std::cerr << "mira: unknown command '" << command << "'\n\n";
