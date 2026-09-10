@@ -161,11 +161,23 @@ if command -v ffmpeg >/dev/null 2>&1; then
     else
         pass "white noise correctly gated out of key detection"
     fi
+    if [[ "$MACHINE_NOISE" == *"\"chords\":["* ]]; then
+        fail "white noise should NOT get a chords section (harmonic-content gate), but does"
+    else
+        pass "white noise correctly gated out of chord detection"
+    fi
     rm -rf "$NOISE_DIR"
     rm -f "$NOISE_DB" "$NOISE_DB-wal" "$NOISE_DB-shm"
 else
-    echo "  SKIP: ffmpeg not found, skipping key-detection gating test"
+    echo "  SKIP: ffmpeg not found, skipping key/chord-detection gating test"
 fi
+
+echo
+echo "== test: chord detection (Chordino) runs alongside key on tonal content =="
+assert_contains "machine JSON has a chords array" "$MACHINE" "\"chords\":["
+CHORD_COUNT=$(echo "$MACHINE" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["chords"]))')
+assert_eq "found a plausible number of chord segments (>3)" "yes" \
+    "$(awk -v n="$CHORD_COUNT" 'BEGIN{print (n>3) ? "yes" : "no"}')"
 
 echo
 echo "== test: MIR is skipped for one-shots (tempo on a 0.5s clip is meaningless) =="

@@ -128,8 +128,22 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       used as a proxy — threshold 0.3, documented as an unmeasured first guess. Verified
       the gate actually works: white noise (flatness 0.84) correctly gets no key section;
       flamenco.wav (flatness 0.06) gets one ("F minor")
-- [ ] Vendor + wire in `Chordino`/`NNLS-Chroma` for chord sequence, gated on harmonic
-      content (§5, §12b)
+- [x] Vendor + wire in `Chordino`/`NNLS-Chroma` for chord sequence, gated on harmonic
+      content (§5, §12b) — `src/mira/analyze/Chords.cpp`. Harder integration than key
+      detection: Chordino is a `Vamp::Plugin` (its native interface, not something with a
+      simple function call), and it declares `FrequencyDomain` input, so it needs
+      `vamp-hostsdk`'s `PluginInputDomainAdapter` (FFT framing) and
+      `PluginBufferingAdapter` (block-size negotiation) in front of it — essentia's
+      vendored vamp SDK copy only has the plugin-side headers, not these host-side
+      adapters, so a second, complete `vamp-plugin-sdk` clone was needed. Two real bugs
+      found and fixed along the way: upstream's `CMakeLists.txt` has the same
+      option-guard-doesn't-actually-guard-the-block bug seen in `beat_this_cpp`'s and
+      essentia's builds now three times; and a double-free crash (SIGSEGV) in mira's own
+      code — Vamp's `PluginWrapper` destructor deletes the plugin it wraps, so wrapping
+      each layer (`Chordino`, `PluginInputDomainAdapter`, `PluginBufferingAdapter`) in
+      its own `unique_ptr` deleted the inner ones twice. Fixed by only owning the
+      outermost adapter. Verified on flamenco.wav: 10 chord segments (Cm, F/G, C#, C,
+      Eb7/G...), gated off correctly for white noise same as key detection
 - [ ] Basic Pitch (`nmp.onnx`) note transcription via ONNX Runtime (§5, §12b)
 - [x] Camelot/Open Key notation lookup table (§12b) — two independent direct lookups
       from libKeyFinder's 24-key enum via the circle of fifths, rather than converting

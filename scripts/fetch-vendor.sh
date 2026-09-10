@@ -91,8 +91,22 @@ fi
 # check, see TASKS.md) — gated on harmonic content via a spectral-flatness proxy.
 clone_if_missing libkeyfinder https://github.com/mixxxdj/libkeyfinder.git
 
-# Phase 1 — chords (PRD §12b). Not started yet.
-# clone_if_missing chordino https://github.com/ohollo/chord-extractor.git
+# Phase 1 — chords (PRD §7, §12b). nnls-chroma has no CMakeLists.txt (plain Makefile
+# project); built directly in src/CMakeLists.txt. Needs vamp-plugin-sdk (below) too —
+# ohollo/chord-extractor, an earlier guess at this dependency, is a Python wrapper, not
+# usable from C++; the actual source is Mauch & Dixon's own repo.
+clone_if_missing nnls-chroma https://github.com/c4dm/nnls-chroma.git
+
+# Chordino's own Vamp::Plugin interface needs vamp-hostsdk's PluginInputDomainAdapter to
+# get the FFT framing right (it declares FrequencyDomain input, not TimeDomain) and
+# PluginBufferingAdapter for block-size negotiation — essentia's vendored copy only has
+# the plugin-side SDK, not the host-side adapters, so this is a separate, complete copy.
+# One local patch needed: its CMakeLists.txt has an example-plugins properties block
+# outside the option(VAMPSDK_BUILD_EXAMPLE_PLUGINS) guard that's meant to contain it —
+# harmless with the option OFF (default) until CMake actually reaches that dangling
+# block, which it does unconditionally as written. Re-apply after a fresh clone, or
+# check whether upstream has fixed it.
+clone_if_missing vamp-plugin-sdk https://github.com/c4dm/vamp-plugin-sdk.git
 
 # Phase 1 — storage (PRD §6, §7). Not started yet.
 # clone_if_missing SQLiteCpp https://github.com/SRombauts/SQLiteCpp.git

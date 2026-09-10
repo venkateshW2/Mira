@@ -8,6 +8,8 @@ set(ESSENTIA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/essentia)
 set(ONNXRUNTIME_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/onnxruntime)
 set(BEAT_THIS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/beat_this_cpp)
 set(LIBKEYFINDER_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/libkeyfinder)
+set(VAMP_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/vamp-plugin-sdk)
+set(NNLS_CHROMA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/nnls-chroma)
 
 if(NOT EXISTS ${SQLITE_ROOT}/sqlite3.c)
   message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE_ROOT} — run scripts/fetch-vendor.sh")
@@ -27,6 +29,12 @@ if(NOT EXISTS ${BEAT_THIS_ROOT}/onnx/beat_this.onnx)
 endif()
 if(NOT EXISTS ${LIBKEYFINDER_ROOT}/CMakeLists.txt)
   message(FATAL_ERROR "libkeyfinder not found at ${LIBKEYFINDER_ROOT} — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${VAMP_SDK_ROOT}/CMakeLists.txt)
+  message(FATAL_ERROR "vamp-plugin-sdk not found at ${VAMP_SDK_ROOT} — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${NNLS_CHROMA_ROOT}/Chordino.cpp)
+  message(FATAL_ERROR "nnls-chroma not found at ${NNLS_CHROMA_ROOT} — run scripts/fetch-vendor.sh")
 endif()
 
 find_package(PkgConfig REQUIRED)
@@ -75,6 +83,37 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
 add_subdirectory(${LIBKEYFINDER_ROOT} libkeyfinder_build)
 
+# vamp-plugin-sdk (both vamp-sdk, which Chordino is written against, and vamp-hostsdk,
+# whose PluginInputDomainAdapter/PluginBufferingAdapter drive it — PRD §12b). One local
+# patch needed: its CMakeLists.txt has an example-plugins block outside the option()
+# guard that's meant to contain it — see scripts/fetch-vendor.sh.
+add_subdirectory(${VAMP_SDK_ROOT} vamp_plugin_sdk_build)
+
+# nnls-chroma / Chordino (PRD §7, §12b) — GPL-2.0-or-later, fine under mira's AGPL-3.0.
+# No CMakeLists.txt upstream (plain Makefile project); built directly here. Excludes
+# plugins.cpp (Vamp dynamic-plugin registration — unused, we link Chordino directly) and
+# chordextract.cpp (nnls-chroma's own CLI example; Chords.cpp is mira's equivalent).
+add_library(nnls_chroma STATIC
+  ${NNLS_CHROMA_ROOT}/chromamethods.cpp
+  ${NNLS_CHROMA_ROOT}/NNLSBase.cpp
+  ${NNLS_CHROMA_ROOT}/NNLSChroma.cpp
+  ${NNLS_CHROMA_ROOT}/Chordino.cpp
+  ${NNLS_CHROMA_ROOT}/Tuning.cpp
+  ${NNLS_CHROMA_ROOT}/viterbi.cpp
+  ${NNLS_CHROMA_ROOT}/nnls.c
+)
+target_include_directories(nnls_chroma PUBLIC ${NNLS_CHROMA_ROOT})
+target_link_libraries(nnls_chroma PUBLIC vamp-sdk)
+# chromamethods.cpp uses boost::tokenizer (header-only) — Homebrew's boost, not vendored.
+find_package(Boost REQUIRED)
+target_link_libraries(nnls_chroma PUBLIC Boost::boost)
+# Must match nnls-chroma's own documented build invocation (top of Chordino.h/NNLSBase.h
+# comments) exactly, and must be consistent across every TU that touches these Vamp
+# types (including Chords.cpp) — it controls which internal namespace (_VampHost vs
+# _VampPlugin) the plugin classes are wrapped in; a mismatch is an ODR violation, not
+# just a style choice.
+target_compile_definitions(nnls_chroma PUBLIC _VAMP_PLUGIN_IN_HOST_NAMESPACE=1)
+
 add_executable(mira
   mira/main.cpp
   mira/db/Database.cpp
@@ -86,12 +125,14 @@ add_executable(mira
   mira/analyze/Descriptors.cpp
   mira/analyze/Mir.cpp
   mira/analyze/Key.cpp
+  mira/analyze/Chords.cpp
 )
 
 target_include_directories(mira PRIVATE
   ${ESSENTIA_ROOT}/src
   ${BEAT_THIS_ROOT}/Source
   ${LIBKEYFINDER_ROOT}/src
+  ${NNLS_CHROMA_ROOT}
 )
 
 target_compile_definitions(mira PRIVATE
@@ -104,6 +145,8 @@ target_link_libraries(mira PRIVATE
   ${ESSENTIA_LIB}
   beat_this_api
   keyfinder
+  nnls_chroma
+  vamp-hostsdk
   PkgConfig::AVFORMAT
   PkgConfig::AVCODEC
   PkgConfig::SWRESAMPLE
