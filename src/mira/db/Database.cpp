@@ -1,6 +1,9 @@
 #include "Database.h"
 
+#include <algorithm>
 #include <cstring>
+#include <ctime>
+#include <sstream>
 
 namespace mira {
 
@@ -29,6 +32,42 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE INDEX IF NOT EXISTS idx_files_content_type ON files(content_type);
 CREATE INDEX IF NOT EXISTS idx_files_group_id ON files(group_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding float[1280]);
+
+-- TASKS.md Phase 3 addition: a time-ranged counterpart to files.human, for the case a
+-- whole-file caption can't be honest about -- a single long, through-composed file (or a
+-- synced set of delivery stems sharing one files.group_id) whose character changes at a
+-- particular timestamp (PRD §15: SA3 has no per-clip timeline conditioning at all, so
+-- there is no way to caption this except by cutting it into per-segment training clips,
+-- one caption each). Exactly one of group_id/file_id is set per row: group_id means "this
+-- boundary and its tags apply to every file in that stem group, at the same timestamps,
+-- so a synced stem set stays synced"; file_id means a single non-stem file being
+-- segmented directly. `human` reuses files.human's own JSON convention (CaptionFields.cpp)
+-- verbatim, just scoped to this time range instead of the whole file.
+CREATE TABLE IF NOT EXISTS segments (
+    id             INTEGER PRIMARY KEY,
+    group_id       TEXT,
+    file_id        INTEGER REFERENCES files(id),
+    start_seconds  REAL NOT NULL,
+    end_seconds    REAL NOT NULL,
+    human          TEXT NOT NULL DEFAULT '{}',
+    created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_segments_group_id ON segments(group_id);
+CREATE INDEX IF NOT EXISTS idx_segments_file_id ON segments(file_id);
+
+-- TASKS.md Phase 3 addition: folder-level `human` defaults, for tagging a whole library
+-- at once instead of one `mira tag` call per file (e.g. every file under
+-- "SCORE_2026/COMEDY_CUES/" defaulting to keywords "funny, quirky"). `folder_path` is a
+-- plain string prefix, matched at read time against files.path -- not resolved/
+-- canonicalized against the filesystem, so it must be written the same way (relative vs
+-- absolute) as the paths mira actually scanned (CLI documents this). `human` reuses the
+-- same JSON convention as files.human and segments.human.
+CREATE TABLE IF NOT EXISTS folder_defaults (
+    id            INTEGER PRIMARY KEY,
+    folder_path   TEXT UNIQUE NOT NULL,
+    human         TEXT NOT NULL DEFAULT '{}',
+    created_at    INTEGER NOT NULL
+);
 )SQL";
 
 FileRecord fromRow(SQLite::Statement& q) {
@@ -159,6 +198,133 @@ void Database::declareStem(const std::string& path) {
         "WHERE path = ?");
     update.bind(1, path);
     update.exec();
+}
+
+void Database::setHumanField(int64_t fileId, const std::string& jsonPath, const std::string& jsonValueJson) {
+    SQLite::Statement update(db, "UPDATE files SET human = json_set(human, ?, json(?)) WHERE id = ?");
+    update.bind(1, jsonPath);
+    update.bind(2, jsonValueJson);
+    update.bind(3, fileId);
+    update.exec();
+}
+
+void Database::clearHumanFields(int64_t fileId) {
+    SQLite::Statement update(db, "UPDATE files SET human = '{}' WHERE id = ?");
+    update.bind(1, fileId);
+    update.exec();
+}
+
+int64_t Database::createSegment(std::optional<std::string> groupId, std::optional<int64_t> fileId,
+                                 double startSeconds, double endSeconds, const std::string& humanJson) {
+    SQLite::Statement insert(db,
+        "INSERT INTO segments (group_id, file_id, start_seconds, end_seconds, human, created_at) "
+        "VALUES (?, ?, ?, ?, json(?), ?)");
+    if (groupId) insert.bind(1, *groupId); else insert.bind(1);
+    if (fileId) insert.bind(2, *fileId); else insert.bind(2);
+    insert.bind(3, startSeconds);
+    insert.bind(4, endSeconds);
+    insert.bind(5, humanJson);
+    insert.bind(6, static_cast<int64_t>(std::time(nullptr)));
+    insert.exec();
+    return db.getLastInsertRowid();
+}
+
+namespace {
+SegmentRecord segmentFromRow(SQLite::Statement& q) {
+    SegmentRecord s;
+    s.id = q.getColumn("id").getInt64();
+    if (!q.getColumn("group_id").isNull()) s.groupId = q.getColumn("group_id").getString();
+    if (!q.getColumn("file_id").isNull()) s.fileId = q.getColumn("file_id").getInt64();
+    s.startSeconds = q.getColumn("start_seconds").getDouble();
+    s.endSeconds = q.getColumn("end_seconds").getDouble();
+    s.human = q.getColumn("human").getString();
+    s.createdAt = q.getColumn("created_at").getInt64();
+    return s;
+}
+} // namespace
+
+std::vector<SegmentRecord> Database::findSegmentsForGroup(const std::string& groupId) {
+    std::vector<SegmentRecord> result;
+    SQLite::Statement q(db, "SELECT * FROM segments WHERE group_id = ? ORDER BY start_seconds");
+    q.bind(1, groupId);
+    while (q.executeStep()) result.push_back(segmentFromRow(q));
+    return result;
+}
+
+std::vector<SegmentRecord> Database::findSegmentsForFile(int64_t fileId) {
+    std::vector<SegmentRecord> result;
+    SQLite::Statement q(db, "SELECT * FROM segments WHERE file_id = ? ORDER BY start_seconds");
+    q.bind(1, fileId);
+    while (q.executeStep()) result.push_back(segmentFromRow(q));
+    return result;
+}
+
+std::vector<FileRecord> Database::findFilesByGroupId(const std::string& groupId) {
+    std::vector<FileRecord> result;
+    SQLite::Statement q(db, "SELECT * FROM files WHERE group_id = ? ORDER BY path");
+    q.bind(1, groupId);
+    while (q.executeStep()) result.push_back(fromRow(q));
+    return result;
+}
+
+void Database::setFolderDefaultField(const std::string& folderPath, const std::string& jsonPath,
+                                      const std::string& jsonValueJson) {
+    SQLite::Statement upsert(db,
+        "INSERT INTO folder_defaults (folder_path, human, created_at) "
+        "VALUES (?, json_set('{}', ?, json(?)), ?) "
+        "ON CONFLICT(folder_path) DO UPDATE SET human = json_set(human, ?, json(?))");
+    upsert.bind(1, folderPath);
+    upsert.bind(2, jsonPath);
+    upsert.bind(3, jsonValueJson);
+    upsert.bind(4, static_cast<int64_t>(std::time(nullptr)));
+    upsert.bind(5, jsonPath);
+    upsert.bind(6, jsonValueJson);
+    upsert.exec();
+}
+
+void Database::clearFolderDefault(const std::string& folderPath) {
+    SQLite::Statement del(db, "DELETE FROM folder_defaults WHERE folder_path = ?");
+    del.bind(1, folderPath);
+    del.exec();
+}
+
+std::vector<std::string> Database::findFolderDefaultsForPath(const std::string& filePath) {
+    std::vector<std::pair<std::string, std::string>> matches; // (folderPath, human)
+    SQLite::Statement q(db, "SELECT folder_path, human FROM folder_defaults");
+    while (q.executeStep()) {
+        std::string folderPath = q.getColumn(0).getString();
+        std::string human = q.getColumn(1).getString();
+        // Plain string-prefix match with a directory-boundary check, so "SCORE_2" can't
+        // false-match "SCORE_20/..." -- not filesystem-canonicalized (see the schema
+        // comment: folderPath must already be written the same way, relative vs
+        // absolute, as the scanned file paths).
+        if (filePath.size() >= folderPath.size() &&
+            filePath.compare(0, folderPath.size(), folderPath) == 0 &&
+            (filePath.size() == folderPath.size() || filePath[folderPath.size()] == '/')) {
+            matches.emplace_back(std::move(folderPath), std::move(human));
+        }
+    }
+    std::sort(matches.begin(), matches.end(),
+              [](const auto& a, const auto& b) { return a.first.size() < b.first.size(); });
+    std::vector<std::string> result;
+    result.reserve(matches.size());
+    for (auto& m : matches) result.push_back(std::move(m.second));
+    return result;
+}
+
+std::vector<std::pair<double, double>> Database::parseActiveSpans(const std::string& activeSpansJson) {
+    std::vector<std::pair<double, double>> spans;
+    auto len = jsonArrayLength(activeSpansJson, "$");
+    if (!len) return spans;
+    for (int64_t i = 0; i < *len; ++i) {
+        std::ostringstream startPath, endPath;
+        startPath << "$[" << i << "][0]";
+        endPath << "$[" << i << "][1]";
+        auto start = jsonExtractDouble(activeSpansJson, startPath.str());
+        auto end = jsonExtractDouble(activeSpansJson, endPath.str());
+        if (start && end) spans.emplace_back(*start, *end);
+    }
+    return spans;
 }
 
 std::vector<FileRecord> Database::findFilesForAnalysis(bool force,

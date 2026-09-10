@@ -28,6 +28,19 @@ struct FileRecord {
     std::optional<int64_t> analyzedAt;
 };
 
+// A time-ranged caption boundary, layered on top of `human` (PRD §15's "no per-clip
+// timeline conditioning" limitation -- see Database.cpp's schema comment on the
+// `segments` table for the full rationale). Exactly one of groupId/fileId is set.
+struct SegmentRecord {
+    int64_t id = 0;
+    std::optional<std::string> groupId;
+    std::optional<int64_t> fileId;
+    double startSeconds = 0.0;
+    double endSeconds = 0.0;
+    std::string human = "{}";
+    int64_t createdAt = 0;
+};
+
 // Wraps the mira SQLite database: schema creation and the file-table operations the
 // scanner and (later) the analyzer need. Deliberately thin — SQLiteCpp already keeps
 // sqlite3* out of view (PRD §7); this doesn't hide it further than that.
@@ -66,6 +79,47 @@ public:
     // Sets content_type='stem', content_type_source='declared' for a path — PRD §12.3
     // route 3, always overrides router-based detection and is never re-routed.
     void declareStem(const std::string& path);
+
+    // PRD §6/§11: `human` overrides -- the one column mira's own analysis never writes,
+    // reserved for a person's edits (CaptionFields.cpp documents the specific top-level
+    // keys it reads back out of this: genre/instruments/moods/keywords/bpm/key/
+    // is_instrumental). `setHumanField` merges one key into the existing `human` object
+    // via SQLite's own json_set/json() (never touches any other key already set there);
+    // `jsonValueJson` must already be valid JSON text (a quoted string, array, number, or
+    // bool) -- the caller's responsibility, same discipline as queryFiles's
+    // whereClauseSql. `clearHumanFields` resets the whole object back to '{}'.
+    void setHumanField(int64_t fileId, const std::string& jsonPath, const std::string& jsonValueJson);
+    void clearHumanFields(int64_t fileId);
+
+    // Segment tagging (TASKS.md Phase 3 addition; see Database.cpp's `segments` schema
+    // comment). `createSegment` takes exactly one of groupId/fileId (caller's
+    // responsibility -- the CLI resolves which one applies before calling this) and an
+    // already-built `human` JSON object (CaptionFields.cpp's convention, same as files.
+    // human). `findFilesByGroupId` is how a caller turns a group_id back into the actual
+    // set of sibling stem files to cut.
+    int64_t createSegment(std::optional<std::string> groupId, std::optional<int64_t> fileId,
+                           double startSeconds, double endSeconds, const std::string& humanJson);
+    std::vector<SegmentRecord> findSegmentsForGroup(const std::string& groupId);
+    std::vector<SegmentRecord> findSegmentsForFile(int64_t fileId);
+    std::vector<FileRecord> findFilesByGroupId(const std::string& groupId);
+
+    // Folder-level `human` defaults (TASKS.md Phase 3 addition; see Database.cpp's
+    // `folder_defaults` schema comment). `setFolderDefaultField` merges one key into the
+    // folder's `human` object (creating the row if it doesn't exist yet), same
+    // one-key-at-a-time semantics as `setHumanField`. `findFolderDefaultsForPath` returns
+    // every stored folder default whose path is a prefix of `filePath`, ordered
+    // shortest-to-longest (root-most ancestor first) -- callers apply them in that order
+    // so a more specific folder's default overrides a shallower ancestor's for the same
+    // field, exactly like `human` already overrides machine-derived values.
+    void setFolderDefaultField(const std::string& folderPath, const std::string& jsonPath,
+                                const std::string& jsonValueJson);
+    void clearFolderDefault(const std::string& folderPath);
+    std::vector<std::string> findFolderDefaultsForPath(const std::string& filePath);
+
+    // Reads back the `[[start,end],...]` active-span array Router/ActiveRegions.cpp
+    // writes into files.active_spans -- same lean-on-SQLite's-own-json approach as
+    // jsonExtractDouble/jsonArrayLength above, not a C++ JSON parser.
+    std::vector<std::pair<double, double>> parseActiveSpans(const std::string& activeSpansJson);
 
     // Rows `mira analyze` should (re-)process: declared stems ARE included (they still
     // need active-region detection and everything after it — declaration only skips the

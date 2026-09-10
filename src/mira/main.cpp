@@ -17,6 +17,9 @@
 #include "analyze/GenreLabels.h"
 #include "analyze/VoiceInstrumental.h"
 #include "taxonomy/Taxonomy.h"
+#include "caption/CaptionFields.h"
+#include "caption/Sa3Renderer.h"
+#include "export/AudioWriter.h"
 #include "analyze/Router.h"
 #include "analyze/Transcription.h"
 #include "db/Database.h"
@@ -31,6 +34,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -116,7 +120,35 @@ void printUsage() {
         "  mira stats [--db <path>]\n"
         "        library composition, per-head classification coverage, embeddings\n"
         "        stored, and taxonomy completeness (which raw labels have no normalized\n"
-        "        form yet, taxonomy/*.yaml)\n";
+        "        form yet, taxonomy/*.yaml)\n"
+        "  mira caption <file|id> [--trigger <token>] [--emit-sidecar] [--db <path>]\n"
+        "        renders CaptionFields (confidence-gated genre/instrument/mood/bpm/key)\n"
+        "        into Stable Audio 3's own trained prompt shape (PRD §11/§15); prints the\n"
+        "        prose form plus the flat tag set, and with --emit-sidecar also writes\n"
+        "        <file>.json next to the source for underfit's dataset loader to pick up\n"
+        "  mira tag <file|id> [--genre \"a, b\"] [--instruments \"a, b\"] [--moods \"a, b\"]\n"
+        "            [--keywords \"funny, quirky\"] [--bpm N] [--key \"F minor\"]\n"
+        "            [--is-instrumental true|false] [--clear] [--db <path>]\n"
+        "        sets `human` overrides mira's own analysis never touches and `mira\n"
+        "        caption` always prefers over the machine-derived value; --keywords is\n"
+        "        the one field with no machine equivalent at all (scene/vibe words like\n"
+        "        \"action\" or \"drama\" mira has no analyzer for). Each flag merges just\n"
+        "        that field; --clear resets all human overrides for the file\n"
+        "  mira tag-folder <folder> [tag flags as above] [--clear] [--db <path>]\n"
+        "        sets a `human` default for every scanned file under <folder> (plain\n"
+        "        path-prefix match against files.path -- write it the same way, relative\n"
+        "        or absolute, you scanned with); a file's own `mira tag`/`mira\n"
+        "        tag-segment` values always win over a folder default for the same field\n"
+        "  mira tag-segment <group_id|file|id> --start <s> --end <s> [tag flags as above]\n"
+        "        declares a time-ranged caption boundary -- a group_id (from `mira\n"
+        "        stats`/DB, format \"<dir>|<duration>\") applies to every file in that\n"
+        "        synced stem set at the same timestamps; a file/id applies to one file.\n"
+        "        Only records the boundary; run `mira export-segments` to actually cut\n"
+        "  mira export-segments <group_id|file|id> --out-dir <dir> [--trigger <token>]\n"
+        "        cuts every declared segment out of every covered file into its own WAV\n"
+        "        + SA3 sidecar JSON under <dir>/seg<N>_<start>-<end>s/ -- a group_id\n"
+        "        target cuts every sibling stem at identical boundaries, so the set\n"
+        "        stays synced across the cut\n";
 }
 
 int runScan(const std::vector<std::string>& args) {
@@ -855,6 +887,522 @@ int runInspect(const std::vector<std::string>& args) {
     return 0;
 }
 
+namespace {
+
+std::string jsonEscapeForTag(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += static_cast<char>(c);
+    }
+    return out;
+}
+
+// Builds a JSON string-array literal from a CLI value like "funny, quirky" -- whitespace
+// around each comma-separated item is trimmed, empty items are dropped.
+std::string jsonStringArrayLiteral(const std::string& commaSeparated) {
+    std::ostringstream out;
+    out << "[";
+    std::istringstream iss(commaSeparated);
+    std::string item;
+    bool first = true;
+    while (std::getline(iss, item, ',')) {
+        size_t start = item.find_first_not_of(" \t");
+        size_t end = item.find_last_not_of(" \t");
+        if (start == std::string::npos) continue;
+        std::string trimmed = item.substr(start, end - start + 1);
+        if (!first) out << ",";
+        out << "\"" << jsonEscapeForTag(trimmed) << "\"";
+        first = false;
+    }
+    out << "]";
+    return out.str();
+}
+
+} // namespace
+
+// PRD §11/§15, TASKS.md Phase 3: renders CaptionFields (the one analysis document) into
+// SA3's own trained prompt shape via Sa3Renderer -- not a generic caption. PRD's "N
+// renderers" stays N=1 until a second trainer target is actually being built; adding one
+// later means a second Renderer.h, not a change to CaptionFields.
+int runCaption(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    std::string trigger;
+    bool emitSidecar = false;
+    std::vector<std::string> positional;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+        else if (args[i] == "--trigger" && i + 1 < args.size()) trigger = args[++i];
+        else if (args[i] == "--emit-sidecar") emitSidecar = true;
+        else positional.push_back(args[i]);
+    }
+
+    if (positional.empty()) {
+        std::cerr << "mira caption: a file path or numeric id is required" << std::endl;
+        return 1;
+    }
+    const std::string& target = positional[0];
+
+    mira::Database db(dbPath);
+
+    std::optional<mira::FileRecord> record;
+    bool isNumeric = !target.empty() &&
+                      std::all_of(target.begin(), target.end(), [](unsigned char c) { return std::isdigit(c); });
+    if (isNumeric) record = db.findById(std::stoll(target));
+    if (!record) record = db.findByPath(target);
+
+    if (!record) {
+        std::cerr << "mira caption: no file found for '" << target << "'" << std::endl;
+        return 1;
+    }
+    if (!record->analyzedAt) {
+        std::cerr << "mira caption: '" << target << "' has not been analyzed yet (run `mira analyze`)"
+                   << std::endl;
+        return 1;
+    }
+
+    mira::CaptionFields fields = mira::extractCaptionFields(db, *record);
+
+    std::cout << "prose: " << mira::renderSa3Prose(fields, trigger) << "\n";
+    std::cout << "tags:\n";
+    for (auto& [key, value] : mira::renderSa3Tags(fields, trigger)) {
+        if (key == "prompt") continue; // identical to the `prose:` line above, skip the duplicate
+        std::cout << "  " << key << ": " << value << "\n";
+    }
+
+    if (emitSidecar) {
+        std::string sidecarPath = record->path;
+        size_t dot = sidecarPath.find_last_of('.');
+        sidecarPath = (dot == std::string::npos ? sidecarPath : sidecarPath.substr(0, dot)) + ".json";
+        std::ofstream out(sidecarPath);
+        if (!out) {
+            std::cerr << "mira caption: could not write sidecar to " << sidecarPath << std::endl;
+            return 1;
+        }
+        out << mira::renderSa3SidecarJson(fields, trigger);
+        std::cout << "\nsidecar written: " << sidecarPath << "\n";
+    }
+
+    return 0;
+}
+
+// PRD §6/§11: the write side of `human` overrides -- CaptionFields.cpp documents exactly
+// which keys it reads back out. Each flag here merge-updates the one field it names via
+// Database::setHumanField, leaving every other `human` key (set by an earlier `mira tag`
+// call, or not) untouched. This is deliberately the *only* way to put a scene/vibe word
+// like "funny" or "action" into a caption -- mira has no analyzer for that kind of
+// judgment and isn't meant to grow one; --keywords exists specifically for it.
+int runTag(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    std::vector<std::string> positional;
+    std::optional<std::string> genre, instruments, moods, keywords, key;
+    std::optional<double> bpm;
+    std::optional<bool> isInstrumental;
+    bool clear = false;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+        else if (args[i] == "--genre" && i + 1 < args.size()) genre = args[++i];
+        else if (args[i] == "--instruments" && i + 1 < args.size()) instruments = args[++i];
+        else if (args[i] == "--moods" && i + 1 < args.size()) moods = args[++i];
+        else if (args[i] == "--keywords" && i + 1 < args.size()) keywords = args[++i];
+        else if (args[i] == "--bpm" && i + 1 < args.size()) bpm = std::stod(args[++i]);
+        else if (args[i] == "--key" && i + 1 < args.size()) key = args[++i];
+        else if (args[i] == "--is-instrumental" && i + 1 < args.size()) {
+            std::string v = args[++i];
+            isInstrumental = (v == "true" || v == "1" || v == "yes");
+        } else if (args[i] == "--clear") {
+            clear = true;
+        } else {
+            positional.push_back(args[i]);
+        }
+    }
+
+    if (positional.empty()) {
+        std::cerr << "mira tag: a file path or numeric id is required" << std::endl;
+        return 1;
+    }
+    const std::string& target = positional[0];
+
+    mira::Database db(dbPath);
+
+    std::optional<mira::FileRecord> record;
+    bool isNumeric = !target.empty() &&
+                      std::all_of(target.begin(), target.end(), [](unsigned char c) { return std::isdigit(c); });
+    if (isNumeric) record = db.findById(std::stoll(target));
+    if (!record) record = db.findByPath(target);
+
+    if (!record) {
+        std::cerr << "mira tag: no file found for '" << target << "'" << std::endl;
+        return 1;
+    }
+
+    if (clear) {
+        db.clearHumanFields(record->id);
+        std::cout << "cleared human overrides for " << record->path << std::endl;
+        return 0;
+    }
+
+    if (!genre && !instruments && !moods && !keywords && !bpm && !key && !isInstrumental) {
+        std::cerr << "mira tag: nothing to set -- pass at least one of --genre / --instruments / "
+                     "--moods / --keywords / --bpm / --key / --is-instrumental, or --clear"
+                  << std::endl;
+        return 1;
+    }
+
+    if (genre) db.setHumanField(record->id, "$.genre", jsonStringArrayLiteral(*genre));
+    if (instruments) db.setHumanField(record->id, "$.instruments", jsonStringArrayLiteral(*instruments));
+    if (moods) db.setHumanField(record->id, "$.moods", jsonStringArrayLiteral(*moods));
+    if (keywords) db.setHumanField(record->id, "$.keywords", jsonStringArrayLiteral(*keywords));
+    if (bpm) db.setHumanField(record->id, "$.bpm", std::to_string(*bpm));
+    if (key) db.setHumanField(record->id, "$.key", "\"" + jsonEscapeForTag(*key) + "\"");
+    if (isInstrumental) db.setHumanField(record->id, "$.is_instrumental", *isInstrumental ? "true" : "false");
+
+    auto updated = db.findById(record->id);
+    std::cout << "human overrides for " << updated->path << ": " << updated->human << std::endl;
+    return 0;
+}
+
+// TASKS.md Phase 3 addition: folder-level `human` defaults -- `mira tag` alone means
+// tagging a real library is one call per file, which doesn't scale. `folder` is matched
+// as a plain string prefix against files.path at caption-render time
+// (Database::findFolderDefaultsForPath), not resolved against the filesystem, so it must
+// be written the same way (relative vs absolute) the target files were actually scanned
+// with -- this command only checks the folder exists on disk as a sanity check, it
+// doesn't normalize the string used for matching.
+int runTagFolder(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    std::vector<std::string> positional;
+    std::optional<std::string> genre, instruments, moods, keywords, key;
+    std::optional<double> bpm;
+    std::optional<bool> isInstrumental;
+    bool clear = false;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+        else if (args[i] == "--genre" && i + 1 < args.size()) genre = args[++i];
+        else if (args[i] == "--instruments" && i + 1 < args.size()) instruments = args[++i];
+        else if (args[i] == "--moods" && i + 1 < args.size()) moods = args[++i];
+        else if (args[i] == "--keywords" && i + 1 < args.size()) keywords = args[++i];
+        else if (args[i] == "--bpm" && i + 1 < args.size()) bpm = std::stod(args[++i]);
+        else if (args[i] == "--key" && i + 1 < args.size()) key = args[++i];
+        else if (args[i] == "--is-instrumental" && i + 1 < args.size()) {
+            std::string v = args[++i];
+            isInstrumental = (v == "true" || v == "1" || v == "yes");
+        } else if (args[i] == "--clear") {
+            clear = true;
+        } else {
+            positional.push_back(args[i]);
+        }
+    }
+
+    if (positional.empty()) {
+        std::cerr << "mira tag-folder: a folder path is required" << std::endl;
+        return 1;
+    }
+    std::string folderPath = positional[0];
+    while (folderPath.size() > 1 && folderPath.back() == '/') folderPath.pop_back();
+
+    if (!std::filesystem::is_directory(folderPath)) {
+        std::cerr << "mira tag-folder: '" << folderPath << "' is not a directory" << std::endl;
+        return 1;
+    }
+
+    mira::Database db(dbPath);
+
+    if (clear) {
+        db.clearFolderDefault(folderPath);
+        std::cout << "cleared folder default for " << folderPath << std::endl;
+        return 0;
+    }
+
+    if (!genre && !instruments && !moods && !keywords && !bpm && !key && !isInstrumental) {
+        std::cerr << "mira tag-folder: nothing to set -- pass at least one of --genre / --instruments / "
+                     "--moods / --keywords / --bpm / --key / --is-instrumental, or --clear"
+                  << std::endl;
+        return 1;
+    }
+
+    if (genre) db.setFolderDefaultField(folderPath, "$.genre", jsonStringArrayLiteral(*genre));
+    if (instruments) db.setFolderDefaultField(folderPath, "$.instruments", jsonStringArrayLiteral(*instruments));
+    if (moods) db.setFolderDefaultField(folderPath, "$.moods", jsonStringArrayLiteral(*moods));
+    if (keywords) db.setFolderDefaultField(folderPath, "$.keywords", jsonStringArrayLiteral(*keywords));
+    if (bpm) db.setFolderDefaultField(folderPath, "$.bpm", std::to_string(*bpm));
+    if (key) db.setFolderDefaultField(folderPath, "$.key", "\"" + jsonEscapeForTag(*key) + "\"");
+    if (isInstrumental)
+        db.setFolderDefaultField(folderPath, "$.is_instrumental", *isInstrumental ? "true" : "false");
+
+    std::cout << "folder default set for " << folderPath
+               << " -- applies to every scanned file under it whose own `human`/segment tags"
+                  " don't already override the same field"
+               << std::endl;
+    return 0;
+}
+
+// TASKS.md Phase 3 addition: the write side of a time-ranged caption boundary (see
+// Database.cpp's `segments` table comment for the full rationale -- a long through-
+// composed file, or a synced set of delivery stems sharing one files.group_id, whose
+// character changes partway through can't get one honest whole-file caption). Target
+// resolution mirrors `mira tag`/`mira caption` exactly, plus one more case: a target
+// containing '|' is a group_id (main.cpp's own siblingKey format, `<parentDir>|
+// <durationSeconds>` -- never valid in a plain path or numeric id, so unambiguous),
+// meaning this boundary and its tags apply to every file in that stem group at the same
+// timestamps, keeping the set in sync. This only records the boundary; `mira
+// export-segments` is what actually cuts audio.
+int runTagSegment(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    std::vector<std::string> positional;
+    std::optional<double> startSeconds, endSeconds, bpm;
+    std::optional<std::string> genre, instruments, moods, keywords, key;
+    std::optional<bool> isInstrumental;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+        else if (args[i] == "--start" && i + 1 < args.size()) startSeconds = std::stod(args[++i]);
+        else if (args[i] == "--end" && i + 1 < args.size()) endSeconds = std::stod(args[++i]);
+        else if (args[i] == "--genre" && i + 1 < args.size()) genre = args[++i];
+        else if (args[i] == "--instruments" && i + 1 < args.size()) instruments = args[++i];
+        else if (args[i] == "--moods" && i + 1 < args.size()) moods = args[++i];
+        else if (args[i] == "--keywords" && i + 1 < args.size()) keywords = args[++i];
+        else if (args[i] == "--bpm" && i + 1 < args.size()) bpm = std::stod(args[++i]);
+        else if (args[i] == "--key" && i + 1 < args.size()) key = args[++i];
+        else if (args[i] == "--is-instrumental" && i + 1 < args.size()) {
+            std::string v = args[++i];
+            isInstrumental = (v == "true" || v == "1" || v == "yes");
+        } else {
+            positional.push_back(args[i]);
+        }
+    }
+
+    if (positional.empty()) {
+        std::cerr << "mira tag-segment: a group_id, file path, or numeric id is required" << std::endl;
+        return 1;
+    }
+    if (!startSeconds || !endSeconds) {
+        std::cerr << "mira tag-segment: --start and --end are required" << std::endl;
+        return 1;
+    }
+    if (*endSeconds <= *startSeconds) {
+        std::cerr << "mira tag-segment: --end must be greater than --start" << std::endl;
+        return 1;
+    }
+
+    mira::Database db(dbPath);
+    const std::string& target = positional[0];
+
+    std::optional<std::string> groupId;
+    std::optional<int64_t> fileId;
+
+    if (target.find('|') != std::string::npos) {
+        groupId = target;
+        if (db.findFilesByGroupId(target).empty()) {
+            std::cerr << "mira tag-segment: no files found for group_id '" << target << "'" << std::endl;
+            return 1;
+        }
+    } else {
+        std::optional<mira::FileRecord> record;
+        bool isNumeric = !target.empty() &&
+                          std::all_of(target.begin(), target.end(), [](unsigned char c) { return std::isdigit(c); });
+        if (isNumeric) record = db.findById(std::stoll(target));
+        if (!record) record = db.findByPath(target);
+        if (!record) {
+            std::cerr << "mira tag-segment: no file found for '" << target << "'" << std::endl;
+            return 1;
+        }
+        fileId = record->id;
+    }
+
+    std::ostringstream human;
+    human << "{";
+    bool first = true;
+    auto addField = [&](const char* fieldKey, const std::string& valueJson) {
+        if (!first) human << ",";
+        human << "\"" << fieldKey << "\":" << valueJson;
+        first = false;
+    };
+    if (genre) addField("genre", jsonStringArrayLiteral(*genre));
+    if (instruments) addField("instruments", jsonStringArrayLiteral(*instruments));
+    if (moods) addField("moods", jsonStringArrayLiteral(*moods));
+    if (keywords) addField("keywords", jsonStringArrayLiteral(*keywords));
+    if (bpm) addField("bpm", std::to_string(*bpm));
+    if (key) addField("key", "\"" + jsonEscapeForTag(*key) + "\"");
+    if (isInstrumental) addField("is_instrumental", *isInstrumental ? "true" : "false");
+    human << "}";
+
+    int64_t segId = db.createSegment(groupId, fileId, *startSeconds, *endSeconds, human.str());
+    std::cout << "segment " << segId << " created: " << *startSeconds << "s-" << *endSeconds << "s";
+    if (groupId) std::cout << " for group " << *groupId;
+    else std::cout << " for file id " << *fileId;
+    std::cout << "\nhuman: " << human.str() << std::endl;
+    return 0;
+}
+
+// TASKS.md Phase 3 addition: cuts every file covered by the target's declared segments
+// (mira tag-segment) into per-segment WAV files (AudioWriter.h -- mira's first audio-
+// writing path), each with its own SA3 sidecar caption (CaptionFields::
+// extractCaptionFieldsForSegment + Sa3Renderer, exactly the machinery `mira caption`
+// already uses for whole files). A group_id target cuts every sibling stem at the *same*
+// declared boundaries, so a synced stem set stays synced across the cut -- that sync is
+// the entire reason group_id-scoped segments exist rather than per-file ones.
+// TASKS.md Phase 3 addition: how much of a declared [start,end) segment actually
+// overlaps this particular file's active spans (Phase 1's silence-gate, ActiveRegions.cpp
+// -- already computed per file, never previously cross-checked against a segment
+// boundary). Returns nullopt when the file has no active-span data at all (active-region
+// detection only runs for stems/declared stems/files over 5 minutes, PRD §5 -- nothing to
+// validate against otherwise, and that's not an error). A low fraction here is expected
+// and legitimate for one stem in a synced set (e.g. brass simply not playing during a
+// "funny" phrase) -- this is surfaced as information, never used to skip the export.
+std::optional<double> activeFractionInRange(mira::Database& db, const mira::FileRecord& file,
+                                             double rangeStart, double rangeEnd) {
+    if (file.activeSpans == "[]" && !file.activeRatio) return std::nullopt;
+    auto spans = db.parseActiveSpans(file.activeSpans);
+    if (spans.empty()) return std::nullopt;
+    double overlap = 0.0;
+    for (const auto& [spanStart, spanEnd] : spans) {
+        double lo = std::max(spanStart, rangeStart);
+        double hi = std::min(spanEnd, rangeEnd);
+        if (hi > lo) overlap += (hi - lo);
+    }
+    double rangeLength = rangeEnd - rangeStart;
+    return rangeLength > 0.0 ? (overlap / rangeLength) : 0.0;
+}
+
+int runExportSegments(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    std::string outDir;
+    std::string trigger;
+    std::vector<std::string> positional;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+        else if (args[i] == "--out-dir" && i + 1 < args.size()) outDir = args[++i];
+        else if (args[i] == "--trigger" && i + 1 < args.size()) trigger = args[++i];
+        else positional.push_back(args[i]);
+    }
+
+    if (positional.empty()) {
+        std::cerr << "mira export-segments: a group_id, file path, or numeric id is required" << std::endl;
+        return 1;
+    }
+    if (outDir.empty()) {
+        std::cerr << "mira export-segments: --out-dir is required" << std::endl;
+        return 1;
+    }
+
+    mira::Database db(dbPath);
+    const std::string& target = positional[0];
+
+    std::vector<mira::FileRecord> files;
+    std::vector<mira::SegmentRecord> segments;
+
+    if (target.find('|') != std::string::npos) {
+        files = db.findFilesByGroupId(target);
+        segments = db.findSegmentsForGroup(target);
+        if (files.empty()) {
+            std::cerr << "mira export-segments: no files found for group_id '" << target << "'" << std::endl;
+            return 1;
+        }
+    } else {
+        std::optional<mira::FileRecord> record;
+        bool isNumeric = !target.empty() &&
+                          std::all_of(target.begin(), target.end(), [](unsigned char c) { return std::isdigit(c); });
+        if (isNumeric) record = db.findById(std::stoll(target));
+        if (!record) record = db.findByPath(target);
+        if (!record) {
+            std::cerr << "mira export-segments: no file found for '" << target << "'" << std::endl;
+            return 1;
+        }
+        files.push_back(*record);
+        segments = db.findSegmentsForFile(record->id);
+    }
+
+    if (segments.empty()) {
+        std::cerr << "mira export-segments: no segments declared for '" << target
+                   << "' -- run `mira tag-segment` first" << std::endl;
+        return 1;
+    }
+
+    mira::EssentiaEngine engine; // essentia::init() for the lifetime of this command -- loadAudio needs it
+
+    std::filesystem::create_directories(outDir);
+
+    int cutCount = 0, skipCount = 0;
+    for (size_t s = 0; s < segments.size(); ++s) {
+        const auto& seg = segments[s];
+        std::ostringstream segDirName;
+        segDirName << "seg" << (s + 1) << "_" << static_cast<int>(seg.startSeconds) << "-"
+                   << static_cast<int>(seg.endSeconds) << "s";
+        std::string segDir = outDir + "/" + segDirName.str();
+        std::filesystem::create_directories(segDir);
+
+        for (const auto& file : files) {
+            if (!file.analyzedAt) {
+                std::cerr << "  skip (not analyzed): " << file.path << std::endl;
+                ++skipCount;
+                continue;
+            }
+            auto audio = mira::loadAudio(file.path);
+            if (!audio) {
+                std::cerr << "  skip (could not decode): " << file.path << std::endl;
+                ++skipCount;
+                continue;
+            }
+            if (seg.startSeconds >= audio->durationSeconds) {
+                std::cerr << "  skip (segment starts past end of file, " << audio->durationSeconds
+                           << "s): " << file.path << std::endl;
+                ++skipCount;
+                continue;
+            }
+
+            int64_t startSample = static_cast<int64_t>(seg.startSeconds * audio->sampleRate);
+            int64_t endSample = std::min<int64_t>(
+                static_cast<int64_t>(seg.endSeconds * audio->sampleRate),
+                static_cast<int64_t>(audio->left.size()));
+            startSample = std::max<int64_t>(0, startSample);
+            if (endSample <= startSample) {
+                std::cerr << "  skip (empty slice after clamping to file length): " << file.path
+                           << std::endl;
+                ++skipCount;
+                continue;
+            }
+
+            std::vector<float> left(audio->left.begin() + startSample, audio->left.begin() + endSample);
+            std::vector<float> right(audio->right.begin() + startSample, audio->right.begin() + endSample);
+
+            std::string baseName = std::filesystem::path(file.path).stem().string();
+            std::string wavPath = segDir + "/" + baseName + ".wav";
+            if (!mira::writeWavFile(wavPath, left, right, audio->sampleRate, audio->numChannels > 1)) {
+                std::cerr << "  skip (could not write " << wavPath << ")" << std::endl;
+                ++skipCount;
+                continue;
+            }
+
+            mira::CaptionFields fields = mira::extractCaptionFieldsForSegment(db, file, seg);
+            std::ofstream sidecar(segDir + "/" + baseName + ".json");
+            sidecar << mira::renderSa3SidecarJson(fields, trigger);
+
+            std::cout << "  cut: " << wavPath;
+            constexpr double kLowActiveFractionWarning = 0.1; // first-pass threshold, undocumented elsewhere
+            if (auto activeFraction = activeFractionInRange(db, file, seg.startSeconds, seg.endSeconds)) {
+                if (*activeFraction < kLowActiveFractionWarning) {
+                    std::cout << "  (note: only " << std::fixed << std::setprecision(0)
+                               << (*activeFraction * 100.0)
+                               << "% of this range is active for this file -- mostly silent here,"
+                                  " which may be expected for one stem in a set)"
+                               << std::defaultfloat;
+                }
+            }
+            std::cout << std::endl;
+            ++cutCount;
+        }
+    }
+
+    std::cout << cutCount << " clips written, " << skipCount << " skipped, to " << outDir << std::endl;
+    return cutCount > 0 ? 0 : 1;
+}
+
 // PRD §8: `mira similar <file|id>`. Deliberately scoped narrow for this first cut: only
 // the overall discogs-effnet embedding (no --by timbre|rhythm|spectrum subsets yet, no
 // --filter, no external not-yet-scanned files) — those are real, separately-tracked
@@ -1265,6 +1813,21 @@ int main(int argc, char* argv[]) {
     }
     if (command == "search") {
         return runSearch(rest);
+    }
+    if (command == "caption") {
+        return runCaption(rest);
+    }
+    if (command == "tag") {
+        return runTag(rest);
+    }
+    if (command == "tag-folder") {
+        return runTagFolder(rest);
+    }
+    if (command == "tag-segment") {
+        return runTagSegment(rest);
+    }
+    if (command == "export-segments") {
+        return runExportSegments(rest);
     }
 
     std::cerr << "mira: unknown command '" << command << "'\n\n";

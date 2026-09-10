@@ -246,6 +246,9 @@ add_executable(mira
   mira/analyze/Genre.cpp
   mira/analyze/VoiceInstrumental.cpp
   mira/taxonomy/Taxonomy.cpp
+  mira/caption/CaptionFields.cpp
+  mira/caption/Sa3Renderer.cpp
+  mira/export/AudioWriter.cpp
 )
 
 target_include_directories(mira PRIVATE

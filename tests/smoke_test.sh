@@ -746,6 +746,217 @@ assert_eq "exit code non-zero for an unknown field" "1" "$CODE_SEARCH_BAD"
 assert_contains "explains why" "$OUT_SEARCH_BAD" "could not parse"
 
 echo
+echo "== test: mira caption (PRD §11/§15, SA3 renderer, TASKS.md Phase 3) =="
+OUT_CAPTION=$("$MIRA" caption "$ROOT/fixtures/flamenco.wav" --db "$TESTDB" --trigger sks_test 2>&1)
+CODE_CAPTION=$?
+assert_eq "exit code" "0" "$CODE_CAPTION"
+assert_contains "prose includes the trigger token" "$OUT_CAPTION" "sks_test,"
+assert_contains "prose includes the TrackType prefix" "$OUT_CAPTION" "TrackType: Music"
+assert_contains "prose includes the normalized genre" "$OUT_CAPTION" "Flamenco"
+assert_contains "prose includes BPM" "$OUT_CAPTION" "BPM:"
+assert_contains "prose includes Length in seconds" "$OUT_CAPTION" "Length:"
+assert_contains "tags section lists genre" "$OUT_CAPTION" "genre:"
+assert_contains "tags section lists keyscale" "$OUT_CAPTION" "keyscale: F minor"
+# flamenco.wav's top moodtheme score is ~0.02 (see the mira-inspect test above), well
+# under the caption render threshold -- a caption must not assert a mood it isn't
+# confident about (PRD §12.6: confidence-gated field omission, not assertion).
+NOT_MOOD=$(echo "$OUT_CAPTION" | grep -c "mood" || true)
+assert_eq "low-confidence mood is omitted, not asserted" "0" "$NOT_MOOD"
+
+OUT_CAPTION_BAD=$("$MIRA" caption "$ROOT/fixtures/nonexistent-file.wav" --db "$TESTDB" 2>&1)
+CODE_CAPTION_BAD=$?
+assert_eq "exit code non-zero for an unknown file" "1" "$CODE_CAPTION_BAD"
+
+SIDECAR_PATH="$ROOT/fixtures/flamenco.json"
+rm -f "$SIDECAR_PATH"
+OUT_SIDECAR=$("$MIRA" caption "$ROOT/fixtures/flamenco.wav" --db "$TESTDB" --emit-sidecar 2>&1)
+assert_contains "reports the sidecar path written" "$OUT_SIDECAR" "sidecar written"
+if [[ -f "$SIDECAR_PATH" ]]; then
+    pass "sidecar file was created next to the source audio"
+    SIDECAR_CONTENT=$(cat "$SIDECAR_PATH")
+    assert_contains "sidecar is a flat JSON object with a prompt key" "$SIDECAR_CONTENT" "\"prompt\":"
+    # underfit's prompt_templates.py _get() silently keeps only the first element of a
+    # list-valued tag -- every field mira writes must be a plain (comma-joined) string,
+    # never a JSON array, or multi-value fields like genre/instruments would be truncated
+    # to one entry the moment underfit reads this sidecar.
+    NOT_ARRAY=$(echo "$SIDECAR_CONTENT" | grep -c '\[' || true)
+    assert_eq "no field is serialized as a JSON array" "0" "$NOT_ARRAY"
+else
+    fail "sidecar file was created next to the source audio"
+fi
+rm -f "$SIDECAR_PATH"
+
+echo
+echo "== test: mira tag (PRD §6/§11, human overrides -- keywords has no machine source) =="
+TAGDB="$(mktemp -t mira_smoke_tag_XXXXXX).db"
+"$MIRA" scan "$ROOT/fixtures" --db "$TAGDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$TAGDB" --recheck-tempo >/dev/null 2>&1
+
+OUT_TAG_EMPTY=$("$MIRA" tag 1 --db "$TAGDB" 2>&1)
+CODE_TAG_EMPTY=$?
+assert_eq "exit code non-zero with no flags and no --clear" "1" "$CODE_TAG_EMPTY"
+
+OUT_TAG=$("$MIRA" tag 1 --db "$TAGDB" --keywords "funny, quirky" --moods "comedic" 2>&1)
+CODE_TAG=$?
+assert_eq "exit code" "0" "$CODE_TAG"
+assert_contains "reports the keywords it set" "$OUT_TAG" "\"keywords\":[\"funny\",\"quirky\"]"
+assert_contains "reports the moods it set" "$OUT_TAG" "\"moods\":[\"comedic\"]"
+
+OUT_CAPTION_TAGGED=$("$MIRA" caption 1 --db "$TAGDB" 2>&1)
+assert_contains "caption prose folds in the human keyword" "$OUT_CAPTION_TAGGED" "funny"
+assert_contains "caption prose folds in the human mood override" "$OUT_CAPTION_TAGGED" "comedic"
+assert_contains "tags section lists keywords separately from moods" "$OUT_CAPTION_TAGGED" "keywords: funny, quirky"
+
+# A second `mira tag` call for a different field must not clobber the first.
+"$MIRA" tag 1 --db "$TAGDB" --key "F minor" >/dev/null 2>&1
+OUT_TAG_MERGED=$("$MIRA" inspect 1 --db "$TAGDB" 2>&1)
+assert_contains "merged human override still has the earlier keywords call" "$OUT_TAG_MERGED" "funny"
+assert_contains "merged human override also has the later key call" "$OUT_TAG_MERGED" "F minor"
+
+"$MIRA" tag 1 --db "$TAGDB" --clear >/dev/null 2>&1
+OUT_CAPTION_CLEARED=$("$MIRA" caption 1 --db "$TAGDB" 2>&1)
+NOT_FUNNY=$(echo "$OUT_CAPTION_CLEARED" | grep -c "funny" || true)
+assert_eq "--clear removes human overrides from the rendered caption" "0" "$NOT_FUNNY"
+
+rm -f "$TAGDB" "$TAGDB-wal" "$TAGDB-shm"
+
+echo
+echo "== test: mira tag-segment + export-segments (TASKS.md Phase 3 addition -- SA3 has no"
+echo "   per-clip timeline conditioning, so a file whose character changes partway through"
+echo "   can only be captioned by cutting it into per-segment clips) =="
+SEGDB="$(mktemp -t mira_smoke_seg_XXXXXX).db"
+"$MIRA" scan "$ROOT/fixtures" --db "$SEGDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$SEGDB" --recheck-tempo >/dev/null 2>&1
+
+OUT_SEGTAG_BAD_RANGE=$("$MIRA" tag-segment 1 --db "$SEGDB" --start 7 --end 3 2>&1)
+CODE_SEGTAG_BAD_RANGE=$?
+assert_eq "exit code non-zero when --end <= --start" "1" "$CODE_SEGTAG_BAD_RANGE"
+
+OUT_SEGTAG_1=$("$MIRA" tag-segment 1 --db "$SEGDB" --start 0 --end 7 --keywords "intro, gentle" 2>&1)
+CODE_SEGTAG_1=$?
+assert_eq "exit code" "0" "$CODE_SEGTAG_1"
+assert_contains "reports the segment id created" "$OUT_SEGTAG_1" "segment 1 created"
+assert_contains "reports the declared time range" "$OUT_SEGTAG_1" "0s-7s"
+
+"$MIRA" tag-segment 1 --db "$SEGDB" --start 7 --end 14 --keywords "energetic, driving" >/dev/null 2>&1
+
+SEGOUT="$(mktemp -d -t mira_smoke_segout_XXXXXX)"
+OUT_EXPORT=$("$MIRA" export-segments 1 --db "$SEGDB" --out-dir "$SEGOUT" --trigger sks_test 2>&1)
+CODE_EXPORT=$?
+assert_eq "exit code" "0" "$CODE_EXPORT"
+assert_contains "reports 2 clips written" "$OUT_EXPORT" "2 clips written"
+
+SEG1_WAV="$SEGOUT/seg1_0-7s/flamenco.wav"
+SEG2_WAV="$SEGOUT/seg2_7-14s/flamenco.wav"
+if [[ -f "$SEG1_WAV" && -f "$SEG2_WAV" ]]; then
+    pass "both segment WAV files were written"
+else
+    fail "both segment WAV files were written"
+fi
+
+SEG1_JSON="$SEGOUT/seg1_0-7s/flamenco.json"
+if [[ -f "$SEG1_JSON" ]]; then
+    pass "segment sidecar JSON was written"
+    SEG1_CONTENT=$(cat "$SEG1_JSON")
+    assert_contains "segment sidecar has the segment's own keywords" "$SEG1_CONTENT" "intro, gentle"
+    assert_contains "segment sidecar's length reflects the cut, not the whole file" "$SEG1_CONTENT" "\"length_seconds\":\"7\""
+    assert_contains "segment sidecar carries the trigger token" "$SEG1_CONTENT" "sks_test"
+else
+    fail "segment sidecar JSON was written"
+fi
+
+# Each cut clip must actually be ~7s of real audio, not the whole 14s file duplicated --
+# use ffprobe (already a build dependency) rather than trusting the reported byte count.
+if command -v ffprobe >/dev/null 2>&1; then
+    SEG1_DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$SEG1_WAV" 2>/dev/null)
+    SEG1_DUR_ROUNDED=$(printf "%.0f" "${SEG1_DUR:-0}")
+    assert_eq "segment 1's cut audio is actually ~7 seconds long" "7" "$SEG1_DUR_ROUNDED"
+fi
+
+OUT_EXPORT_NONE=$("$MIRA" export-segments 999999 --db "$SEGDB" --out-dir "$SEGOUT" 2>&1)
+CODE_EXPORT_NONE=$?
+assert_eq "exit code non-zero for a nonexistent target" "1" "$CODE_EXPORT_NONE"
+
+rm -rf "$SEGOUT"
+rm -f "$SEGDB" "$SEGDB-wal" "$SEGDB-shm"
+
+echo
+echo "== test: mira tag-folder (TASKS.md Phase 3 addition -- tagging a whole library"
+echo "   without one mira-tag call per file) =="
+FOLDDB="$(mktemp -t mira_smoke_folder_XXXXXX).db"
+"$MIRA" scan "$ROOT/fixtures" --db "$FOLDDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$FOLDDB" >/dev/null 2>&1
+
+OUT_TAGFOLDER_NOTDIR=$("$MIRA" tag-folder "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" --keywords "x" 2>&1)
+CODE_TAGFOLDER_NOTDIR=$?
+assert_eq "exit code non-zero when the target isn't a directory" "1" "$CODE_TAGFOLDER_NOTDIR"
+
+OUT_TAGFOLDER=$("$MIRA" tag-folder "$ROOT/fixtures" --db "$FOLDDB" --keywords "score-cue, demo" --genre "Folder Genre" 2>&1)
+CODE_TAGFOLDER=$?
+assert_eq "exit code" "0" "$CODE_TAGFOLDER"
+
+OUT_CAPTION_FOLDER=$("$MIRA" caption "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" 2>&1)
+assert_contains "caption picks up the folder-default genre" "$OUT_CAPTION_FOLDER" "Folder Genre"
+assert_contains "caption picks up the folder-default keywords" "$OUT_CAPTION_FOLDER" "score-cue"
+
+# A file's own tag must win over the folder default for the same field, without losing
+# the folder default's other fields (keywords).
+"$MIRA" tag "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" --genre "Per-File Genre" >/dev/null 2>&1
+OUT_CAPTION_OVERRIDE=$("$MIRA" caption "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" 2>&1)
+assert_contains "per-file genre wins over the folder default" "$OUT_CAPTION_OVERRIDE" "Per-File Genre"
+NOT_FOLDER_GENRE=$(echo "$OUT_CAPTION_OVERRIDE" | grep -c "Folder Genre" || true)
+assert_eq "folder-default genre no longer shows once overridden" "0" "$NOT_FOLDER_GENRE"
+assert_contains "folder-default keywords still applies (field wasn't overridden)" "$OUT_CAPTION_OVERRIDE" "score-cue"
+
+"$MIRA" tag-folder "$ROOT/fixtures" --db "$FOLDDB" --clear >/dev/null 2>&1
+"$MIRA" tag "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" --clear >/dev/null 2>&1
+OUT_CAPTION_CLEARED_FOLDER=$("$MIRA" caption "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" 2>&1)
+NOT_SCORE_CUE=$(echo "$OUT_CAPTION_CLEARED_FOLDER" | grep -c "score-cue" || true)
+assert_eq "clearing the folder default removes it from the caption" "0" "$NOT_SCORE_CUE"
+
+rm -f "$FOLDDB" "$FOLDDB-wal" "$FOLDDB-shm"
+
+echo
+echo "== test: export-segments surfaces a low-active-fraction note (active-region-aware"
+echo "   boundary validation, TASKS.md Phase 3 addition) =="
+if command -v ffmpeg >/dev/null 2>&1; then
+    ACTIVEWARN_DIR=$(mktemp -d)
+    # Same 2s-silence/3s-tone/2s-silence/3s-tone/2s-silence fixture used by the
+    # active-region tests above: a segment declared entirely inside a silence gap should
+    # get the low-active-fraction note; a segment inside a tone span shouldn't.
+    ffmpeg -y -loglevel error \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=3" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -f lavfi -i "sine=frequency=880:sample_rate=44100:duration=3" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -filter_complex "[0][1][2][3][4]concat=n=5:v=0:a=1[out]" -map "[out]" \
+        "$ACTIVEWARN_DIR/tones.wav"
+
+    ACTIVEWARN_DB="$(mktemp -t mira_smoke_activewarn_XXXXXX).db"
+    "$MIRA" scan "$ACTIVEWARN_DIR" --db "$ACTIVEWARN_DB" --as stem >/dev/null 2>&1
+    "$MIRA" analyze --db "$ACTIVEWARN_DB" >/dev/null 2>&1
+    "$MIRA" tag-segment 1 --db "$ACTIVEWARN_DB" --start 0 --end 2 >/dev/null 2>&1   # pure silence gap
+    "$MIRA" tag-segment 1 --db "$ACTIVEWARN_DB" --start 2 --end 5 >/dev/null 2>&1   # pure tone span
+
+    ACTIVEWARN_OUT="$(mktemp -d -t mira_smoke_activewarn_out_XXXXXX)"
+    OUT_ACTIVEWARN=$("$MIRA" export-segments 1 --db "$ACTIVEWARN_DB" --out-dir "$ACTIVEWARN_OUT" 2>&1)
+    assert_contains "silent segment gets the low-active-fraction note" "$OUT_ACTIVEWARN" "mostly silent here"
+
+    # The tone-span segment's line is the one right after the silence segment's note —
+    # check it specifically rather than the whole output, so a false positive on the
+    # first segment can't accidentally satisfy this assertion too.
+    TONE_LINE=$(echo "$OUT_ACTIVEWARN" | grep "seg2_2-5s")
+    NOT_WARNED=$(echo "$TONE_LINE" | grep -c "mostly silent" || true)
+    assert_eq "tone segment does not get the low-active-fraction note" "0" "$NOT_WARNED"
+
+    rm -rf "$ACTIVEWARN_DIR" "$ACTIVEWARN_OUT"
+    rm -f "$ACTIVEWARN_DB" "$ACTIVEWARN_DB-wal" "$ACTIVEWARN_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping active-fraction warning test"
+fi
+
+echo
 echo "======================================"
 echo "  $PASS passed, $FAIL failed"
 echo "======================================"

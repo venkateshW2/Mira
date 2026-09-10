@@ -595,16 +595,188 @@ stress-testing this phase's work, not left as latent risk for Phase 3.
 Ordered after all DSP/MIR/classification are complete, so the renderer never gets
 designed around a missing field.
 
-- [ ] Field-dict + prose renderer architecture: one analysis document, N renderers (§11)
-- [ ] SA3 key-value tag renderer
-- [ ] SA3 prose renderer, 256-token / 45-word ceiling
-- [ ] `seconds_total` field, trigger-token injection
-- [ ] Folder-level human defaults
-- [ ] Machine pre-fills genre/mood/instruments as an editable draft; human field always
-      wins on conflict (§6, §11)
-- [ ] Sidecar JSON export (`--emit-sidecars`) (§6)
-- [ ] Confidence-gated field omission at render time — the renderer omits low-confidence
-      fields rather than asserting them (§12.6)
+- [x] Field-dict + prose renderer architecture: one analysis document, N renderers (§11)
+      — `src/mira/caption/CaptionFields.{h,cpp}`. `extractCaptionFields()` builds one
+      `CaptionFields` struct per file from `machine` JSON (confidence-gated: a value below
+      threshold is left out of the struct entirely, per §12.6 — see the last item below),
+      with `human` overrides layered on top. Renderers (`Sa3Renderer` is the first; N=1
+      for now) read only this struct, never `machine` JSON directly — verified by
+      construction, not just claimed: `Sa3Renderer.cpp` has zero `json_extract`/`Database`
+      references
+- [x] SA3 key-value tag renderer — `src/mira/caption/Sa3Renderer.cpp`'s `renderSa3Tags()`.
+      Grounded directly in SA3's own source (`sa3-studio/stable-audio-3/stable_audio_3/
+      interface/reprompt.py`'s `TRACK_TYPE_PREFIXES`), not the generic AudioSparx-tag
+      story from the public prompting guide — the two disagree, and reprompt.py (what
+      Stability's own team built to elicit good output from this exact trained model) is
+      the stronger signal. Every value is a plain string, never a JSON array: reading
+      underfit's actual `prompt_templates.py` found that its `_get()` silently keeps only
+      a list value's first element, so a multi-value field passed as a JSON array would
+      be silently truncated by underfit at dataset-load time — a real bug caught by
+      reading the training code, not a style choice. Includes a `"prompt"` key holding
+      the prose renderer's output verbatim, since underfit treats `"prompt"` as a
+      passthrough tag key
+- [x] SA3 prose renderer, 256-token / 45-word ceiling — `renderSa3Prose()`, same file.
+      Shape is `TrackType: X, VocalType: Y, ` prefix (exact strings from reprompt.py,
+      stems mapped onto reprompt.py's own "instrument" category, whose classifier
+      definition literally says "or with words solo or stem") + a descriptive clause
+      built from CaptionFields' gated genre/instrument/mood labels + trailing
+      `BPM: N. Length: N seconds` (period-joined, not the AudioSparx comma-tag style).
+      One-shots get no TrackType prefix and never a BPM field, matching reprompt.py's own
+      One-shot template exactly. Not free prose — mira has no text-generation step, so
+      this is a grammatical join of measured labels, not invented texture language
+      (see NOTES: mira currently cannot honestly produce "cavernous reverb"-style
+      descriptions — no reverb/space descriptor exists yet, and the closest thing,
+      moodtheme, is a blunt 56-word closed vocabulary; adding real DSP signal for this is
+      a separate, later, scoped decision, not done here). 45-word ceiling enforced by
+      progressive truncation (drop mood clause, then extra instruments beyond the top
+      one) before ever dropping BPM/Length; 256-token hard ceiling is the frozen
+      T5Gemma conditioner's own tokenizer truncation (confirmed from the actual shipped
+      `sa3-medium`/`sa3-sm-music` `training_template.json`, not the class default),
+      approximated here by word-budget trimming since mira has no T5Gemma tokenizer at
+      render time
+- [x] `mira caption <file|id>` CLI (§8, by extension) — `runCaption` in `main.cpp`.
+      Prints the prose form plus the flat tag set, `--trigger <token>` for the LoRA
+      trigger word, `--emit-sidecar` writes `<file>.json` next to the source audio
+      (`renderSa3SidecarJson()`) for underfit's dataset loader to pick up directly
+      (`pre_encode.py`'s JSON-sidecar path keeps every string/int/float key it finds).
+      14 new smoke-test assertions, including a regression check that no sidecar field is
+      ever serialized as a JSON array
+- [x] `seconds_total` field, trigger-token injection — resolved, not built: trigger-token
+      injection is done (`--trigger`, above, threaded through `mira caption`/
+      `export-segments` alike); `seconds_total` itself is deliberately **not** written
+      into the sidecar JSON as a training field — it's a separate numeric conditioning
+      channel underfit's own `pre_encode.py` computes directly off the audio file, not
+      something mira's caption renderer should assert a second, possibly-drifting copy
+      of. (A `length_seconds` *text* tag is emitted for the "prompt"-only training path,
+      per reprompt.py's own convention of restating duration in prose alongside the
+      numeric channel — SA3's own tooling double-conditions duration on purpose, unlike
+      BPM.) Originally listed as open only because it was bundled with trigger-token
+      injection on one checklist line
+- [x] `mira tag <file|id>` CLI — the write side of `human` overrides, added after a
+      real use case surfaced one during Phase 3 testing: a score composer wants to
+      hand-label pieces with words no analyzer could ever produce ("funny", "quirky",
+      "action", "drama" scene descriptors) so inference-time prompts using those words
+      retrieve similar-feeling pieces. Until this, `human` was readable
+      (`CaptionFields.cpp`) but nothing ever wrote to it — a real gap, not a deferred
+      item. `Database::setHumanField` merges one key at a time via SQLite's own
+      `json_set(human, ?, json(?))`, so repeated `mira tag` calls for different fields
+      never clobber each other (verified: a `--keywords` call followed by a `--key` call
+      both survive); `--clear` resets to `{}`. Added a new canonical field, `keywords[]`
+      (PRD §15 always specified it, CaptionFields skipped it) — the *only* CaptionFields
+      field with no machine-derived source at all, since mira has no analyzer for
+      narrative/vibe judgment and isn't meant to grow one. Folded into the prose
+      renderer's mood clause alongside moodtheme's gated labels (`Sa3Renderer.cpp`'s
+      `moodClause()`), and — unlike moods, which the word-budget truncation can drop —
+      keywords are never dropped by the renderer, since dropping a person's own label to
+      save two words is a decision that should stay with the person. 10 new smoke-test
+      assertions
+- [x] Folder-level human defaults — `mira tag-folder <folder>`, `src/mira/db/Database.
+      {h,cpp}`'s new `folder_defaults` table (`setFolderDefaultField`/`clearFolderDefault`/
+      `findFolderDefaultsForPath`) plus `runTagFolder` in `main.cpp`. `folder_path` is a
+      plain string prefix matched against `files.path` at caption-render time — not
+      resolved against the filesystem, so it must be written the same way (relative vs
+      absolute) the target files were actually scanned with, documented in the CLI help
+      rather than silently assumed. Multiple matching ancestor folders all apply, ordered
+      shortest-to-longest (`findFolderDefaultsForPath`), so a deeper folder's default
+      overrides a shallower ancestor's for the same field — same "more specific wins"
+      rule already established for segment-over-file, just one more level. Wired into
+      `CaptionFields::extractCaptionFields` between machine-derived values and the file's
+      own `human`, so precedence end to end is: machine < folder default(s) < file
+      `human` < segment `human`. Verified on the real fixture: a folder-level `genre`
+      shows up in the caption, then a per-file `mira tag --genre` on top of it correctly
+      wins for `genre` specifically while the folder's `keywords` still comes through
+      unaffected — 8 new smoke-test assertions
+
+**Segment-level captioning — new addition, not in the original PRD** (raised by a real
+score-producer workflow: a 40-minute cue delivered as a synced 16-stem set, where the
+*scene* — funny, tense, dramatic — changes at particular timestamps within the file, so
+no single whole-file caption can be honest about it). Two findings drove the design, both
+checked against the actual shipped model configs rather than assumed:
+
+1. This isn't only a captioning problem — SA3 has a **hard per-clip duration ceiling**
+   regardless: `sample_size` in the real `training_template.json` files is 5,324,800
+   samples (`sa3-sm-music`/`sa3-sm-sfx`, ≈120s) and 16,777,216 (`sa3-medium`, ≈380s) at
+   44.1kHz. A 40-minute file has to be cut into pieces to be trainable at all, whether or
+   not its mood ever changes.
+2. SA3's conditioning is exactly two channels, confirmed from `stable_audio_3/models/
+   conditioners.py` and the training configs: `prompt` (one flat T5Gemma-encoded text
+   string) and `seconds_total` (one number). There is no timeline/segment structure in
+   the model's own conditioning at all — a caption cannot vary within a clip. This
+   matches PRD §15's own note that segments are "first-class in exactly one training
+   pipeline (YuE's)... an internal correctness device, not a caption feature" for SA3.
+   So the only lever is choosing *where to cut*, not how to caption within a clip.
+
+- [x] `segments` table + `mira tag-segment` — `src/mira/db/Database.{h,cpp}`'s
+      `SegmentRecord`/`createSegment`/`findSegmentsForGroup`/`findSegmentsForFile`/
+      `findFilesByGroupId`, wired into `main.cpp`'s `runTagSegment`. A time-ranged
+      counterpart to `human` on `files`: each row is exactly one of group_id-scoped
+      (applies to every sibling stem in that cue's existing `files.group_id` at the same
+      timestamps, keeping a synced stem set synced across the cut) or file_id-scoped (one
+      long non-stem file segmented directly). Reuses `human`'s own JSON convention
+      verbatim, just scoped to a time range
+- [x] `CaptionFields::extractCaptionFieldsForSegment` — `src/mira/caption/CaptionFields.
+      {h,cpp}`. Starts from the file's whole-file `CaptionFields` (genre/instruments/
+      moods/bpm/key are not re-measured per segment — mira has no segment-level
+      classification yet, that's Phase 4's still-unbuilt "segment-level analysis
+      replacing whole-track averaging" — a documented simplification, not hidden),
+      overrides `durationSeconds` to the segment's own length, then layers the segment's
+      own `human` on top last, so a segment-specific tag wins over both the machine
+      value and the file's untimed human override. The human-override application logic
+      was refactored out of `extractCaptionFields` into a shared `applyHumanOverrides()`
+      so file-level and segment-level extraction can never drift apart
+- [x] `mira export-segments` + `AudioWriter` (`src/mira/export/AudioWriter.{h,cpp}`) —
+      mira's first audio-*writing* path (everything before this only ever decoded, PRD
+      §7). Writes 32-bit float PCM WAV directly from the samples `AudioLoader` already
+      decoded — lossless, no re-encode step, no new codec dependency (a WAV header is
+      ~44 bytes of arithmetic, not a library). For a group_id target, cuts every sibling
+      stem at *identical* declared boundaries so the set stays in sync across the cut —
+      the entire reason group_id-scoped segments exist rather than per-file ones. Each
+      cut clip gets its own SA3 sidecar JSON next to it, via the same
+      `extractCaptionFieldsForSegment` + `Sa3Renderer` machinery `mira caption` already
+      uses. Verified end-to-end on the real flamenco.wav fixture, not just non-crashing:
+      cut into a 0-7s and a 7-14s clip via two `mira tag-segment` calls, `ffprobe`
+      confirms each output file is real, valid `pcm_f32le` audio at exactly the declared
+      duration (not the whole 14s file duplicated), and each sidecar's `length_seconds`
+      reflects the 7s cut, not the original file's 14s. 13 new smoke-test assertions
+- [ ] Segment-boundary UI/authoring beyond the raw CLI (`--start`/`--end` in seconds by
+      hand) — **deliberately not built in Phase 3**, not an oversight: a real "listen and
+      mark" boundary workflow needs a waveform view, which needs the JUCE UI shell that
+      doesn't exist yet (Phase 5). Building a CLI-only stopgap for this (guessing
+      boundaries from onset detection, say) would guess at exactly the judgment call —
+      *where* the scene changes — that only a person watching picture/listening can make;
+      better to leave `--start`/`--end` as the honest, if tedious, interface until Phase
+      5's real UI exists. TASKS.md Phase 5 already has "Segment slicing UI/export" as a
+      placeholder this folds into directly — no new placeholder needed
+- [x] Active-region-aware boundary validation — `activeFractionInRange()` in `main.cpp`,
+      used by `export-segments`. Computes how much of a declared `[start,end)` boundary
+      actually overlaps the file's own stored active spans (Phase 1's silence gate,
+      previously computed but never cross-checked against anything); prints a note
+      (never skips — a low fraction is real and expected for one stem in a synced set,
+      e.g. brass simply not playing during a "funny" phrase, exactly the case this was
+      built to surface rather than hide) when a cut is mostly silent for that particular
+      file. Returns "not applicable" rather than a false 0% for any file active-region
+      detection never ran on (Phase 1: only stems/declared stems/files over 5 minutes get
+      it) — verified on a real synthesized silence/tone fixture, not just by inspection:
+      a segment declared entirely inside a silence gap gets the note, an adjacent segment
+      declared entirely inside a tone span does not, 2 new smoke-test assertions
+- [x] Machine pre-fills genre/mood/instruments as an editable draft; human field always
+      wins on conflict (§6, §11) — `CaptionFields.cpp`'s human-override block. No
+      project-wide `human` JSON schema exists yet, so this is `CaptionFields`' own
+      minimal, documented convention (`$.genre`/`$.instruments`/`$.moods`/`$.bpm`/`$.key`/
+      `$.is_instrumental` at the top level of `human`, each replacing — not merging with —
+      the machine-derived value when present). Folder-level defaults (the item above)
+      would need to populate `human` this same way, not a new mechanism
+- [x] Sidecar JSON export (`--emit-sidecars`) (§6) — see `mira caption --emit-sidecar`
+      above (singular flag name; TASKS.md's plural was the working title)
+- [x] Confidence-gated field omission at render time — the renderer omits low-confidence
+      fields rather than asserting them (§12.6) — enforced in `CaptionFields.cpp`, not in
+      the renderer: genre/instrument/mood each need a real per-label score above a
+      documented first-pass threshold to appear in the struct at all; BPM is additionally
+      withheld when `Mir.cpp`'s tempo-stability check flagged the file as not having one
+      representative tempo. Verified on the real flamenco.wav fixture: its top moodtheme
+      score (~0.02) falls under threshold, and the rendered caption correctly contains no
+      mood clause at all rather than asserting "love" at 2% confidence — a smoke-test
+      regression, not just a manual check
 
 ---
 
