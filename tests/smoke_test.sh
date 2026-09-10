@@ -400,6 +400,15 @@ assert_contains "shows transcribed note count" "$OUT" "Notes:"
 OUT_BY_ID=$("$MIRA" inspect 1 --db "$TESTDB" 2>&1)
 assert_eq "inspecting by numeric id matches inspecting by path" "$OUT" "$OUT_BY_ID"
 
+echo
+echo "== test: provenance (PRD §6) recorded per file =="
+PROVENANCE=$(sqlite3 "$TESTDB" "SELECT provenance FROM files WHERE path LIKE '%flamenco.wav'")
+assert_contains "provenance has mira_git_hash" "$PROVENANCE" "mira_git_hash"
+assert_contains "provenance has the essentia version actually built" "$PROVENANCE" "2.1-beta6-dev"
+GIT_HASH_IN_DB=$(echo "$PROVENANCE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mira_git_hash"])')
+assert_eq "recorded git hash is not the placeholder" "no" \
+    "$([ "$GIT_HASH_IN_DB" = "unknown" ] && echo yes || echo no)"
+
 OUT_MISSING=$("$MIRA" inspect no-such-file.wav --db "$TESTDB" 2>&1)
 CODE_MISSING=$?
 if [[ "$CODE_MISSING" != "0" ]]; then pass "exit code non-zero for a file not in the library ($CODE_MISSING)"

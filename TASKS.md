@@ -39,8 +39,14 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       either (scan is index-only, analyzer will own `machine`)
 - [x] Vendor + wire in `SQLiteCpp` (§7) — against our own SQLite 3.53.4 amalgamation, not
       SQLiteCpp's bundled copy or Apple's `libsqlite3` (`src/CMakeLists.txt`)
-- [ ] Provenance recorded per file: mira version, Essentia version, model
-      names/versions, analysis timestamp (§6) — column exists, analyzer will populate it
+- [x] Provenance recorded per file: mira version, Essentia version, model
+      names/versions, analysis timestamp (§6) — mira's "version" is its git commit hash
+      (`git rev-parse --short HEAD` at CMake configure time; no release versioning
+      exists yet), since that's the only thing that actually identifies which build
+      produced a row. Essentia's version comes from its own committed `version.h`
+      (`ESSENTIA_VERSION`/`ESSENTIA_GIT_SHA`). Model "versions" are just the file paths
+      for `beat_this.onnx`/`model.onnx` (basic pitch) — neither publishes a version
+      string of its own
 
 **Scanner + router**
 - [x] `mira scan <dir>...` — walk, hash (sha256 via CommonCrypto), record mtime/size,

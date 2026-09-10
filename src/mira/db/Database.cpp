@@ -167,6 +167,7 @@ void Database::applyAnalysis(const AnalysisUpdate& update) {
         "active_ratio = COALESCE(?, active_ratio), "
         "active_spans = COALESCE(?, active_spans), "
         "machine = json_patch(machine, ?), "
+        "provenance = ?, "
         "analyzed_at = ? "
         "WHERE id = ?");
 
@@ -183,8 +184,9 @@ void Database::applyAnalysis(const AnalysisUpdate& update) {
     else stmt.bind(5);
 
     stmt.bind(6, update.machineJson);
-    stmt.bind(7, update.analyzedAt);
-    stmt.bind(8, update.id);
+    stmt.bind(7, update.provenanceJson);
+    stmt.bind(8, update.analyzedAt);
+    stmt.bind(9, update.id);
     stmt.exec();
 }
 

@@ -66,6 +66,7 @@ public:
         std::optional<double> activeRatio;
         std::optional<std::string> activeSpansJson;
         std::string machineJson = "{}";   // merged into `machine`, not replacing other fields
+        std::string provenanceJson = "{}"; // replaces `provenance` wholesale (PRD §6)
         int64_t analyzedAt = 0;
     };
     void applyAnalysis(const AnalysisUpdate& update);

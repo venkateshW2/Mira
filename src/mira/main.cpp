@@ -10,6 +10,8 @@
 #include "db/Database.h"
 #include "scan/Scanner.h"
 
+#include <version.h> // essentia's, not libc++'s — ESSENTIA_VERSION/ESSENTIA_GIT_SHA
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -195,6 +197,19 @@ int runAnalyze(const std::vector<std::string>& args) {
     int64_t analyzedAt = nowUnix();
     std::map<std::string, int> counts;
 
+    // PRD §6: "provenance — mira version, Essentia version, model names/versions,
+    // analysis timestamp. Lets a later model upgrade identify exactly which files need
+    // re-analysis." Same for every file in this run — built once outside the loop.
+    std::ostringstream provenance;
+    provenance << "{\"mira_git_hash\":\"" << MIRA_GIT_HASH << "\""
+               << ",\"essentia_version\":\"" << ESSENTIA_VERSION << "\""
+               << ",\"essentia_git_sha\":\"" << ESSENTIA_GIT_SHA << "\""
+               << ",\"beat_this_model\":\"" << MIRA_BEAT_THIS_MODEL << "\""
+               << ",\"basic_pitch_model\":\"" << MIRA_BASIC_PITCH_MODEL << "\""
+               << ",\"analyzed_at\":" << analyzedAt
+               << "}";
+    std::string provenanceJson = provenance.str();
+
     for (auto& [key, indices] : siblingGroups) {
         bool isSiblingSet = indices.size() >= 2;
         std::optional<std::string> groupId;
@@ -218,6 +233,7 @@ int runAnalyze(const std::vector<std::string>& args) {
 
             mira::Database::AnalysisUpdate update;
             update.id = c.record.id;
+            update.provenanceJson = provenanceJson;
             if (!c.isDeclared) update.contentType = finalContentType; // never touch a declared row
             if (groupId) update.groupId = groupId;
 

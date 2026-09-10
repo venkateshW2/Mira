@@ -2,6 +2,23 @@
 # scanner + SQLite storage; MIR, neural, and the JUCE UI attach to this same target in
 # later phases.
 
+# PRD §6: provenance records "mira version... lets a later model upgrade identify
+# exactly which files need re-analysis." No release versioning exists yet, so the git
+# commit is the only thing that actually identifies "which mira produced this row".
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE MIRA_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+endif()
+if(NOT MIRA_GIT_HASH)
+  set(MIRA_GIT_HASH "unknown")
+endif()
+
 set(SQLITE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/sqlite-amalgamation)
 set(SQLITECPP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/SQLiteCpp)
 set(ESSENTIA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/essentia)
@@ -146,6 +163,9 @@ target_include_directories(mira PRIVATE
 target_compile_definitions(mira PRIVATE
   MIRA_BEAT_THIS_MODEL="${BEAT_THIS_ROOT}/onnx/beat_this.onnx"
   MIRA_BASIC_PITCH_MODEL="${BASICPITCH_ROOT}/ort-model/model.onnx"
+  # Captured at configure time, not build time — re-run cmake to refresh after new
+  # commits if you care about this being exact; "close enough" for a dev build.
+  MIRA_GIT_HASH="${MIRA_GIT_HASH}"
 )
 
 target_link_libraries(mira PRIVATE
