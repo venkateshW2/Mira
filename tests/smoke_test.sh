@@ -387,6 +387,45 @@ else
 fi
 
 echo
+echo "== test: DSP/MIR only see active spans, not the whole file (PRD §5) =="
+if command -v ffmpeg >/dev/null 2>&1; then
+    RESTRICT_DIR=$(mktemp -d)
+    # Same 2s-silence/3s-tone/2s-silence/3s-tone/2s-silence fixture, analyzed twice: once
+    # as a stem (active-region-restricted) and once as an ordinary <5min file (not
+    # restricted) — the same bytes on disk, so any descriptor difference is entirely the
+    # active-region restriction's doing, not a different input.
+    ffmpeg -y -loglevel error \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=3" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -f lavfi -i "sine=frequency=880:sample_rate=44100:duration=3" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -filter_complex "[0][1][2][3][4]concat=n=5:v=0:a=1[out]" -map "[out]" \
+        "$RESTRICT_DIR/tones.wav"
+
+    RESTRICT_DB="$(mktemp -t mira_smoke_restrict_XXXXXX).db"
+    "$MIRA" scan "$RESTRICT_DIR" --db "$RESTRICT_DB" --as stem >/dev/null 2>&1
+    "$MIRA" analyze --db "$RESTRICT_DB" >/dev/null 2>&1
+    CENTROID_RESTRICTED=$(sqlite3 "$RESTRICT_DB" "SELECT json_extract(machine,'\$.dsp.spectral_centroid_hz') FROM files")
+
+    UNRESTRICT_DB="$(mktemp -t mira_smoke_unrestrict_XXXXXX).db"
+    "$MIRA" scan "$RESTRICT_DIR" --db "$UNRESTRICT_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$UNRESTRICT_DB" >/dev/null 2>&1
+    CENTROID_UNRESTRICTED=$(sqlite3 "$UNRESTRICT_DB" "SELECT json_extract(machine,'\$.dsp.spectral_centroid_hz') FROM files")
+
+    DIFFERS=$(awk -v a="$CENTROID_RESTRICTED" -v b="$CENTROID_UNRESTRICTED" \
+        'BEGIN{d=a-b; if(d<0) d=-d; print (d>1) ? "yes" : "no"}')
+    assert_eq "same file's spectral centroid differs between stem (restricted) and ordinary (unrestricted) analysis" \
+        "yes" "$DIFFERS"
+
+    rm -rf "$RESTRICT_DIR"
+    rm -f "$RESTRICT_DB" "$RESTRICT_DB-wal" "$RESTRICT_DB-shm" \
+          "$UNRESTRICT_DB" "$UNRESTRICT_DB-wal" "$UNRESTRICT_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping active-region-restriction test"
+fi
+
+echo
 echo "== test: DSP descriptors — sanity-checked against a pure sine wave =="
 if command -v ffmpeg >/dev/null 2>&1; then
     SINE_DIR=$(mktemp -d)

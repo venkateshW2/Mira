@@ -81,4 +81,26 @@ bool shouldRunActiveRegionDetection(const std::string& contentType, double durat
     return durationSeconds > kFiveMinutesSeconds;
 }
 
+std::vector<float> extractActiveAudio(const std::vector<float>& audio, int sampleRate,
+                                       const std::vector<ActiveSpan>& spans) {
+    std::vector<float> result;
+    if (audio.empty() || sampleRate <= 0) return result;
+
+    size_t total = 0;
+    for (const auto& span : spans) {
+        size_t start = static_cast<size_t>(std::max(0.0, span.startSeconds) * sampleRate);
+        size_t end = std::min(audio.size(), static_cast<size_t>(std::max(0.0, span.endSeconds) * sampleRate));
+        if (end > start) total += end - start;
+    }
+    result.reserve(total);
+
+    for (const auto& span : spans) {
+        size_t start = static_cast<size_t>(std::max(0.0, span.startSeconds) * sampleRate);
+        size_t end = std::min(audio.size(), static_cast<size_t>(std::max(0.0, span.endSeconds) * sampleRate));
+        if (end > start) result.insert(result.end(), audio.begin() + start, audio.begin() + end);
+    }
+
+    return result;
+}
+
 } // namespace mira

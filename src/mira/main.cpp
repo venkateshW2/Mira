@@ -267,34 +267,52 @@ int runAnalyze(const std::vector<std::string>& args) {
             if (!c.isDeclared) update.contentType = finalContentType; // never touch a declared row
             if (groupId) update.groupId = groupId;
 
-            // PRD §5: always for stems, regardless of duration; otherwise only past 5 min.
+            // PRD §5: "descriptors, MIR and the embedding then see only those spans" —
+            // active-region detection runs first (always for stems, else only past 5
+            // min), and when it does, everything downstream operates on the active audio
+            // only, not the whole file. A stem's 140 silent seconds never reach a
+            // descriptor. Caveat worth naming: splicing spans together introduces an
+            // artificial discontinuity at each boundary, which tempo/beat tracking could
+            // in principle misread as a transient — the PRD asks for this restriction
+            // regardless, and it's a real problem only on multi-span, rhythmically-dense
+            // material, which is rare for the mostly-silent-stem case this exists for.
+            const auto* mono = &c.audio.mono;
+            const auto* left = &c.audio.left;
+            const auto* right = &c.audio.right;
+            std::vector<float> activeMono, activeLeft, activeRight;
+
             if (mira::shouldRunActiveRegionDetection(finalContentType, duration)) {
                 auto activeRegions = mira::detectActiveRegions(c.audio.mono, c.audio.sampleRate);
                 update.activeRatio = activeRegions.activeRatio;
                 update.activeSpansJson = spansToJson(activeRegions.spans);
                 machine << ",\"active_ratio\":" << activeRegions.activeRatio;
+
+                activeMono = mira::extractActiveAudio(c.audio.mono, c.audio.sampleRate, activeRegions.spans);
+                activeLeft = mira::extractActiveAudio(c.audio.left, c.audio.sampleRate, activeRegions.spans);
+                activeRight = mira::extractActiveAudio(c.audio.right, c.audio.sampleRate, activeRegions.spans);
+                mono = &activeMono;
+                left = &activeLeft;
+                right = &activeRight;
             }
 
-            // DSP descriptors (PRD §5A) — all content types. Not yet restricted to
-            // active spans on stems/long tracks (TASKS.md notes this as still open).
-            auto dsp = mira::computeDspDescriptors(c.audio.left, c.audio.right, c.audio.sampleRate);
+            // DSP descriptors (PRD §5A) — all content types.
+            auto dsp = mira::computeDspDescriptors(*left, *right, c.audio.sampleRate);
             machine << ",\"dsp\":" << mira::toJson(dsp);
 
             // MIR (PRD §5B) — loops/tracks/stems only. Tempo on a 300ms one-shot is
             // "wasted work [producing] confident nonsense" (PRD §5).
             if (finalContentType != "one_shot") {
-                auto rhythm = mira::analyzeRhythm(c.audio.mono, c.audio.sampleRate,
-                                                   MIRA_BEAT_THIS_MODEL);
+                auto rhythm = mira::analyzeRhythm(*mono, c.audio.sampleRate, MIRA_BEAT_THIS_MODEL);
                 if (rhythm.ok) machine << ",\"rhythm\":" << mira::toJson(rhythm);
 
                 // Key and chords: both gated on harmonic content (PRD §12b) — never run
                 // blindly on a rhythm stem or noise. Uses the real harmonicity descriptor
                 // (Descriptors.h) now, not a proxy; same gate reused for both.
                 if (mira::shouldRunKeyDetection(dsp.harmonicity, dsp.harmonicityFrameCount)) {
-                    auto key = mira::detectKey(c.audio.mono, c.audio.sampleRate);
+                    auto key = mira::detectKey(*mono, c.audio.sampleRate);
                     machine << ",\"key\":" << mira::toJson(key);
 
-                    auto chords = mira::detectChords(c.audio.mono, c.audio.sampleRate);
+                    auto chords = mira::detectChords(*mono, c.audio.sampleRate);
                     if (chords.ok) machine << ",\"chords\":" << mira::toJson(chords);
                 }
 
@@ -304,7 +322,7 @@ int runAnalyze(const std::vector<std::string>& args) {
                 // additionally gated on harmonic content — it's useful on percussive
                 // material too, and a transcription that finds few or no notes there is
                 // itself informative, not "confident nonsense".
-                auto transcription = mira::transcribe(c.audio.mono, c.audio.sampleRate,
+                auto transcription = mira::transcribe(*mono, c.audio.sampleRate,
                                                         MIRA_BASIC_PITCH_MODEL);
                 if (transcription.ok)
                     machine << ",\"notes\":" << mira::toJson(transcription);

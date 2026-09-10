@@ -24,10 +24,11 @@ struct DspDescriptors {
     int harmonicityFrameCount = 0;
 };
 
-// Computes descriptors from already-loaded stereo channels at their native sample rate
-// (PRD §5 note: on stems this should eventually run over active regions only, once a
-// caller threads spans through — see TASKS.md). `left`/`right` must be equal length;
-// pass the same buffer twice for mono. Requires an EssentiaEngine to already exist.
+// Computes descriptors from already-loaded stereo channels at their native sample rate.
+// Caller is responsible for restricting these to active regions only where PRD §5 asks
+// for it (ActiveRegions.h's extractActiveAudio, applied in main.cpp) — this function
+// itself just measures whatever samples it's handed. `left`/`right` must be equal
+// length; pass the same buffer twice for mono. Requires an EssentiaEngine to already exist.
 DspDescriptors computeDspDescriptors(const std::vector<float>& left,
                                       const std::vector<float>& right, int sampleRate);
 

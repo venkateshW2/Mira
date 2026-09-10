@@ -30,4 +30,12 @@ ActiveRegionResult detectActiveRegions(const std::vector<float>& audio, int samp
 // other content type, when duration exceeds 5 minutes."
 bool shouldRunActiveRegionDetection(const std::string& contentType, double durationSeconds);
 
+// PRD §5: "descriptors, MIR and the embedding then see only those spans." Concatenates
+// the samples within each span, in order, dropping everything else — a stem's 140
+// seconds of digital black never reaches a descriptor. Empty `spans` (a fully silent
+// file) correctly yields an empty result; every downstream analyzer already treats an
+// empty buffer as "nothing to analyze" rather than crashing.
+std::vector<float> extractActiveAudio(const std::vector<float>& audio, int sampleRate,
+                                       const std::vector<ActiveSpan>& spans);
+
 } // namespace mira
