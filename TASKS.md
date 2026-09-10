@@ -357,6 +357,37 @@ Exit: the Sononym-parity milestone.
       flamenco.wav (solo classical guitar) top instruments are
       guitar/classicalguitar/acousticguitar/bass/electricguitar — correctly identifies the
       actual instrument. Gated the same as moodtheme (ContentGate's `is_music`, 3ms cost)
+- [x] **Real-world finding, not in the original PRD scope**: `mtg_jamendo_instrument`
+      is unreliable on *isolated stems* specifically — real testing on a 15-file delivery
+      stem set (BASSS_1.wav, GTR.wav, STRINGS.wav, etc.) showed `synthesizer` dominating
+      almost every stem regardless of the actual instrument, while the same head correctly
+      read the full mix (piano/guitar/violin/flute/strings/voice, plausible and
+      differentiated). Root cause: `discogs-effnet`'s embedding — and by extension every
+      head built on it — was trained entirely on full-mix audio; an isolated stem's
+      acoustic signature (huge dynamic range, long silences, none of a mix's spectral
+      density) is out-of-distribution for the whole pipeline, not just the classifier.
+      Researched three alternatives (IRMAS-trained wav2vec2 model, OpenMIC-2018-trained
+      models, nii-yamagishilab's NSynth-pretrained-then-IRMAS-fine-tuned model) — chose
+      the last: purpose-built for exactly this isolated/predominant-instrument gap
+      (APSIPA 2023 paper), MIT-licensed, small (5.5MB checkpoint, ResNet34-based).
+      Converted `irnet4irmas.ckpt` (PyTorch Lightning) to ONNX via
+      `lab/export_irmas_instrument_onnx.py` — reconstructed the architecture from the
+      published source (SincConv learnable filterbank → custom 16-64-128-channel ResNet34
+      → LDE pooling (D=8) → Linear(1024,11)) since the checkpoint alone doesn't carry
+      model code; `lab/conversion_sources/irmas_predominant/` holds the fetched reference
+      source (gitignored, `scripts/fetch-vendor.sh` re-fetches it). Verified two ways: (1)
+      graph parity — same input through the reconstructed PyTorch model and the exported
+      ONNX model agree to 1.0e-5 max abs diff, confirming the reconstruction is exactly
+      right, not approximately right; (2) real audio — flamenco.wav through the model's
+      actual trained preprocessing (16kHz mono, 1-second windows, -12 LUFS loudness
+      normalization via `pyloudnorm`, matching `IRMASDataset` exactly) surprisingly
+      predicts **voice** (mean 0.79 across 14 windows) over guitar (mean 0.029, though its
+      per-window max reaches 0.32). Graph correctness and real-world reliability are two
+      different questions — the first is settled, the second is not. Not yet wired into
+      the C++ pipeline pending that: needs either a wider real-file validation pass before
+      trusting it as a stem-specific instrument signal, or accepting it as one noisy input
+      among several (e.g. shown alongside `mtg_jamendo_instrument`'s guess rather than
+      replacing it) rather than a fixed answer
 - [x] `mtg_jamendo_moodtheme-discogs-effnet-1` head (56 classes) — already downloaded in
       Phase 0 spikes (§2c, §5). `src/mira/analyze/MoodTheme.cpp`, now built on the shared
       `runClassificationHead()` (see instrument entry above), gated only on ContentGate's
@@ -370,10 +401,22 @@ Exit: the Sononym-parity milestone.
       "Dance"-titled score cue scores highest on happy/corporate/uplifting/positive/
       energetic; label names are raw MTG-Jamendo strings for now (the versioned-YAML
       normalisation below is separately scoped, not done here)
-- [ ] `genre_discogs400-discogs-effnet-1` head (400 classes) — needs `tf2onnx`
-      conversion in `lab/` first, no ONNX published (§2c, §16.3)
-- [ ] `voice_instrumental-discogs-effnet-1` head — needs `tf2onnx` conversion, no ONNX
-      at all published (§2c, §16.3)
+- [x] `genre_discogs400-discogs-effnet-1` **converted to ONNX**, not yet wired into the
+      C++ pipeline (400 classes) (§2c, §16.3) — `lab/pyproject.toml` retargeted to Python
+      3.11 (tf2onnx 1.17.0 needs TF 2.13-2.15, which has no cp312 wheels — the `lab/`
+      Python version was originally pinned to 3.12 for the onnxruntime parity spike, which
+      doesn't actually require that specific version). Converted via
+      `python -m tf2onnx.convert --graphdef ... --inputs serving_default_model_Placeholder:0
+      --outputs PartitionedCall:0`. Verified against TF directly (not just "runs"): max abs
+      diff 2.06e-6 on the same random 1280-d input, well inside the ~1e-4 exit criterion.
+      Labels in `src/mira/analyze/GenreLabels.h` (generated, 400 raw Discogs genre/style
+      strings). C++ wiring (a fourth head alongside moodtheme/instrument/danceability) is
+      separately scoped, not done in this pass
+- [x] `voice_instrumental-discogs-effnet-1` **converted to ONNX**, not yet wired into the
+      C++ pipeline (§2c, §16.3) — same tf2onnx pipeline, `model/Placeholder:0` →
+      `model/Softmax:0`. Verified against TF: max abs diff 1.79e-7. 2 classes
+      (`instrumental`, `voice`) — small enough not to need a generated label header, same
+      precedent as `Danceability.cpp`'s 2-class case
 - [x] `danceability-discogs-effnet-1` head (§2c, §5) — `src/mira/analyze/Danceability.cpp`,
       stored as `danceability_head.danceable_probability` (distinct JSON key from
       `rhythm.danceability`, Essentia's existing DSP-based `Danceability` algorithm — a

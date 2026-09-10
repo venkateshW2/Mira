@@ -202,4 +202,60 @@ else
   echo "== CED-small already present, skipping =="
 fi
 
+# --- lab/conversion_sources (Phase 2, PRD §16.3) --------------------------------
+# One-time model-conversion inputs (gitignored, not committed — same "fetched, not
+# authored here" pattern as vendor/ and models/). genre_discogs400 and voice_instrumental
+# have no published ONNX (PRD §16.3), so their .pb graphs are converted via tf2onnx
+# (lab/pyproject.toml). The IRMAS-predominant-instrument model is a genuinely different
+# case: per-stem instrument recognition needs a model trained on isolated/predominant
+# audio, not full mixes — see TASKS.md's Phase 2 section for why mtg_jamendo_instrument
+# doesn't work for that. lab/export_irmas_instrument_onnx.py does the one-time torch->onnx
+# export.
+LAB_SOURCES="$ROOT/lab/conversion_sources"
+mkdir -p "$LAB_SOURCES/genre_discogs400" "$LAB_SOURCES/voice_instrumental"
+
+fetch_lab_source_if_missing() {
+  local dest="$1" url="$2"
+  if [ -f "$dest" ]; then
+    echo "== $(basename "$dest") already present, skipping =="
+    return
+  fi
+  echo "== fetching $(basename "$dest") =="
+  curl -sSL -o "$dest" "$url"
+}
+
+GENRE_BASE="https://essentia.upf.edu/models/classification-heads/genre_discogs400"
+fetch_lab_source_if_missing "$LAB_SOURCES/genre_discogs400/genre_discogs400-discogs-effnet-1.pb" \
+  "$GENRE_BASE/genre_discogs400-discogs-effnet-1.pb"
+fetch_lab_source_if_missing "$LAB_SOURCES/genre_discogs400/genre_discogs400-discogs-effnet-1.json" \
+  "$GENRE_BASE/genre_discogs400-discogs-effnet-1.json"
+
+VOICE_BASE="https://essentia.upf.edu/models/classification-heads/voice_instrumental"
+fetch_lab_source_if_missing "$LAB_SOURCES/voice_instrumental/voice_instrumental-discogs-effnet-1.pb" \
+  "$VOICE_BASE/voice_instrumental-discogs-effnet-1.pb"
+fetch_lab_source_if_missing "$LAB_SOURCES/voice_instrumental/voice_instrumental-discogs-effnet-1.json" \
+  "$VOICE_BASE/voice_instrumental-discogs-effnet-1.json"
+
+# nii-yamagishilab/predominant-instrument-recognition (MIT) — full clone, not
+# cherry-picked files: export_irmas_instrument_onnx.py imports several of its src/
+# modules directly (SincConv, the custom ResNet variant, LDE pooling) rather than
+# reimplementing them, so the whole src/ tree needs to be present, not just the
+# checkpoint.
+clone_if_missing() {
+  local name="$1" url="$2"
+  if [ -d "$LAB_SOURCES/$name" ]; then
+    echo "== $name already present, skipping (rm -rf lab/conversion_sources/$name to re-fetch) =="
+    return
+  fi
+  echo "== cloning $name =="
+  git clone --depth 1 "$url" "$LAB_SOURCES/$name"
+}
+clone_if_missing irmas_predominant https://github.com/nii-yamagishilab/predominant-instrument-recognition.git
+
+IRMAS_TARBALL="$LAB_SOURCES/irmas_predominant/pretrained/IRModels.tar.gz"
+if [ -f "$IRMAS_TARBALL" ] && [ ! -d "$LAB_SOURCES/irmas_predominant/model_ckpt_tmp" ]; then
+  echo "== extracting IRModels.tar.gz =="
+  tar xzf "$IRMAS_TARBALL" -C "$LAB_SOURCES/irmas_predominant"
+fi
+
 echo "== done =="

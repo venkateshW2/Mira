@@ -2,14 +2,35 @@
 name = "mira-lab"
 version = "0.1.0"
 description = "Offline Python tooling for mira: model conversion, numerical parity checks, embedding experiments. Never invoked by the app, never shipped (PRD §7)."
-requires-python = "==3.12.*"
+requires-python = "==3.11.*"
 dependencies = [
   "essentia-tensorflow==2.1b6.dev1389",
   "tf2onnx>=1.16",
-  "onnx>=1.16",
+  # PRD §16.3: tf2onnx 1.17.0 requires TF 2.13-2.15. essentia-tensorflow does not itself
+  # expose an importable `tensorflow` package (it statically bundles the TF C++ runtime
+  # inside Essentia's own extension module) -- a real tensorflow install is needed
+  # separately, only for converting genre_discogs400 and voice_instrumental's .pb graphs.
+  "tensorflow>=2.13,<2.16",
+  # onnx>=1.17 needs a newer ml_dtypes (float4_e2m1fn) than tensorflow==2.15's own pin
+  # (ml_dtypes==0.3.2) allows in the same resolution -- capped below that break.
+  "onnx>=1.16,<1.17",
   "onnxruntime>=1.18",
   "numpy<2",
   "soundfile>=0.12",
+  # One-time torch->onnx export of nii-yamagishilab/predominant-instrument-recognition's
+  # PyTorch checkpoint (IRMAS/NSynth-trained per-stem instrument recognizer) -- not a
+  # runtime dependency, same "build-time only, converted .onnx committed" precedent as
+  # tf2onnx above.
+  "torch>=2.2",
+  # addict gives nested dict.attribute access -- matches the config style
+  # nii-yamagishilab's model code expects (opt.transform.sr etc).
+  "addict>=2.4",
+  # nii-yamagishilab's IRMAS loudness_normalize step (target -12 LUFS, PRD-style
+  # "match training preprocessing exactly, don't guess").
+  "pyloudnorm>=0.1",
+  # transforms.py's SincConv imports librosa at module scope (used only by its unused
+  # midi-init code path, but the import itself still has to succeed).
+  "librosa>=0.10",
 ]
 
 [tool.uv]

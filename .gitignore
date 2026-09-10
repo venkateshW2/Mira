@@ -19,6 +19,7 @@ __pycache__/
 sa3-studio/stable-audio-3/
 sa3-studio/underfit/
 vendor/
+lab/conversion_sources/
 
 # ── C++ build outputs ──────────────────────────────────────────────────────
 build/
