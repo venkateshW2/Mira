@@ -54,7 +54,12 @@ public:
     // Rows `mira analyze` should (re-)process: declared stems ARE included (they still
     // need active-region detection and everything after it — declaration only skips the
     // *routing* decision, PRD §12.3) — and unless `force`, only rows never analyzed.
-    std::vector<FileRecord> findFilesForAnalysis(bool force);
+    // `contentTypeFilter` (only meaningful with `force`, since otherwise unrouted rows
+    // are all still 'unknown') restricts to a single existing content_type; `limit` caps
+    // how many rows come back, both per PRD §8's `analyze` flags.
+    std::vector<FileRecord> findFilesForAnalysis(
+        bool force, std::optional<std::string> contentTypeFilter = std::nullopt,
+        std::optional<int> limit = std::nullopt);
 
     struct AnalysisUpdate {
         int64_t id = 0;

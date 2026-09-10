@@ -61,7 +61,11 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       computed and stored in `machine` but doesn't move the boundary yet; the loop-point
       heuristic (matching start/end for a tight loop) isn't implemented at all. Revisit
       once there's real material to tune against.
-- [ ] Stem detection route 1: filename/folder pattern (opportunistic) (§12.3)
+- [x] Stem detection route 1: filename/folder pattern (opportunistic) (§12.3) —
+      `looksLikeStemPath` in `main.cpp`, deliberately narrow (just "stem"/"stems" as a
+      case-insensitive path substring, matching the PRD's own examples) rather than
+      guessing instrument-role keywords, which would risk false positives the PRD didn't
+      ask for. Stays `content_type_source='router'`, never `'declared'`
 - [x] Stem detection route 2: sibling-set detection — the general case (§12.3). **Known
       limitation:** grouping only happens within one `analyze` run's batch, not across
       the whole library — a folder analyzed in two separate runs won't be grouped
@@ -98,9 +102,17 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 - [x] Spectral centroid (brightness), spectral flatness (noisiness) (§5) — frame-averaged
       over Windowing(hann)→Spectrum→Centroid/Flatness. Verified: a 440Hz sine's measured
       centroid lands at ~459Hz (smoke test)
-- [ ] Harmonicity (§5) — **not implemented**. Needs a pitch+harmonic-peaks pipeline
-      (PitchYinFFT → HarmonicPeaks → Inharmonicity) that hasn't been built; everything
-      else in this section's PRD list is done
+- [x] Harmonicity (§5) — `computeHarmonicity` in `Descriptors.cpp`: frame-averaged
+      Windowing→Spectrum→{PitchYinFFT, SpectralPeaks}→HarmonicPeaks→Inharmonicity,
+      stored as `1 - inharmonicity` (1=purely harmonic, 0=inharmonic/noisy), averaged
+      only over frames with `pitchConfidence` above a threshold — an unpitched frame has
+      no harmonic series to measure. `harmonicity_frame_count==0` means "not
+      measurable" (e.g. a rhythm stem), distinct from a real 0.0 score, so callers can't
+      misread "couldn't measure" as "confirmed inharmonic". Verified: a 220Hz sine gets
+      harmonicity 1.0 (128 confident frames); white noise gets 0/0 (no confident frames
+      at all, not a false "totally inharmonic" reading). This also closed a documented
+      honesty gap: `shouldRunKeyDetection` (key + chords gate) now uses this real signal
+      instead of the spectral-flatness proxy it shipped with
 - [x] Onset rate (§5) — was already computed by the router; unchanged
 - [x] Attack time (§5) — whole-file `Envelope` → `LogAttackTime`. Only meaningful for a
       single dominant transient (one-shots); on a multi-onset track/loop the number is
@@ -128,12 +140,12 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 - [x] Full beat array stored, not just the BPM scalar (§6) — `essentia_beat_ticks`,
       `beat_this_beats`, `beat_this_downbeats` all stored in full in `machine`
 - [x] Vendor + wire in `libKeyFinder` for key detection, gated on harmonic content
-      (§5, §12b) — `src/mira/analyze/Key.cpp`. **Gate is a stand-in, not the real thing:**
-      PRD says "gated on harmonic content," but no harmonicity descriptor exists yet
-      (deferred in the DSP section above), so spectral flatness (already computed) is
-      used as a proxy — threshold 0.3, documented as an unmeasured first guess. Verified
-      the gate actually works: white noise (flatness 0.84) correctly gets no key section;
-      flamenco.wav (flatness 0.06) gets one ("F minor")
+      (§5, §12b) — `src/mira/analyze/Key.cpp`. Originally gated on spectral flatness as
+      a proxy (no harmonicity descriptor existed yet); now gated on the real harmonicity
+      descriptor once that landed (DSP section above) — threshold on the harmonicity
+      score is still a documented, unmeasured first guess, but the *signal* is the real
+      one PRD §12b asks for, not a proxy. Verified: white noise (harmonicity 0, 0
+      confident frames) gets no key section; flamenco.wav gets one ("F minor")
 - [x] Vendor + wire in `Chordino`/`NNLS-Chroma` for chord sequence, gated on harmonic
       content (§5, §12b) — `src/mira/analyze/Chords.cpp`. Harder integration than key
       detection: Chordino is a `Vamp::Plugin` (its native interface, not something with a
@@ -176,10 +188,11 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       PRD suggests before treating this as ground truth, which hasn't been done yet
 
 **CLI**
-- [ ] `mira analyze` (partial) — idempotent and resumable via `analyzed_at IS NULL` +
-      `--force` (§8); `--limit` and `--content-type` filters not implemented, `--resume`
-      is implicit (re-running without `--force` already only processes unanalyzed rows)
-      rather than an explicit flag
+- [x] `mira analyze` — idempotent and resumable via `analyzed_at IS NULL` + `--force`,
+      `--limit N`, `--content-type <type>` (§8). `--resume` is implicit (re-running
+      without `--force` already only processes unanalyzed rows) rather than a separate
+      flag — `--content-type` without `--force` is a hard error, since every unrouted
+      row is `content_type='unknown'` and the filter would silently match nothing
 - [x] `mira inspect <file|id>` — human-readable report, surfaces low-confidence
       tempo/key rather than hiding it, reports `active_ratio` (§8) — `runInspect` in
       `main.cpp`, reads `machine` via SQLite's `json_extract`/`json_array_length` rather

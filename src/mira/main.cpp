@@ -48,8 +48,9 @@ void printUsage() {
         "Usage:\n"
         "  mira scan <dir>... [--db <path>] [--follow-symlinks] [--as stem]\n"
         "        index files, no analysis; --as stem declares them delivery stems (§12.3)\n"
-        "  mira analyze [--db <path>] [--force]\n"
-        "        content-type router (one_shot/loop/track/stem) over scanned files\n"
+        "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
+        "        content-type router (one_shot/loop/track/stem) over scanned files;\n"
+        "        --content-type requires --force (unrouted files are all 'unknown')\n"
         "  mira inspect <file|id> [--db <path>]\n"
         "        human-readable report; flags low-confidence tempo/key, active_ratio\n"
         "\n"
@@ -115,6 +116,19 @@ struct Candidate {
     std::string parentDir;
 };
 
+// PRD §12.3 route 1: "filename or folder pattern, where one happens to exist... cheapest
+// and exact, but the user's naming differs every time, so this is opportunistic only."
+// Deliberately narrow — just the word "stem"/"stems" as a path component or substring,
+// case-insensitively, matching the PRD's own examples (CUE_03_STRINGS.wav, a STEMS/
+// folder). Anything fancier (instrument-role keyword guessing) risks false positives the
+// PRD doesn't ask for; sibling-set detection (route 2) is "the general case" for a reason.
+bool looksLikeStemPath(const std::string& path) {
+    std::string lower = path;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                    [](unsigned char c) { return std::tolower(c); });
+    return lower.find("stem") != std::string::npos;
+}
+
 std::string siblingKey(const std::string& parentDir, double durationSeconds) {
     // Round to the nearest 50ms — "identical length" allowing for header/encoder jitter.
     double rounded = std::round(durationSeconds * 20.0) / 20.0;
@@ -137,6 +151,8 @@ std::string spansToJson(const std::vector<mira::ActiveSpan>& spans) {
 int runAnalyze(const std::vector<std::string>& args) {
     std::string dbPath = defaultDbPath();
     bool force = false;
+    std::optional<std::string> contentTypeFilter;
+    std::optional<int> limit;
 
     for (size_t i = 0; i < args.size(); ++i) {
         const std::string& arg = args[i];
@@ -144,16 +160,27 @@ int runAnalyze(const std::vector<std::string>& args) {
             dbPath = args[++i];
         } else if (arg == "--force") {
             force = true;
+        } else if (arg == "--content-type" && i + 1 < args.size()) {
+            contentTypeFilter = args[++i];
+        } else if (arg == "--limit" && i + 1 < args.size()) {
+            limit = std::stoi(args[++i]);
         } else {
             std::cerr << "mira analyze: unknown argument " << arg << std::endl;
             return 1;
         }
     }
 
+    if (contentTypeFilter && !force) {
+        std::cerr << "mira analyze: --content-type only has an effect with --force "
+                      "(unrouted files are all content_type='unknown')"
+                   << std::endl;
+        return 1;
+    }
+
     std::cout << "database: " << dbPath << std::endl;
     mira::Database db(dbPath);
 
-    auto candidateRecords = db.findFilesForAnalysis(force);
+    auto candidateRecords = db.findFilesForAnalysis(force, contentTypeFilter, limit);
     if (candidateRecords.empty()) {
         std::cout << "nothing to analyze (use --force to re-analyze)" << std::endl;
         return 0;
@@ -180,7 +207,10 @@ int runAnalyze(const std::vector<std::string>& args) {
             c.contentType = "stem";
         } else {
             c.routing = mira::routeContentType(audio->mono, audio->sampleRate);
-            c.contentType = c.routing.contentType;
+            // Route 1 (filename/folder pattern) overrides the duration-based classification
+            // but stays content_type_source='router', not 'declared' — only an explicit
+            // `--as stem` is a real declaration (PRD §12.3).
+            c.contentType = looksLikeStemPath(record.path) ? "stem" : c.routing.contentType;
         }
         c.audio = std::move(*audio);
         candidates.push_back(std::move(c));
@@ -258,9 +288,9 @@ int runAnalyze(const std::vector<std::string>& args) {
                 if (rhythm.ok) machine << ",\"rhythm\":" << mira::toJson(rhythm);
 
                 // Key and chords: both gated on harmonic content (PRD §12b) — never run
-                // blindly on a rhythm stem or noise. See Key.h for the spectral-flatness
-                // proxy caveat (applies to chords too, same gate reused).
-                if (mira::shouldRunKeyDetection(dsp.spectralFlatness)) {
+                // blindly on a rhythm stem or noise. Uses the real harmonicity descriptor
+                // (Descriptors.h) now, not a proxy; same gate reused for both.
+                if (mira::shouldRunKeyDetection(dsp.harmonicity, dsp.harmonicityFrameCount)) {
                     auto key = mira::detectKey(c.audio.mono, c.audio.sampleRate);
                     machine << ",\"key\":" << mira::toJson(key);
 

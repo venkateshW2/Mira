@@ -18,7 +18,7 @@ struct ChordResult {
 // Chordino/NNLS-Chroma (PRD §12b) — Mauch & Dixon, GPL-2.0-or-later, fine under mira's
 // AGPL-3.0. Not Essentia's job (PRD §7: its own docs flag the NNLS-Chroma path as
 // GPL-encumbered even for paying commercial licensees). Gated on harmonic content by the
-// caller, same proxy and caveat as key detection (Key.h) — never run blindly (PRD §5).
+// caller, same harmonicity gate as key detection (Key.h) — never run blindly (PRD §5).
 //
 // Chordino expects FrequencyDomain input (getInputDomain() returns FrequencyDomain, not
 // TimeDomain), so this goes through vamp-hostsdk's PluginInputDomainAdapter to get the

@@ -6,9 +6,7 @@
 namespace mira {
 
 // DSP descriptors, all content types (PRD §5A). Cheap, interpretable, the backbone of
-// one-shot similarity. `harmonicity` from the PRD list is NOT implemented — it needs a
-// pitch+harmonic-peaks pipeline (PitchYinFFT -> HarmonicPeaks -> Inharmonicity) that
-// hasn't been built yet; everything else in the PRD's list is here.
+// one-shot similarity.
 struct DspDescriptors {
     double integratedLoudnessLufs = 0.0;
     double loudnessRangeLu = 0.0;
@@ -17,6 +15,13 @@ struct DspDescriptors {
     double spectralCentroidHz = 0.0; // brightness, averaged over frames
     double spectralFlatness = 0.0;   // noisiness (0=tonal, 1=noise-like), averaged over frames
     double attackTimeSeconds = 0.0;  // whole-file envelope attack; most meaningful on one-shots
+    // 1.0 = purely harmonic tone, 0.0 = highly inharmonic/noisy; averaged over frames with
+    // pitch confidence above kHarmonicityMinPitchConfidence (Descriptors.cpp), skipping
+    // unpitched/noisy frames rather than letting them drag a meaningless average down.
+    // 0.0 with harmonicityFrameCount==0 means no frame was confident enough to measure at
+    // all (e.g. a rhythm stem) — a true "unmeasured", not a claim of total inharmonicity.
+    double harmonicity = 0.0;
+    int harmonicityFrameCount = 0;
 };
 
 // Computes descriptors from already-loaded stereo channels at their native sample rate

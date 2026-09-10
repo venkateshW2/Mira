@@ -7,7 +7,7 @@
 namespace mira {
 
 namespace {
-constexpr double kFlatnessThreshold = 0.3;
+constexpr double kHarmonicityThreshold = 0.5;
 
 struct KeyInfo {
     const char* name;
@@ -79,8 +79,8 @@ KeyResult detectKey(const std::vector<float>& mono, int sampleRate) {
     return result;
 }
 
-bool shouldRunKeyDetection(double spectralFlatness) {
-    return spectralFlatness < kFlatnessThreshold;
+bool shouldRunKeyDetection(double harmonicity, int harmonicityFrameCount) {
+    return harmonicityFrameCount > 0 && harmonicity >= kHarmonicityThreshold;
 }
 
 std::string toJson(const KeyResult& k) {

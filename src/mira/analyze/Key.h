@@ -17,13 +17,14 @@ struct KeyResult {
 
 KeyResult detectKey(const std::vector<float>& mono, int sampleRate);
 
-// PRD §5/§12b: key is gated on harmonic content, never run blindly. No dedicated
-// harmonicity descriptor exists yet (TASKS.md) — spectral flatness (already computed by
-// computeDspDescriptors) stands in as a proxy: low flatness suggests tonal content, high
-// flatness suggests noise/rhythm where a key estimate would be "confident nonsense"
-// (PRD §5). Threshold is a documented first-pass guess, not measured on real material —
-// same caveat as the router's and active-region's thresholds.
-bool shouldRunKeyDetection(double spectralFlatness);
+// PRD §5/§12b: key is gated on harmonic content, never run blindly — using the real
+// harmonicity descriptor (Descriptors.h's PitchYinFFT->HarmonicPeaks->Inharmonicity
+// pipeline), not a proxy. `frameCount==0` means no frame was confidently pitched enough
+// to measure at all (verified on white noise: harmonicity 0, frameCount 0) — gated out
+// on that alone, before even looking at the harmonicity score. Threshold on the score
+// itself is a documented first-pass guess, not measured on real material — same caveat
+// as the router's and active-region's thresholds.
+bool shouldRunKeyDetection(double harmonicity, int harmonicityFrameCount);
 
 std::string toJson(const KeyResult& k);
 

@@ -298,6 +298,40 @@ assert_eq "both siblings share one group_id" "1" "$(echo "$GROUP_IDS" | wc -l | 
 rm -rf "$SIBLING_DIR"
 
 echo
+echo "== test: filename/folder-pattern stem detection (PRD §12.3 route 1) =="
+rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
+PATTERN_DIR=$(mktemp -d)
+mkdir -p "$PATTERN_DIR/STEMS"
+cp "$ROOT/fixtures/flamenco.wav" "$PATTERN_DIR/STEMS/solo.wav"
+"$MIRA" scan "$PATTERN_DIR" --db "$TESTDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$TESTDB" >/dev/null 2>&1
+CONTENT_TYPE=$(sqlite3 "$TESTDB" "SELECT content_type FROM files")
+CT_SOURCE=$(sqlite3 "$TESTDB" "SELECT content_type_source FROM files")
+assert_eq "a file inside a STEMS/ folder is routed as stem" "stem" "$CONTENT_TYPE"
+assert_eq "content_type_source stays router, not declared (only --as stem declares)" "router" "$CT_SOURCE"
+rm -rf "$PATTERN_DIR"
+
+echo
+echo "== test: mira analyze --limit caps how many files get processed =="
+rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
+LIMIT_DIR=$(mktemp -d)
+cp "$ROOT/fixtures/flamenco.wav" "$LIMIT_DIR/a.wav"
+cp "$ROOT/fixtures/flamenco.wav" "$LIMIT_DIR/b.wav"
+"$MIRA" scan "$LIMIT_DIR" --db "$TESTDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$TESTDB" --limit 1 >/dev/null 2>&1
+ANALYZED_COUNT=$(sqlite3 "$TESTDB" "SELECT COUNT(*) FROM files WHERE analyzed_at IS NOT NULL")
+assert_eq "--limit 1 analyzed exactly 1 of 2 files" "1" "$ANALYZED_COUNT"
+rm -rf "$LIMIT_DIR"
+
+echo
+echo "== test: mira analyze --content-type requires --force =="
+OUT_CT=$("$MIRA" analyze --db "$TESTDB" --content-type loop 2>&1)
+CODE_CT=$?
+if [[ "$CODE_CT" != "0" ]]; then pass "exit code non-zero without --force ($CODE_CT)"
+else fail "expected non-zero exit code for --content-type without --force, got 0"; fi
+assert_contains "explains why" "$OUT_CT" "only has an effect with --force"
+
+echo
 echo "== test: --as stem declaration overrides content_type, but analyze still runs on it =="
 rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
 "$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" --as stem >/dev/null 2>&1
@@ -375,9 +409,32 @@ if command -v ffmpeg >/dev/null 2>&1; then
     # A sine wave's peak/mean(|x|) is exactly pi/2 ~= 1.5708
     CREST_OK=$(awk -v c="$CREST" 'BEGIN{print (c>1.5 && c<1.65) ? "yes" : "no"}')
     assert_eq "crest factor matches the sine wave's theoretical pi/2" "yes" "$CREST_OK"
+    HARMONICITY=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dsp"]["harmonicity"])')
+    assert_eq "a pure sine wave is maximally harmonic" "1" "$HARMONICITY"
+    FRAME_COUNT=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dsp"]["harmonicity_frame_count"])')
+    assert_eq "harmonicity was actually measured (frame_count>0)" "yes" \
+        "$(awk -v n="$FRAME_COUNT" 'BEGIN{print (n>0) ? "yes" : "no"}')"
     rm -rf "$SINE_DIR"
 else
     echo "  SKIP: ffmpeg not found, skipping DSP descriptor sanity test"
+fi
+
+echo
+echo "== test: harmonicity is 0 with frame_count 0 on white noise (not falsely '0=inharmonic') =="
+if command -v ffmpeg >/dev/null 2>&1; then
+    NOISE_HARM_DIR=$(mktemp -d)
+    ffmpeg -y -loglevel error -f lavfi -i "anoisesrc=color=white:sample_rate=44100:duration=3" \
+        "$NOISE_HARM_DIR/noise.wav"
+    NOISE_HARM_DB="$(mktemp -t mira_smoke_noiseharm_XXXXXX).db"
+    "$MIRA" scan "$NOISE_HARM_DIR" --db "$NOISE_HARM_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$NOISE_HARM_DB" >/dev/null 2>&1
+    MACHINE_NOISE_HARM=$(sqlite3 "$NOISE_HARM_DB" "SELECT machine FROM files")
+    FRAME_COUNT_NOISE=$(echo "$MACHINE_NOISE_HARM" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dsp"]["harmonicity_frame_count"])')
+    assert_eq "no frame of white noise was confidently pitched" "0" "$FRAME_COUNT_NOISE"
+    rm -rf "$NOISE_HARM_DIR"
+    rm -f "$NOISE_HARM_DB" "$NOISE_HARM_DB-wal" "$NOISE_HARM_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping harmonicity-on-noise test"
 fi
 
 echo

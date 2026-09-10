@@ -121,11 +121,25 @@ void Database::declareStem(const std::string& path) {
     update.exec();
 }
 
-std::vector<FileRecord> Database::findFilesForAnalysis(bool force) {
+std::vector<FileRecord> Database::findFilesForAnalysis(bool force,
+                                                         std::optional<std::string> contentTypeFilter,
+                                                         std::optional<int> limit) {
+    std::vector<std::string> clauses;
+    if (!force) clauses.push_back("analyzed_at IS NULL");
+    if (contentTypeFilter) clauses.push_back("content_type = ?");
+
     std::string sql = "SELECT * FROM files";
-    if (!force) sql += " WHERE analyzed_at IS NULL";
+    if (!clauses.empty()) {
+        sql += " WHERE " + clauses[0];
+        for (size_t i = 1; i < clauses.size(); ++i) sql += " AND " + clauses[i];
+    }
+    if (limit) sql += " LIMIT ?";
 
     SQLite::Statement q(db, sql);
+    int bindIndex = 1;
+    if (contentTypeFilter) q.bind(bindIndex++, *contentTypeFilter);
+    if (limit) q.bind(bindIndex++, *limit);
+
     std::vector<FileRecord> results;
     while (q.executeStep()) results.push_back(fromRow(q));
     return results;
