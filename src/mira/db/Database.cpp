@@ -1,5 +1,7 @@
 #include "Database.h"
 
+#include <cstring>
+
 namespace mira {
 
 namespace {
@@ -26,6 +28,7 @@ CREATE TABLE IF NOT EXISTS files (
 );
 CREATE INDEX IF NOT EXISTS idx_files_content_type ON files(content_type);
 CREATE INDEX IF NOT EXISTS idx_files_group_id ON files(group_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding float[1280]);
 )SQL";
 
 FileRecord fromRow(SQLite::Statement& q) {
@@ -202,6 +205,56 @@ void Database::applyAnalysis(const AnalysisUpdate& update) {
     stmt.bind(8, update.analyzedAt);
     stmt.bind(9, update.id);
     stmt.exec();
+}
+
+void Database::upsertEmbedding(int64_t fileId, const std::vector<float>& embedding) {
+    if (embedding.size() != 1280) return; // caller's bug — Embedding.h's contract, not silently coerced
+    // vec0 tables don't support UPDATE/INSERT OR REPLACE on the same rowid directly in
+    // every sqlite-vec version — delete-then-insert is the documented-safe pattern.
+    SQLite::Statement del(db, "DELETE FROM vec_embeddings WHERE rowid = ?");
+    del.bind(1, fileId);
+    del.exec();
+
+    SQLite::Statement ins(db, "INSERT INTO vec_embeddings(rowid, embedding) VALUES (?, ?)");
+    ins.bind(1, fileId);
+    ins.bind(2, embedding.data(), static_cast<int>(embedding.size() * sizeof(float)));
+    ins.exec();
+}
+
+std::optional<std::vector<float>> Database::getEmbeddingById(int64_t fileId) {
+    SQLite::Statement q(db, "SELECT embedding FROM vec_embeddings WHERE rowid = ?");
+    q.bind(1, fileId);
+    if (!q.executeStep()) return std::nullopt;
+
+    const void* blob = q.getColumn(0).getBlob();
+    int bytes = q.getColumn(0).getBytes();
+    if (bytes != 1280 * static_cast<int>(sizeof(float))) return std::nullopt;
+
+    std::vector<float> embedding(1280);
+    std::memcpy(embedding.data(), blob, bytes);
+    return embedding;
+}
+
+std::vector<Database::SimilarMatch> Database::findSimilar(const std::vector<float>& embedding, int topK,
+                                                            std::optional<int64_t> excludeId) {
+    std::vector<SimilarMatch> results;
+    if (embedding.size() != 1280) return results;
+
+    // Over-fetch by one when excluding a row, since that row (typically the query file
+    // itself, at distance 0) would otherwise consume one of the topK slots.
+    int fetchK = excludeId ? topK + 1 : topK;
+    SQLite::Statement q(db,
+        "SELECT rowid, distance FROM vec_embeddings WHERE embedding MATCH ? AND k = ? ORDER BY distance");
+    q.bind(1, embedding.data(), static_cast<int>(embedding.size() * sizeof(float)));
+    q.bind(2, fetchK);
+
+    while (q.executeStep()) {
+        int64_t rowId = q.getColumn(0).getInt64();
+        if (excludeId && rowId == *excludeId) continue;
+        results.push_back({rowId, q.getColumn(1).getDouble()});
+        if (static_cast<int>(results.size()) >= topK) break;
+    }
+    return results;
 }
 
 } // namespace mira

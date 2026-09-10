@@ -382,10 +382,29 @@ Exit: the Sononym-parity milestone.
       score cue scores 0.60 — correctly separated
 - [ ] Label normalisation as versioned YAML data files, not code (§5)
 - [ ] Label normalisation regression tests; both `raw` and `label` stored (§5)
-- [ ] Embedding store in `sqlite-vec` (float32[1280] per file) wired into the schema
-      (§6, spike already proved the mechanics)
-- [ ] `mira similar <file|id>` — `--by overall|timbre|rhythm|spectrum`, `--n`,
-      `--filter`; accepts an external file not in the library (§8)
+- [x] Embedding store in `sqlite-vec` (float32[1280] per file) wired into the schema
+      (§6, spike already proved the mechanics) — `vec_embeddings` virtual table
+      (`vec0(embedding float[1280])`), keyed by `files.id` as rowid, alongside `files`
+      rather than a column on it (vec0 tables have their own storage format). Two real
+      build issues beyond the spike, both from building this into the actual app rather
+      than a standalone spike binary: (1) the spike's own `sqlite_vec` CMake target name
+      collides with `MIRA_BUILD_SPIKES=ON` building spike/04_sqlite_vec in the same
+      configure — renamed mira's to `mira_sqlite_vec`, left the spike untouched. (2)
+      `main.cpp` includes `sqlite-vec.h` directly (to register `sqlite3_vec_init` via
+      `sqlite3_auto_extension` before any connection opens, required for a static link);
+      without `SQLITE_CORE` defined on the `mira` target itself (not just the
+      `mira_sqlite_vec` library), that header pulls in `sqlite3ext.h`'s macro-redirected
+      API instead of linking directly against `mira_sqlite3` — silent until link time,
+      "undeclared identifier 'sqlite3_api'" at compile time in this case, only surfaced by
+      actually building the full app target, not just the isolated library
+- [x] `mira similar <file|id>` (§8) — exact brute-force KNN (PRD §3: "no ANN index"),
+      verified against real files: 3 cues from the same real score cluster at distance
+      ~3.3 from each other, while an unrelated solo-guitar piece sits at ~6.0-6.2 from all
+      three — the embedding space is doing real, sensible clustering, not just running
+      without crashing. Scoped narrower than the PRD line for now, explicitly, not
+      silently: only the overall embedding (no `--by timbre|rhythm|spectrum` subsets),
+      `--n`, and only files already in the library (no external-file mode yet) — `--filter`
+      and those are separate, still-open work
 - [ ] `mira search "--filter" ...` — expressions over tags/descriptors (§8)
 - [ ] `mira models --download | --list` (§8)
 - [ ] `mira stats` — library composition, coverage, unmapped labels (§8)

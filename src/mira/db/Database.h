@@ -76,6 +76,30 @@ public:
     };
     void applyAnalysis(const AnalysisUpdate& update);
 
+    // Similarity (PRD §2c, §6, §3 "no ANN index — brute-force KNN, exact, not
+    // approximate", spike/04_sqlite_vec proved the mechanics at 10k x 1280-dim). A
+    // separate vec0 virtual table keyed by files.id as rowid, not a `files` column —
+    // sqlite-vec's vec0 tables have their own storage format. `embedding` must be
+    // exactly 1280 floats (discogs-effnet's dimension, Embedding.h); mismatched sizes
+    // are the caller's bug, not silently handled here.
+    void upsertEmbedding(int64_t fileId, const std::vector<float>& embedding);
+
+    // Reads a stored embedding back out of vec_embeddings directly (the raw blob, not
+    // parsed out of `machine`'s JSON — that would mean 1280 individual json_extract
+    // calls per lookup). nullopt if this file has no stored embedding (e.g. analyzed
+    // before this feature existed, or the file was too short for even one mel patch).
+    std::optional<std::vector<float>> getEmbeddingById(int64_t fileId);
+
+    struct SimilarMatch {
+        int64_t id = 0;
+        double distance = 0.0; // sqlite-vec's default: squared L2 (smaller = more similar)
+    };
+    // Exact brute-force KNN against every stored embedding. `excludeId`, when set, drops
+    // that row from the results — the common case is "files similar to file X" where X
+    // itself would otherwise always be the (distance 0) top result.
+    std::vector<SimilarMatch> findSimilar(const std::vector<float>& embedding, int topK,
+                                           std::optional<int64_t> excludeId = std::nullopt);
+
     // Small JSON helpers for reading `machine` (mira inspect's job) — mira has no C++
     // JSON parser vendored (kept off the dependency list deliberately), so these lean on
     // SQLite's own json_extract/json_array_length instead of parsing in C++.

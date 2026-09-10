@@ -18,6 +18,8 @@
 #include "scan/Scanner.h"
 
 #include <version.h> // essentia's, not libc++'s — ESSENTIA_VERSION/ESSENTIA_GIT_SHA
+#include <sqlite3.h>
+#include <sqlite-vec.h>
 
 #include <algorithm>
 #include <cctype>
@@ -58,17 +60,22 @@ void printUsage() {
         "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
         "               [--chords] [--transcribe] [--recheck-tempo] [--verbose]\n"
         "        content-type router (one_shot/loop/track/stem) + DSP + embedding +\n"
-        "        content gate + moodtheme (Phase 2 vertical slice, PRD §2c) + rhythm + key\n"
-        "        by default; rhythm defaults to beat_this_cpp only (the more accurate of\n"
-        "        the two tempo estimators); --recheck-tempo also runs Essentia's\n"
-        "        RhythmExtractor2013 for comparison (bpm_ratio); --chords and --transcribe\n"
-        "        are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone — see\n"
-        "        TASKS.md); --content-type requires --force; --verbose prints per-stage\n"
-        "        timing to stderr, per file\n"
+        "        content gate + moodtheme/instrument/danceability heads (Phase 2, PRD §2c)\n"
+        "        + rhythm + key by default; classification heads gated on the content\n"
+        "        gate's is_music signal; rhythm defaults to beat_this_cpp only (the more\n"
+        "        accurate of the two tempo estimators); --recheck-tempo also runs\n"
+        "        Essentia's RhythmExtractor2013 for comparison (bpm_ratio); --chords and\n"
+        "        --transcribe are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone\n"
+        "        — see TASKS.md); --content-type requires --force; --verbose prints\n"
+        "        per-stage timing to stderr, per file\n"
         "  mira inspect <file|id> [--db <path>]\n"
         "        human-readable report; flags low-confidence tempo/key, active_ratio\n"
+        "  mira similar <file|id> [--db <path>] [--n N]\n"
+        "        exact brute-force KNN over the discogs-effnet embedding (sqlite-vec, no\n"
+        "        ANN index — PRD §3); only files already in the library are supported for\n"
+        "        now, and only the overall embedding (--by/--filter not yet implemented)\n"
         "\n"
-        "Not yet implemented: similar, search, models, stats (see TASKS.md)\n";
+        "Not yet implemented: search, models, stats (see TASKS.md)\n";
 }
 
 int runScan(const std::vector<std::string>& args) {
@@ -441,6 +448,10 @@ int runAnalyze(const std::vector<std::string>& args) {
             update.machineJson = machine.str();
             update.analyzedAt = analyzedAt;
             db.applyAnalysis(update);
+            if (embedding.ok) {
+                std::vector<float> embeddingF(embedding.vector.begin(), embedding.vector.end());
+                db.upsertEmbedding(c.record.id, embeddingF);
+            }
             timer.mark("database write");
         }
     }
@@ -678,9 +689,78 @@ int runInspect(const std::vector<std::string>& args) {
     return 0;
 }
 
+// PRD §8: `mira similar <file|id>`. Deliberately scoped narrow for this first cut: only
+// the overall discogs-effnet embedding (no --by timbre|rhythm|spectrum subsets yet, no
+// --filter, no external not-yet-scanned files) — those are real, separately-tracked
+// TASKS.md items, not silently dropped. Exact brute-force KNN (PRD §3: "no ANN index").
+int runSimilar(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    int topN = 10;
+    std::vector<std::string> positional;
+
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+        else if (args[i] == "--n" && i + 1 < args.size()) topN = std::stoi(args[++i]);
+        else positional.push_back(args[i]);
+    }
+
+    if (positional.empty()) {
+        std::cerr << "mira similar: a file path or numeric id is required" << std::endl;
+        return 1;
+    }
+    const std::string& target = positional[0];
+
+    mira::Database db(dbPath);
+
+    std::optional<mira::FileRecord> record;
+    bool isNumeric = !target.empty() &&
+                      std::all_of(target.begin(), target.end(), [](unsigned char c) { return std::isdigit(c); });
+    if (isNumeric) record = db.findById(std::stoll(target));
+    if (!record) record = db.findByPath(target);
+
+    if (!record) {
+        std::cerr << "mira similar: no file found for '" << target << "' (only files already in "
+                     "the library are supported for now — an external-file mode is a separate "
+                     "TASKS.md item)"
+                  << std::endl;
+        return 1;
+    }
+
+    auto embedding = db.getEmbeddingById(record->id);
+    if (!embedding) {
+        std::cerr << "mira similar: '" << record->path
+                  << "' has no stored embedding — run `mira analyze` on it first "
+                     "(or it was too short for even one mel patch, PRD §16.3)"
+                  << std::endl;
+        return 1;
+    }
+
+    auto matches = db.findSimilar(*embedding, topN, record->id);
+    if (matches.empty()) {
+        std::cout << "no similar files found (library may only contain this one embedding)\n";
+        return 0;
+    }
+
+    std::cout << "similar to " << record->path << ":\n";
+    for (const auto& m : matches) {
+        auto matchRecord = db.findById(m.id);
+        std::cout << "  " << std::fixed << std::setprecision(4) << m.distance << "  "
+                  << (matchRecord ? matchRecord->path : "(id " + std::to_string(m.id) + ", not found)")
+                  << "\n";
+    }
+
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // sqlite-vec (PRD §6, §7) — statically linked, so per its own README it must be
+    // registered as an auto-extension before any SQLite connection opens (spike/04_sqlite_vec
+    // proved this ordering matters). Every command below constructs a Database, so this
+    // has to happen once, here, before any of them run.
+    sqlite3_auto_extension(reinterpret_cast<void (*)()>(sqlite3_vec_init));
+
     std::vector<std::string> args(argv + 1, argv + argc);
 
     if (args.empty() || args[0] == "--help" || args[0] == "-h") {
@@ -699,6 +779,9 @@ int main(int argc, char* argv[]) {
     }
     if (command == "inspect") {
         return runInspect(rest);
+    }
+    if (command == "similar") {
+        return runSimilar(rest);
     }
 
     std::cerr << "mira: unknown command '" << command << "'\n\n";

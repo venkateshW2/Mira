@@ -31,6 +31,7 @@ set(BASICPITCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/basicpitch.cpp)
 set(KALDI_NATIVE_FBANK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/kaldi-native-fbank)
 set(KISSFFT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/kissfft)
 set(MODELS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../models)
+set(SQLITE_VEC_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/sqlite-vec)
 
 if(NOT EXISTS ${SQLITE_ROOT}/sqlite3.c)
   message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE_ROOT} — run scripts/fetch-vendor.sh")
@@ -78,6 +79,9 @@ endif()
 if(NOT EXISTS ${MODELS_ROOT}/classification-heads/danceability/danceability-discogs-effnet-1.onnx)
   message(FATAL_ERROR "danceability model not found — run scripts/fetch-vendor.sh")
 endif()
+if(NOT EXISTS ${SQLITE_VEC_ROOT}/sqlite-vec.h)
+  message(FATAL_ERROR "sqlite-vec.h not generated — run scripts/fetch-vendor.sh")
+endif()
 if(NOT EXISTS ${MODELS_ROOT}/content-gate/ced-small/model.onnx)
   message(FATAL_ERROR "CED-small model not found — run scripts/fetch-vendor.sh")
 endif()
@@ -105,6 +109,19 @@ target_compile_options(mira_sqlite3 PRIVATE
   -DSQLITE_ENABLE_COLUMN_METADATA=1
 )
 add_library(SQLite::SQLite3 ALIAS mira_sqlite3)
+
+# sqlite-vec (PRD §6, §7: "no ANN index... brute-force KNN over the embedding, exact,
+# not approximate" — spike/04_sqlite_vec proved this at 10k x 1280-dim). Statically
+# linked, so per its own README it must be registered via sqlite3_auto_extension before
+# any connection opens (main.cpp does this, once, at startup). vendor/sqlite-vec/ has a
+# bare file named "version" at its root that collides with libc++'s <version> header if
+# the whole directory is ever on a C++ translation unit's include path — copy just the
+# one header actually needed into an isolated directory, same fix the spike used.
+file(COPY ${SQLITE_VEC_ROOT}/sqlite-vec.h DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/sqlite_vec_include)
+add_library(mira_sqlite_vec STATIC ${SQLITE_VEC_ROOT}/sqlite-vec.c)
+target_include_directories(mira_sqlite_vec PRIVATE ${SQLITE_VEC_ROOT})
+target_link_libraries(mira_sqlite_vec PUBLIC mira_sqlite3)
+target_compile_definitions(mira_sqlite_vec PRIVATE SQLITE_CORE SQLITE_VEC_STATIC)
 
 set(SQLITECPP_INTERNAL_SQLITE OFF CACHE BOOL "" FORCE)
 set(SQLITECPP_FIND_SQLITE OFF CACHE BOOL "" FORCE)
@@ -216,6 +233,7 @@ target_include_directories(mira PRIVATE
   ${LIBKEYFINDER_ROOT}/src
   ${NNLS_CHROMA_ROOT}
   ${ONNXRUNTIME_ROOT}/include
+  ${CMAKE_CURRENT_BINARY_DIR}/sqlite_vec_include
 )
 
 target_compile_definitions(mira PRIVATE
@@ -229,11 +247,17 @@ target_compile_definitions(mira PRIVATE
   # Captured at configure time, not build time — re-run cmake to refresh after new
   # commits if you care about this being exact; "close enough" for a dev build.
   MIRA_GIT_HASH="${MIRA_GIT_HASH}"
+  SQLITE_VEC_STATIC
+  # main.cpp includes sqlite-vec.h directly (to register sqlite3_vec_init) — without
+  # SQLITE_CORE it pulls in sqlite3ext.h's macro-redirected API instead of linking
+  # directly against mira_sqlite3, and main.cpp/Database.cpp already do the latter.
+  SQLITE_CORE
 )
 
 target_link_libraries(mira PRIVATE
   SQLiteCpp
   mira_sqlite3
+  mira_sqlite_vec
   ${ESSENTIA_LIB}
   beat_this_api
   keyfinder

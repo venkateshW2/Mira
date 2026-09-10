@@ -523,7 +523,11 @@ assert_eq "moodtheme has 56 class scores" "56" "$MOODTHEME_LEN"
 
 if command -v ffmpeg >/dev/null 2>&1; then
     NOISE_GATE_DIR=$(mktemp -d)
-    ffmpeg -y -loglevel error -f lavfi -i "anoisesrc=color=white:sample_rate=44100:duration=5" \
+    # Fixed seed: an unseeded anoisesrc clip's CED-small music_score drifts run-to-run
+    # (measured 0.37-0.44 across regenerations) close enough to kContentGateMusicThreshold
+    # (0.45) to occasionally flip this assertion — seed=12345 measured at 0.385, a safe
+    # margin below threshold.
+    ffmpeg -y -loglevel error -f lavfi -i "anoisesrc=color=white:sample_rate=44100:duration=5:seed=12345" \
         "$NOISE_GATE_DIR/noise.wav"
     NOISE_GATE_DB="$(mktemp -t mira_smoke_noisegate_XXXXXX).db"
     "$MIRA" scan "$NOISE_GATE_DIR" --db "$NOISE_GATE_DB" >/dev/null 2>&1
@@ -539,6 +543,46 @@ else
     echo "  SKIP: ffmpeg not found, skipping content-gate-on-noise test"
 fi
 rm -f "$CLASSIFY_DB" "$CLASSIFY_DB-wal" "$CLASSIFY_DB-shm"
+
+echo
+echo "== test: mira similar (sqlite-vec, exact brute-force KNN over the embedding) =="
+if command -v ffmpeg >/dev/null 2>&1; then
+    SIMILAR_DIR=$(mktemp -d)
+    cp "$ROOT/fixtures/flamenco.wav" "$SIMILAR_DIR/flamenco.wav"
+    # A 3s sine tone: long enough for a stored embedding (needs ~2s for one mel patch),
+    # but acoustically nothing like flamenco.wav — a real distance should separate them.
+    ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=3" \
+        "$SIMILAR_DIR/tone.wav"
+    # Too short for even one mel patch (~2.05s minimum) — exercises the "no stored
+    # embedding" error path, not the "file not found" one.
+    ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=0.5" \
+        "$SIMILAR_DIR/tooshort.wav"
+    SIMILAR_DB="$(mktemp -t mira_smoke_similar_XXXXXX).db"
+    "$MIRA" scan "$SIMILAR_DIR" --db "$SIMILAR_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$SIMILAR_DB" >/dev/null 2>&1
+
+    OUT_SIMILAR=$("$MIRA" similar "$SIMILAR_DIR/flamenco.wav" --db "$SIMILAR_DB" --n 5 2>&1)
+    CODE_SIMILAR=$?
+    assert_eq "exit code" "0" "$CODE_SIMILAR"
+    assert_contains "returns the tone as a match" "$OUT_SIMILAR" "tone.wav"
+    NOT_CONTAINS_SELF=$(echo "$OUT_SIMILAR" | grep -c "flamenco.wav$" || true)
+    assert_eq "does not return the query file itself" "0" "$NOT_CONTAINS_SELF"
+
+    OUT_NOTFOUND=$("$MIRA" similar "$SIMILAR_DIR/no-such-file.wav" --db "$SIMILAR_DB" 2>&1)
+    CODE_NOTFOUND=$?
+    assert_eq "exit code non-zero for a file not in the library" "1" "$CODE_NOTFOUND"
+    assert_contains "explains why" "$OUT_NOTFOUND" "no file found"
+
+    OUT_NOEMBED=$("$MIRA" similar "$SIMILAR_DIR/tooshort.wav" --db "$SIMILAR_DB" 2>&1)
+    CODE_NOEMBED=$?
+    assert_eq "exit code non-zero for a file with no stored embedding" "1" "$CODE_NOEMBED"
+    assert_contains "explains why (too short for a mel patch)" "$OUT_NOEMBED" "no stored embedding"
+
+    rm -rf "$SIMILAR_DIR"
+    rm -f "$SIMILAR_DB" "$SIMILAR_DB-wal" "$SIMILAR_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping mira similar test"
+fi
 
 echo
 echo "== test: mira inspect =="
