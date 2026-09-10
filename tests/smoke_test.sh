@@ -521,6 +521,26 @@ assert_contains "machine JSON has a moodtheme section (gate passed)" "$MACHINE_C
 MOODTHEME_LEN=$(echo "$MACHINE_CLASSIFY" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["moodtheme"]))')
 assert_eq "moodtheme has 56 class scores" "56" "$MOODTHEME_LEN"
 
+echo
+echo "== test: instrument label normalization (taxonomy/instrument-labels.yaml) =="
+assert_contains "machine JSON has an instrument_normalized section" "$MACHINE_CLASSIFY" "\"instrument_normalized\""
+NORM_CHECK=$(echo "$MACHINE_CLASSIFY" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+raw, norm = d["instrument"], d["instrument_normalized"]
+checks = []
+# Cross-model spelling fix: camelCase raw label -> spaced canonical term, same score.
+checks.append(norm.get("electric guitar") == raw.get("electricguitar"))
+checks.append(norm.get("acoustic guitar") == raw.get("acousticguitar"))
+checks.append(norm.get("classical guitar") == raw.get("classicalguitar"))
+# THE RULE under test: electric/acoustic/classical guitar must stay three distinct
+# canonical terms, never collapsed into one "guitar" bucket for tidiness.
+distinct_terms = {"electric guitar", "acoustic guitar", "classical guitar", "guitar"}
+checks.append(distinct_terms.issubset(norm.keys()))
+print("yes" if all(checks) else "no")
+')
+assert_eq "electric/acoustic/classical guitar stay distinct canonical terms, correctly renamed" "yes" "$NORM_CHECK"
+
 if command -v ffmpeg >/dev/null 2>&1; then
     NOISE_GATE_DIR=$(mktemp -d)
     # Fixed seed: an unseeded anoisesrc clip's CED-small music_score drifts run-to-run

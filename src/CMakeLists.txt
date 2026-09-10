@@ -32,6 +32,7 @@ set(KALDI_NATIVE_FBANK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/kaldi-native-f
 set(KISSFFT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/kissfft)
 set(MODELS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../models)
 set(SQLITE_VEC_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/sqlite-vec)
+set(TAXONOMY_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../taxonomy)
 
 if(NOT EXISTS ${SQLITE_ROOT}/sqlite3.c)
   message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE_ROOT} — run scripts/fetch-vendor.sh")
@@ -87,6 +88,9 @@ if(NOT EXISTS ${MODELS_ROOT}/classification-heads/genre_discogs400/genre_discogs
 endif()
 if(NOT EXISTS ${MODELS_ROOT}/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx)
   message(FATAL_ERROR "voice_instrumental ONNX not found — run lab/'s tf2onnx conversion (see TASKS.md Phase 2)")
+endif()
+if(NOT EXISTS ${TAXONOMY_ROOT}/instrument-labels.yaml)
+  message(FATAL_ERROR "taxonomy/instrument-labels.yaml not found — this is a committed, hand-authored file, not fetched; something's wrong with the checkout")
 endif()
 if(NOT EXISTS ${SQLITE_VEC_ROOT}/sqlite-vec.h)
   message(FATAL_ERROR "sqlite-vec.h not generated — run scripts/fetch-vendor.sh")
@@ -237,6 +241,7 @@ add_executable(mira
   mira/analyze/StemInstrument.cpp
   mira/analyze/Genre.cpp
   mira/analyze/VoiceInstrumental.cpp
+  mira/taxonomy/Taxonomy.cpp
 )
 
 target_include_directories(mira PRIVATE
@@ -258,6 +263,7 @@ target_compile_definitions(mira PRIVATE
   MIRA_IRMAS_INSTRUMENT_MODEL="${MODELS_ROOT}/classification-heads/irmas-predominant-instrument/irmas-predominant-instrument-1.onnx"
   MIRA_GENRE_MODEL="${MODELS_ROOT}/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.onnx"
   MIRA_VOICE_INSTRUMENTAL_MODEL="${MODELS_ROOT}/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx"
+  MIRA_INSTRUMENT_TAXONOMY="${TAXONOMY_ROOT}/instrument-labels.yaml"
   MIRA_CED_MODEL="${MODELS_ROOT}/content-gate/ced-small/model.onnx"
   # Captured at configure time, not build time — re-run cmake to refresh after new
   # commits if you care about this being exact; "close enough" for a dev build.

@@ -449,8 +449,38 @@ Exit: the Sononym-parity milestone.
       second opinion, not a duplicate; `mira inspect` shows both, labeled). Verified
       against real files: flamenco.wav (solo guitar) scores 0.01, the real "Dance"-titled
       score cue scores 0.60 — correctly separated
-- [ ] Label normalisation as versioned YAML data files, not code (§5)
-- [ ] Label normalisation regression tests; both `raw` and `label` stored (§5)
+- [x] Label normalisation as versioned YAML data files, not code (§5) — started with
+      instruments only (`taxonomy/instrument-labels.yaml`), the head with the most
+      real-world friction so far (raw `mtg_jamendo_instrument` output like `electricguitar`
+      one unspaced word, plus a second model — `stem_instrument` — using an entirely
+      different 3-letter IRMAS code vocabulary for the same instruments). Explicitly
+      NOT a general "make labels tidy" pass: the rule, corrected mid-design after an
+      early draft wrongly proposed collapsing `electricguitar`/`acousticguitar` into one
+      `guitar` bucket, is that normalization only merges labels across models that name
+      the *exact same* instrument (`electricguitar` ↔ IRMAS's `gel`, both → `electric
+      guitar`) and never collapses genuinely distinct instruments for tidiness — electric,
+      acoustic, and classical guitar stay three separate canonical terms. Canonical terms
+      are chosen to read naturally in a caption sentence (Phase 3, PRD §11), not to be
+      short. `src/mira/taxonomy/Taxonomy.cpp` loads it via libyaml's document API — already
+      linked into `mira` transitively (`PkgConfig::YAML` was an existing Essentia
+      dependency, just not previously used directly by mira's own code) — no new library
+      needed. Loaded once per `analyze` run, not per file. Loading failure (missing file,
+      no matching model key) degrades to raw-labels-only rather than a hard error.
+      Genre (400 classes), moodtheme (56), and the content gate's AudioSet labels (527,
+      likely only worth normalizing the subset that actually appears in practice) are
+      explicitly deferred — same "start with one, prove the mechanism, then repeat"
+      approach as the Phase 2 vertical slice itself
+- [x] Label normalisation regression tests; both `raw` and `label` stored (§5) — both
+      `instrument`/`instrument_normalized` and `stem_instrument`/`stem_instrument_normalized`
+      stored side by side in `machine` JSON (raw is never replaced, only supplemented).
+      Smoke test asserts the actual rule, not just "a mapping exists": electric/acoustic/
+      classical guitar remain three distinct keys in the normalized output on a real file
+      (flamenco.wav), each correctly renamed from its raw camelCase form with the score
+      preserved exactly. Verified end-to-end on two more real files beyond the smoke
+      fixture: flamenco.wav's raw `guitar`(0.25)/`classicalguitar`(0.11)/`acousticguitar`
+      (0.07)/`electricguitar`(0.05) → normalized `guitar`/`classical guitar`/`acoustic
+      guitar`/`electric guitar` unchanged in score; a real "STRINGS LOW" stem's raw `cel`
+      (0.53) → normalized `cello` (0.53) via the IRMAS-code taxonomy branch
 - [x] Embedding store in `sqlite-vec` (float32[1280] per file) wired into the schema
       (§6, spike already proved the mechanics) — `vec_embeddings` virtual table
       (`vec0(embedding float[1280])`), keyed by `files.id` as rowid, alongside `files`

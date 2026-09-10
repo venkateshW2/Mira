@@ -1,0 +1,82 @@
+# Instrument label normalization (PRD §5, TASKS.md Phase 2). Maps each model's raw,
+# model-native label strings to a shared canonical vocabulary -- chosen so each term
+# reads naturally in a caption sentence (Phase 3, PRD §11), not to be maximally short.
+#
+# THE RULE: only merge labels across models when they name the exact same instrument.
+# Never collapse genuinely distinct instruments for tidiness -- electric guitar and
+# acoustic guitar are different instruments with different timbre and are kept as
+# separate canonical terms (corrected explicitly, 2026-09-10 conversation, after an
+# early draft wrongly proposed collapsing them). A canonical term appearing under two
+# source labels below means those labels are the same underlying concept spelled
+# differently across models -- it is never a judgment call to make things "simpler."
+#
+# Both the raw model output and this normalized term get stored side by side (neither
+# replaces the other) once this is wired into the C++ pipeline -- not done yet, this file
+# is the taxonomy draft to react to and correct first.
+#
+# Open question, not resolved here: mtg_jamendo_instrument has a separate `classicalguitar`
+# class; IRMAS's `gac` ("acoustic guitar") class may or may not include classical-guitar
+# recordings in its own training data -- IRMAS doesn't split that out. Left as two
+# distinct canonical terms (`classical guitar`, `acoustic guitar`) rather than silently
+# merged either way. Revisit if this turns out to matter in practice.
+
+mtg_jamendo_instrument:
+  accordion: accordion
+  acousticbassguitar: acoustic bass guitar
+  acousticguitar: acoustic guitar
+  bass: bass
+  beat: beat
+  bell: bell
+  bongo: bongo
+  brass: brass
+  cello: cello
+  clarinet: clarinet
+  classicalguitar: classical guitar
+  computer: computer
+  doublebass: double bass
+  drummachine: drum machine
+  drums: drums
+  electricguitar: electric guitar
+  electricpiano: electric piano
+  flute: flute
+  guitar: guitar               # generic/unspecified guitar type -- kept distinct from
+                                # acoustic/electric/classical, not a catch-all for them
+  harmonica: harmonica
+  harp: harp
+  horn: horn
+  keyboard: keyboard
+  oboe: oboe
+  orchestra: orchestra
+  organ: organ
+  pad: pad
+  percussion: percussion
+  piano: piano
+  pipeorgan: pipe organ
+  rhodes: rhodes
+  sampler: sampler
+  saxophone: saxophone
+  strings: strings
+  synthesizer: synthesizer
+  trombone: trombone
+  trumpet: trumpet
+  viola: viola
+  violin: violin
+  voice: voice
+
+# nii-yamagishilab/predominant-instrument-recognition (stem_instrument, PRD §2c real-world
+# finding) -- 3-letter IRMAS codes. Cross-referenced against mtg_jamendo_instrument's
+# canonical terms above wherever both models represent the same instrument, so a query
+# for "electric guitar" matches both heads' output without the caller needing to know
+# each model's private spelling.
+irmas_predominant_instrument:
+  cel: cello
+  cla: clarinet
+  flu: flute
+  gac: acoustic guitar
+  gel: electric guitar
+  org: organ
+  pia: piano
+  sax: saxophone
+  tru: trumpet
+  vio: violin
+  voi: voice

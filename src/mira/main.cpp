@@ -16,6 +16,7 @@
 #include "analyze/Genre.h"
 #include "analyze/GenreLabels.h"
 #include "analyze/VoiceInstrumental.h"
+#include "taxonomy/Taxonomy.h"
 #include "analyze/Router.h"
 #include "analyze/Transcription.h"
 #include "db/Database.h"
@@ -39,6 +40,28 @@
 #include <vector>
 
 namespace {
+
+// PRD §5 label normalization: builds a {canonical_label: score} JSON object alongside a
+// head's raw output (never replacing it — see Taxonomy.h). `names`/`scores` must be the
+// same length and in the same order (a head's fixed label-array order). A raw label with
+// no taxonomy entry is simply omitted here, not dropped from the analysis — it's still
+// present in the raw object next to this one; PRD §8's mira stats is where "how many
+// labels are still unmapped" gets surfaced, not silently here.
+std::string normalizedLabelsJson(const std::vector<std::string>& names,
+                                  const std::vector<double>& scores, const mira::Taxonomy& taxonomy) {
+    std::ostringstream oss;
+    oss << "{";
+    bool first = true;
+    for (size_t i = 0; i < names.size() && i < scores.size(); ++i) {
+        auto canonical = taxonomy.normalize(names[i]);
+        if (!canonical) continue;
+        if (!first) oss << ",";
+        oss << "\"" << *canonical << "\":" << scores[i];
+        first = false;
+    }
+    oss << "}";
+    return oss.str();
+}
 
 std::string defaultDbPath() {
     const char* home = std::getenv("HOME");
@@ -316,6 +339,13 @@ int runAnalyze(const std::vector<std::string>& args) {
                << "}";
     std::string provenanceJson = provenance.str();
 
+    // Label normalization (PRD §5, taxonomy/*.yaml) — loaded once, not per file. Loading
+    // failure degrades to raw-labels-only (Taxonomy::ok()), not a hard error: a missing
+    // or malformed taxonomy file shouldn't stop the whole analyze run, since the raw
+    // model output is still fully usable without it.
+    mira::Taxonomy instrumentTaxonomy(MIRA_INSTRUMENT_TAXONOMY, "mtg_jamendo_instrument");
+    mira::Taxonomy stemInstrumentTaxonomy(MIRA_INSTRUMENT_TAXONOMY, "irmas_predominant_instrument");
+
     for (auto& [key, indices] : siblingGroups) {
         bool isSiblingSet = indices.size() >= 2;
         std::optional<std::string> groupId;
@@ -402,7 +432,15 @@ int runAnalyze(const std::vector<std::string>& args) {
                 timer.mark("moodtheme (mtg_jamendo_moodtheme)");
 
                 auto instrument = mira::classifyInstrument(embedding.vector, MIRA_INSTRUMENT_MODEL);
-                if (instrument.ok) machine << ",\"instrument\":" << mira::toJson(instrument);
+                if (instrument.ok) {
+                    machine << ",\"instrument\":" << mira::toJson(instrument);
+                    if (instrumentTaxonomy.ok()) {
+                        std::vector<std::string> names(mira::kInstrumentClassNames,
+                                                        mira::kInstrumentClassNames + mira::kInstrumentClassCount);
+                        machine << ",\"instrument_normalized\":"
+                                << normalizedLabelsJson(names, instrument.scores, instrumentTaxonomy);
+                    }
+                }
                 timer.mark("instrument (mtg_jamendo_instrument)");
 
                 auto danceabilityHead = mira::classifyDanceability(embedding.vector, MIRA_DANCEABILITY_MODEL);
@@ -427,8 +465,18 @@ int runAnalyze(const std::vector<std::string>& args) {
                 if (finalContentType == "stem") {
                     auto stemInstrument = mira::classifyStemInstrument(*mono, c.audio.sampleRate,
                                                                         MIRA_IRMAS_INSTRUMENT_MODEL);
-                    if (stemInstrument.ok)
+                    if (stemInstrument.ok) {
                         machine << ",\"stem_instrument\":" << mira::toJson(stemInstrument);
+                        if (stemInstrumentTaxonomy.ok()) {
+                            // IRMAS's own raw code order (write_metadata_irmas.py's
+                            // label_dict) — matches StemInstrumentResult::scores' order.
+                            static const std::vector<std::string> kIrmasCodes = {
+                                "cel", "cla", "flu", "gac", "gel", "org", "pia", "sax", "tru", "vio", "voi"};
+                            machine << ",\"stem_instrument_normalized\":"
+                                    << normalizedLabelsJson(kIrmasCodes, stemInstrument.scores,
+                                                             stemInstrumentTaxonomy);
+                        }
+                    }
                     timer.mark("stem instrument (IRMAS/nii-yamagishilab)");
                 }
             }
