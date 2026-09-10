@@ -42,10 +42,6 @@ public:
     bool upsertScannedFile(const std::string& path, const std::string& sha256,
                             int64_t mtime, int64_t sizeBytes, int64_t scannedAt);
 
-    // True if a row for this path already has this exact sha256 + mtime — i.e. nothing
-    // about the file has changed since it was last scanned.
-    bool isUnchanged(const std::string& path, const std::string& sha256, int64_t mtime);
-
     std::optional<FileRecord> findByPath(const std::string& path);
     std::optional<FileRecord> findById(int64_t id);
 
@@ -55,21 +51,24 @@ public:
     // route 3, always overrides router-based detection and is never re-routed.
     void declareStem(const std::string& path);
 
-    // Rows the router (mira analyze) should (re-)classify: excludes declared stems,
-    // which never get routed, and — unless `force` — rows already routed once.
-    std::vector<FileRecord> findFilesForRouting(bool force);
+    // Rows `mira analyze` should (re-)process: declared stems ARE included (they still
+    // need active-region detection and everything after it — declaration only skips the
+    // *routing* decision, PRD §12.3) — and unless `force`, only rows never analyzed.
+    std::vector<FileRecord> findFilesForAnalysis(bool force);
 
-    struct RoutingUpdate {
+    struct AnalysisUpdate {
         int64_t id = 0;
-        std::string contentType;
+        // nullopt = leave content_type/content_type_source untouched (a declared stem —
+        // its content type was never in question). Set = a router decision; always
+        // written with content_type_source='router'.
+        std::optional<std::string> contentType;
         std::optional<std::string> groupId;
-        std::string machineJson;   // merged into `machine`, not replacing other fields
+        std::optional<double> activeRatio;
+        std::optional<std::string> activeSpansJson;
+        std::string machineJson = "{}";   // merged into `machine`, not replacing other fields
         int64_t analyzedAt = 0;
     };
-    // Applies a router decision: content_type, content_type_source='router', group_id,
-    // analyzed_at, and merges machineJson's keys into the existing `machine` JSON object
-    // (so a later analysis stage's fields aren't clobbered by an earlier one's).
-    void applyRouting(const RoutingUpdate& update);
+    void applyAnalysis(const AnalysisUpdate& update);
 
 private:
     void migrate();

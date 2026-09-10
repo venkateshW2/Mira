@@ -55,7 +55,9 @@ add_executable(mira
   mira/db/Database.cpp
   mira/scan/Scanner.cpp
   mira/analyze/EssentiaEngine.cpp
+  mira/analyze/AudioLoader.cpp
   mira/analyze/Router.cpp
+  mira/analyze/ActiveRegions.cpp
 )
 
 target_include_directories(mira PRIVATE ${ESSENTIA_ROOT}/src)

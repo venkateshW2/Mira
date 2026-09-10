@@ -63,11 +63,21 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 - [x] Nullable `group_id` for cue grouping across sibling stems (§6)
 
 **Active-region detection**
-- [ ] Frame-energy gate finding non-silent spans, no model (§5)
-- [ ] Always runs for anything routed as `stem`, regardless of duration (§5)
-- [ ] Runs for everything else when duration > 5 minutes (§5)
-- [ ] `active_ratio` + span list stored per file (§6)
-- [ ] All downstream descriptors/MIR/embedding operate only over active spans (§5)
+- [x] Frame-energy gate finding non-silent spans, no model (§5) —
+      `src/mira/analyze/ActiveRegions.cpp`. RMS-per-frame vs a -60dB threshold, gaps
+      under 300ms bridged so natural micro-pauses don't fragment a span — first-pass
+      thresholds, not measured on real material, same caveat as the router's
+      (documented in the file). Verified against a real silence/tone/silence fixture:
+      correct span count and ~0.5 active_ratio.
+- [x] Always runs for anything routed as `stem`, regardless of duration (§5) — including
+      *declared* stems, which required widening `mira analyze` to process them too
+      (previously excluded entirely, since routing skips them — but routing and
+      active-region detection turned out to be separate concerns the code was
+      conflating; declared stems still need the latter)
+- [x] Runs for everything else when duration > 5 minutes (§5)
+- [x] `active_ratio` + span list stored per file (§6)
+- [ ] All downstream descriptors/MIR/embedding operate only over active spans (§5) — no
+      downstream stages exist yet to honour this; revisit when DSP descriptors land
 
 **DSP descriptors (all content types)**
 - [ ] Duration, sample rate, channels (§5)
@@ -188,3 +198,8 @@ designed around a missing field.
       adds a `torch` dependency
 - [ ] Korzeniowski-CNN key detector as an ONNX upgrade path over `libKeyFinder` (§12b)
 - [ ] BTC chord model as an ONNX upgrade path over `Chordino` (§12b)
+- [ ] `mira analyze` keeps every candidate file's full decoded audio buffer in memory for
+      the whole run (so sibling-set grouping can see all durations before deciding
+      anything). Fine at today's scale; revisit — probably a duration-only first pass,
+      re-decoding for the real analysis — before running this over a real drive-sized
+      batch

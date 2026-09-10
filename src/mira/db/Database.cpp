@@ -93,14 +93,6 @@ bool Database::upsertScannedFile(const std::string& path, const std::string& sha
     return isNew;
 }
 
-bool Database::isUnchanged(const std::string& path, const std::string& sha256, int64_t mtime) {
-    SQLite::Statement q(db, "SELECT 1 FROM files WHERE path = ? AND sha256 = ? AND mtime = ?");
-    q.bind(1, path);
-    q.bind(2, sha256);
-    q.bind(3, mtime);
-    return q.executeStep();
-}
-
 std::optional<FileRecord> Database::findByPath(const std::string& path) {
     SQLite::Statement q(db, "SELECT * FROM files WHERE path = ?");
     q.bind(1, path);
@@ -129,9 +121,9 @@ void Database::declareStem(const std::string& path) {
     update.exec();
 }
 
-std::vector<FileRecord> Database::findFilesForRouting(bool force) {
-    std::string sql = "SELECT * FROM files WHERE content_type_source != 'declared'";
-    if (!force) sql += " AND content_type = 'unknown'";
+std::vector<FileRecord> Database::findFilesForAnalysis(bool force) {
+    std::string sql = "SELECT * FROM files";
+    if (!force) sql += " WHERE analyzed_at IS NULL";
 
     SQLite::Statement q(db, sql);
     std::vector<FileRecord> results;
@@ -139,17 +131,33 @@ std::vector<FileRecord> Database::findFilesForRouting(bool force) {
     return results;
 }
 
-void Database::applyRouting(const RoutingUpdate& update) {
+void Database::applyAnalysis(const AnalysisUpdate& update) {
     SQLite::Statement stmt(db,
-        "UPDATE files SET content_type = ?, content_type_source = 'router', "
-        "group_id = ?, machine = json_patch(machine, ?), analyzed_at = ? "
+        "UPDATE files SET "
+        "content_type = COALESCE(?, content_type), "
+        "content_type_source = CASE WHEN ? IS NOT NULL THEN 'router' ELSE content_type_source END, "
+        "group_id = COALESCE(?, group_id), "
+        "active_ratio = COALESCE(?, active_ratio), "
+        "active_spans = COALESCE(?, active_spans), "
+        "machine = json_patch(machine, ?), "
+        "analyzed_at = ? "
         "WHERE id = ?");
-    stmt.bind(1, update.contentType);
-    if (update.groupId) stmt.bind(2, *update.groupId);
-    else stmt.bind(2);
-    stmt.bind(3, update.machineJson);
-    stmt.bind(4, update.analyzedAt);
-    stmt.bind(5, update.id);
+
+    if (update.contentType) { stmt.bind(1, *update.contentType); stmt.bind(2, *update.contentType); }
+    else { stmt.bind(1); stmt.bind(2); }
+
+    if (update.groupId) stmt.bind(3, *update.groupId);
+    else stmt.bind(3);
+
+    if (update.activeRatio) stmt.bind(4, *update.activeRatio);
+    else stmt.bind(4);
+
+    if (update.activeSpansJson) stmt.bind(5, *update.activeSpansJson);
+    else stmt.bind(5);
+
+    stmt.bind(6, update.machineJson);
+    stmt.bind(7, update.analyzedAt);
+    stmt.bind(8, update.id);
     stmt.exec();
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace mira {
 
@@ -12,21 +13,15 @@ namespace mira {
 // thresholds below are a first, documented guess, not measured on real material —
 // PRD §12.6's "store everything, tune thresholds later" applies here too.
 struct RoutingResult {
-    bool ok = false;               // false if the file couldn't be decoded
     std::string contentType;       // one_shot | loop | track
     double durationSeconds = 0.0;
     double onsetRate = 0.0;        // onsets per second — collected, not yet used to route
     int onsetCount = 0;
 };
 
-// Decodes `path` (via Essentia's MonoLoader — PRD §7 eventually moves runtime decode to
-// JUCE's AudioFormatManager to drop the ffmpeg dependency; this is the analysis-engine
-// path used by the CLI, not that final decision) and classifies it by duration alone:
-//   duration <= kOneShotMaxSeconds        -> one_shot
-//   kOneShotMaxSeconds < duration <= kLoopMaxSeconds -> loop
-//   duration > kLoopMaxSeconds            -> track
-// Requires an EssentiaEngine to already be constructed (essentia::init() called).
-RoutingResult routeContentType(const std::string& path);
+// Classifies already-decoded mono audio. Requires an EssentiaEngine to already be
+// constructed (essentia::init() called) — used for the OnsetRate algorithm.
+RoutingResult routeContentType(const std::vector<float>& audio, int sampleRate);
 
 inline constexpr double kOneShotMaxSeconds = 3.0;
 inline constexpr double kLoopMaxSeconds = 30.0;

@@ -127,7 +127,7 @@ assert_contains "machine JSON has duration_seconds" "$MACHINE" "duration_seconds
 echo
 echo "== test: analyze skips already-routed files without --force =="
 OUT=$("$MIRA" analyze --db "$TESTDB" 2>&1)
-assert_contains "reports nothing to route" "$OUT" "nothing to route"
+assert_contains "reports nothing to analyze" "$OUT" "nothing to analyze"
 
 echo
 echo "== test: --force re-routes =="
@@ -162,7 +162,7 @@ assert_eq "both siblings share one group_id" "1" "$(echo "$GROUP_IDS" | wc -l | 
 rm -rf "$SIBLING_DIR"
 
 echo
-echo "== test: --as stem declaration always overrides the router =="
+echo "== test: --as stem declaration overrides content_type, but analyze still runs on it =="
 rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
 "$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" --as stem >/dev/null 2>&1
 CONTENT_TYPE=$(sqlite3 "$TESTDB" "SELECT content_type FROM files WHERE path LIKE '%flamenco.wav'")
@@ -170,9 +170,51 @@ CT_SOURCE=$(sqlite3 "$TESTDB" "SELECT content_type_source FROM files WHERE path 
 assert_eq "content_type is stem immediately after scan" "stem" "$CONTENT_TYPE"
 assert_eq "content_type_source is declared" "declared" "$CT_SOURCE"
 OUT=$("$MIRA" analyze --db "$TESTDB" 2>&1)
-assert_contains "analyze finds nothing to route (declared stems are never routed)" "$OUT" "nothing to route"
+# Declared stems are NOT re-routed, but they still need active-region detection etc
+# (PRD §5: it runs for stems "regardless of duration") — declaration only skips routing.
+assert_contains "analyze processes the declared stem (not skipped)" "$OUT" "1 stem"
 CONTENT_TYPE_AFTER=$(sqlite3 "$TESTDB" "SELECT content_type FROM files WHERE path LIKE '%flamenco.wav'")
+CT_SOURCE_AFTER=$(sqlite3 "$TESTDB" "SELECT content_type_source FROM files WHERE path LIKE '%flamenco.wav'")
 assert_eq "content_type still stem after analyze" "stem" "$CONTENT_TYPE_AFTER"
+assert_eq "content_type_source still declared (never overwritten to router)" "declared" "$CT_SOURCE_AFTER"
+
+echo
+echo "== test: active-region detection runs for a stem, not for an ordinary short loop =="
+ACTIVE_RATIO_STEM=$(sqlite3 "$TESTDB" "SELECT active_ratio FROM files WHERE path LIKE '%flamenco.wav'")
+assert_eq "declared stem got an active_ratio (always runs for stems, PRD §5)" "1.0" "$ACTIVE_RATIO_STEM"
+
+rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
+"$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$TESTDB" >/dev/null 2>&1
+ACTIVE_RATIO_LOOP=$(sqlite3 "$TESTDB" "SELECT active_ratio FROM files WHERE path LIKE '%flamenco.wav'")
+assert_eq "ordinary 14s loop got no active_ratio (not a stem, well under 5 min)" "" "$ACTIVE_RATIO_LOOP"
+
+echo
+echo "== test: active-region detection finds real silence gaps =="
+if command -v ffmpeg >/dev/null 2>&1; then
+    SILENCE_DIR=$(mktemp -d)
+    # 2s silence, 3s tone, 2s silence, 3s tone, 2s silence = 12s, ~50% active
+    ffmpeg -y -loglevel error \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=3" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -f lavfi -i "sine=frequency=880:sample_rate=44100:duration=3" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono:d=2" \
+        -filter_complex "[0][1][2][3][4]concat=n=5:v=0:a=1[out]" -map "[out]" \
+        "$SILENCE_DIR/silence_test.wav"
+    rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
+    "$MIRA" scan "$SILENCE_DIR" --db "$TESTDB" --as stem >/dev/null 2>&1
+    "$MIRA" analyze --db "$TESTDB" >/dev/null 2>&1
+    SPAN_COUNT=$(sqlite3 "$TESTDB" "SELECT json_array_length(active_spans) FROM files")
+    assert_eq "found 2 active spans (two tone segments)" "2" "$SPAN_COUNT"
+    ACTIVE_RATIO=$(sqlite3 "$TESTDB" "SELECT active_ratio FROM files")
+    # ~6s active out of 12s = 0.5, allow frame-granularity slop
+    IN_RANGE=$(awk -v r="$ACTIVE_RATIO" 'BEGIN{print (r>0.4 && r<0.6) ? "yes" : "no"}')
+    assert_eq "active_ratio is roughly 0.5" "yes" "$IN_RANGE"
+    rm -rf "$SILENCE_DIR"
+else
+    echo "  SKIP: ffmpeg not found, skipping silence-gap test"
+fi
 
 echo
 echo "======================================"

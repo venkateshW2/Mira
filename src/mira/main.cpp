@@ -1,3 +1,5 @@
+#include "analyze/ActiveRegions.h"
+#include "analyze/AudioLoader.h"
 #include "analyze/EssentiaEngine.h"
 #include "analyze/Router.h"
 #include "db/Database.h"
@@ -88,11 +90,16 @@ int runScan(const std::vector<std::string>& args) {
 
 // PRD §12.3 route 2, the general case: N files of (near-)identical duration in the same
 // folder are treated as a sibling set of delivery stems. Grouping is over the batch of
-// files routed in *this* analyze run only — a folder analyzed across multiple runs won't
-// be grouped correctly yet (see TASKS.md).
-struct RoutedFile {
+// files analyzed in *this* run only — a folder analyzed across multiple runs won't be
+// grouped correctly yet (see TASKS.md). Declared stems (content_type_source='declared')
+// participate too, so a folder mixing a declared stem with router-detected siblings of
+// the same duration still ends up in one group.
+struct Candidate {
     mira::FileRecord record;
-    mira::RoutingResult routing;
+    std::vector<float> audio;   // kept for the whole run — see TASKS.md's scaling note
+    bool isDeclared = false;
+    std::string contentType;    // declared: "stem"; else the router's classification
+    mira::RoutingResult routing; // only meaningful when !isDeclared
     std::string parentDir;
 };
 
@@ -104,11 +111,14 @@ std::string siblingKey(const std::string& parentDir, double durationSeconds) {
     return oss.str();
 }
 
-std::string durationOnsetJson(const mira::RoutingResult& r) {
+std::string spansToJson(const std::vector<mira::ActiveSpan>& spans) {
     std::ostringstream oss;
-    oss << "{\"duration_seconds\":" << r.durationSeconds
-        << ",\"onset_rate\":" << r.onsetRate
-        << ",\"onset_count\":" << r.onsetCount << "}";
+    oss << "[";
+    for (size_t i = 0; i < spans.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << "[" << spans[i].startSeconds << "," << spans[i].endSeconds << "]";
+    }
+    oss << "]";
     return oss.str();
 }
 
@@ -131,58 +141,94 @@ int runAnalyze(const std::vector<std::string>& args) {
     std::cout << "database: " << dbPath << std::endl;
     mira::Database db(dbPath);
 
-    auto candidates = db.findFilesForRouting(force);
-    if (candidates.empty()) {
-        std::cout << "nothing to route (use --force to re-route already-routed files)"
-                   << std::endl;
+    auto candidateRecords = db.findFilesForAnalysis(force);
+    if (candidateRecords.empty()) {
+        std::cout << "nothing to analyze (use --force to re-analyze)" << std::endl;
         return 0;
     }
 
     mira::EssentiaEngine engine; // essentia::init() for the lifetime of this command
 
-    std::vector<RoutedFile> routed;
+    std::vector<Candidate> candidates;
     int failed = 0;
-    for (auto& record : candidates) {
-        auto result = mira::routeContentType(record.path);
-        if (!result.ok) {
+    for (auto& record : candidateRecords) {
+        auto audio = mira::loadMonoAudio(record.path);
+        if (!audio) {
             std::cerr << "mira analyze: could not decode " << record.path << std::endl;
             failed++;
             continue;
         }
-        routed.push_back({record, result, std::filesystem::path(record.path).parent_path().string()});
+
+        Candidate c;
+        c.record = record;
+        c.isDeclared = (record.contentTypeSource == "declared");
+        c.parentDir = std::filesystem::path(record.path).parent_path().string();
+
+        if (c.isDeclared) {
+            c.contentType = "stem";
+        } else {
+            c.routing = mira::routeContentType(*audio, mira::kAnalysisSampleRate);
+            c.contentType = c.routing.contentType;
+        }
+        c.audio = std::move(*audio);
+        candidates.push_back(std::move(c));
     }
 
-    // Sibling-set stem detection over the batch just routed.
+    // Sibling-set stem detection + group_id assignment, over every candidate whose
+    // content type is already 'stem' (declared) or could become one (router-classified).
     std::map<std::string, std::vector<size_t>> siblingGroups;
-    for (size_t i = 0; i < routed.size(); ++i) {
-        siblingGroups[siblingKey(routed[i].parentDir, routed[i].routing.durationSeconds)]
-            .push_back(i);
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        double duration = candidates[i].isDeclared
+                               ? static_cast<double>(candidates[i].audio.size()) / mira::kAnalysisSampleRate
+                               : candidates[i].routing.durationSeconds;
+        siblingGroups[siblingKey(candidates[i].parentDir, duration)].push_back(i);
     }
 
     int64_t analyzedAt = nowUnix();
     std::map<std::string, int> counts;
 
     for (auto& [key, indices] : siblingGroups) {
-        bool isSiblingStemSet = indices.size() >= 2;
+        bool isSiblingSet = indices.size() >= 2;
         std::optional<std::string> groupId;
-        if (isSiblingStemSet) groupId = key;
+        if (isSiblingSet) groupId = key;
 
         for (size_t idx : indices) {
-            auto& rf = routed[idx];
-            std::string contentType = isSiblingStemSet ? "stem" : rf.routing.contentType;
-            counts[contentType]++;
+            auto& c = candidates[idx];
+            std::string finalContentType = (isSiblingSet || c.isDeclared) ? "stem" : c.contentType;
+            counts[finalContentType]++;
 
-            mira::Database::RoutingUpdate update;
-            update.id = rf.record.id;
-            update.contentType = contentType;
-            update.groupId = groupId;
-            update.machineJson = durationOnsetJson(rf.routing);
+            double duration = c.isDeclared
+                                   ? static_cast<double>(c.audio.size()) / mira::kAnalysisSampleRate
+                                   : c.routing.durationSeconds;
+
+            std::ostringstream machine;
+            machine << "{\"duration_seconds\":" << duration;
+            if (!c.isDeclared) {
+                machine << ",\"onset_rate\":" << c.routing.onsetRate
+                        << ",\"onset_count\":" << c.routing.onsetCount;
+            }
+
+            mira::Database::AnalysisUpdate update;
+            update.id = c.record.id;
+            if (!c.isDeclared) update.contentType = finalContentType; // never touch a declared row
+            if (groupId) update.groupId = groupId;
+
+            // PRD §5: always for stems, regardless of duration; otherwise only past 5 min.
+            if (mira::shouldRunActiveRegionDetection(finalContentType, duration)) {
+                auto activeRegions = mira::detectActiveRegions(c.audio, mira::kAnalysisSampleRate);
+                update.activeRatio = activeRegions.activeRatio;
+                update.activeSpansJson = spansToJson(activeRegions.spans);
+                machine << ",\"active_ratio\":" << activeRegions.activeRatio;
+            }
+
+            machine << "}";
+            update.machineJson = machine.str();
             update.analyzedAt = analyzedAt;
-            db.applyRouting(update);
+            db.applyAnalysis(update);
         }
     }
 
-    std::cout << "routed " << routed.size() << " files: ";
+    std::cout << "analyzed " << candidates.size() << " files: ";
     bool first = true;
     for (auto& [type, n] : counts) {
         if (!first) std::cout << ", ";
