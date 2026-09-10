@@ -1,3 +1,46 @@
+# UI inspiration — SonikSearch and Tuva (found 2026-09-10)
+
+Two shipping products doing close to what mira's UI (§13) needs to do. Neither is open
+source; this is interface-pattern research, not code to reuse.
+
+**[SonikSearch](https://sonikstation.com/soniksearch.html)** (SonikStation, $89, VST3/AU/AAX
++ standalone, local AI search) — the closer analogue on the analysis side:
+- Dual-panel: collapsible folder tree (left) → central library table/grid → waveform +
+  metadata detail (right). Matches mira's planned `TableListBox` + `AudioThumbnail` split.
+- **Nine similarity sliders** (brightness, warmth, crest factor, harmonicity, attack, RMS,
+  duration, timbre, pitch) with live re-ranking, no "Apply" button — direct precedent for
+  mira's per-dimension similarity (Phase 4, not Sononym's fixed five, §12 Q5).
+- **Source-of-truth column per field** — table shows whether a value came from Analysis,
+  Filename, or Manual edit. Directly relevant to mira's `machine`/`human` split (§6): worth
+  surfacing *which* a field is in the UI, not just enforcing it in storage.
+- Stackable filter chips (Key, BPM range, Type, Category, Tags) combine without reload —
+  matches mira's `--filter` CLI expressions; worth mirroring as chips in the JUCE UI.
+- Natural-language search box ("warm analog pad") — out of scope for mira v1 (needs CLAP,
+  Phase 3+, §2c), but the UI slot for it is cheap to reserve now.
+- Stem separation (Demucs-style) is explicitly **not** something mira does (§4) — SonikSearch
+  has it, mira deliberately doesn't chase it.
+
+**[Tuva](https://tuva.app/)** (€25 one-time, macOS/Windows, on-device tagging) — closer to
+mira's non-negotiables:
+- Fully local, no account, one-time purchase, no subscription — same posture as mira's
+  AGPL/local-only stance (§12 Q9).
+- **DAW-project browsing** (Ableton `.als`, FL `.flp`, Reaper `.rpp`, Cubase `.cpr`, Logic
+  `.logicx`) — parses project files to show which samples are used where, without opening
+  the DAW. Not in mira's scope for v1, but worth a §12 open-question entry for later: it's
+  a natural extension of "find this sound" once the index exists.
+- "Shuffle and see what comes up" as a browsing mode alongside directed search — a cheap,
+  low-effort addition once `similar` exists (§8).
+- 66 auto-tag categories, folder-free organisation — same shape as mira's normalised label
+  set (§5), just smaller.
+
+**Net effect on the PRD:** no architecture changes. Confirms the dual-panel table+waveform
+layout (§13) and the `machine`/`human`/source-of-truth split (§6) are the right shape, and
+adds two candidate low-cost UI additions for a post-v1 pass: per-field source-of-truth
+display, and DAW-project browsing as a future consumer of the index (parallel to
+sa3-studio, §11).
+
+---
+
 # SA3 LoRA Studio — working notes
 
 Status as of 2026-09-09. Companion to SETUP.md (which has errors — see below).

@@ -6,7 +6,8 @@
 *.ckpt
 sa3-studio/.hf/
 sa3-studio/.uvcache/
-models/
+models/*
+!models/README.md
 
 # ── Virtualenvs (path-specific, rebuild with uv) ─────────────────────────────
 .venv/
@@ -17,6 +18,14 @@ __pycache__/
 # ── Vendored upstream repos (cloned, not authored here) ──────────────────────
 sa3-studio/stable-audio-3/
 sa3-studio/underfit/
+vendor/
+
+# ── C++ build outputs ──────────────────────────────────────────────────────
+build/
+**/build/
+*.a
+*.o
+*.dylib
 
 # ── Runtime state, datasets, outputs ─────────────────────────────────────────
 sa3-studio/datasets/
@@ -28,6 +37,7 @@ output/
 *.flac
 *.aif
 *.aiff
+!fixtures/*.wav
 
 # ── Local analysis artefacts ─────────────────────────────────────────────────
 *.sqlite
