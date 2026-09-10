@@ -13,6 +13,9 @@
 #include "analyze/InstrumentLabels.h"
 #include "analyze/Danceability.h"
 #include "analyze/StemInstrument.h"
+#include "analyze/Genre.h"
+#include "analyze/GenreLabels.h"
+#include "analyze/VoiceInstrumental.h"
 #include "analyze/Router.h"
 #include "analyze/Transcription.h"
 #include "db/Database.h"
@@ -61,13 +64,13 @@ void printUsage() {
         "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
         "               [--chords] [--transcribe] [--recheck-tempo] [--verbose]\n"
         "        content-type router (one_shot/loop/track/stem) + DSP + embedding +\n"
-        "        content gate + moodtheme/instrument/danceability heads (Phase 2, PRD §2c)\n"
-        "        + rhythm + key by default; classification heads gated on the content\n"
-        "        gate's is_music signal; stems additionally get a second, isolated-audio-\n"
-        "        tuned instrument opinion (stem_instrument — mtg_jamendo_instrument's\n"
-        "        embedding is full-mix-trained and unreliable on isolated stems, TASKS.md);\n"
-        "        rhythm defaults to beat_this_cpp only (the more accurate of the two tempo\n"
-        "        estimators); --recheck-tempo also runs\n"
+        "        content gate + moodtheme/instrument/danceability/genre/voice-instrumental\n"
+        "        heads (Phase 2, PRD §2c) + rhythm + key by default; classification heads\n"
+        "        gated on the content gate's is_music signal; stems additionally get a\n"
+        "        second, isolated-audio-tuned instrument opinion (stem_instrument —\n"
+        "        mtg_jamendo_instrument's embedding is full-mix-trained and unreliable on\n"
+        "        isolated stems, TASKS.md); rhythm defaults to beat_this_cpp only (the\n"
+        "        more accurate of the two tempo estimators); --recheck-tempo also runs\n"
         "        Essentia's RhythmExtractor2013 for comparison (bpm_ratio); --chords and\n"
         "        --transcribe are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone\n"
         "        — see TASKS.md); --content-type requires --force; --verbose prints\n"
@@ -406,6 +409,16 @@ int runAnalyze(const std::vector<std::string>& args) {
                 if (danceabilityHead.ok) machine << ",\"danceability_head\":" << mira::toJson(danceabilityHead);
                 timer.mark("danceability head (model-based)");
 
+                auto genre = mira::classifyGenre(embedding.vector, MIRA_GENRE_MODEL);
+                if (genre.ok) machine << ",\"genre\":" << mira::toJson(genre);
+                timer.mark("genre (genre_discogs400)");
+
+                auto voiceInstrumental =
+                    mira::classifyVoiceInstrumental(embedding.vector, MIRA_VOICE_INSTRUMENTAL_MODEL);
+                if (voiceInstrumental.ok)
+                    machine << ",\"voice_instrumental\":" << mira::toJson(voiceInstrumental);
+                timer.mark("voice/instrumental");
+
                 // Stem-specific: mtg_jamendo_instrument's embedding is full-mix-trained
                 // and unreliable on isolated stems (real finding, TASKS.md) — this is a
                 // complementary signal for stems only, not a replacement, since the two
@@ -631,6 +644,32 @@ int runInspect(const std::vector<std::string>& args) {
     }
     if (auto danceableProb = db.jsonExtractDouble(r.machine, "$.danceability_head.danceable_probability")) {
         std::cout << "  danceable:     " << *danceableProb << " (model-based; see also DSP danceability below)\n";
+    }
+    if (auto voiceProb = db.jsonExtractDouble(r.machine, "$.voice_instrumental.voice_probability")) {
+        std::cout << "  voice/instr:   " << *voiceProb << " probability of voice (vs. instrumental)\n";
+    }
+    // Genre labels (unlike moodtheme/instrument) contain spaces and punctuation
+    // ("Blues---Boogie Woogie", "Rock---Yé-Yé") — SQLite's json_extract path syntax
+    // needs the key segment double-quoted whenever it's not a bare identifier.
+    if (auto sample = db.jsonExtractDouble(
+            r.machine, std::string("$.genre.\"") + mira::kGenreClassNames[0] + "\"")) {
+        (void)sample; // presence check only — genre is an object keyed by label name,
+                       // not an array, so there's no single fixed field to probe; use
+                       // whatever the first label actually is rather than guessing one
+        std::vector<std::pair<std::string, double>> scored;
+        for (int i = 0; i < mira::kGenreClassCount; ++i) {
+            std::string path = std::string("$.genre.\"") + mira::kGenreClassNames[i] + "\"";
+            if (auto score = db.jsonExtractDouble(r.machine, path))
+                scored.emplace_back(mira::kGenreClassNames[i], *score);
+        }
+        std::sort(scored.begin(), scored.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::cout << "  genre:         ";
+        for (size_t i = 0; i < scored.size() && i < 5; ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << scored[i].first << " (" << scored[i].second << ")";
+        }
+        std::cout << "\n";
     }
     if (auto windowCount = db.jsonExtractDouble(r.machine, "$.stem_instrument.window_count")) {
         // IRMAS's own label order (write_metadata_irmas.py's label_dict) with display names.

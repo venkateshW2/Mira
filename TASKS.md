@@ -419,22 +419,30 @@ Exit: the Sononym-parity milestone.
       "Dance"-titled score cue scores highest on happy/corporate/uplifting/positive/
       energetic; label names are raw MTG-Jamendo strings for now (the versioned-YAML
       normalisation below is separately scoped, not done here)
-- [x] `genre_discogs400-discogs-effnet-1` **converted to ONNX**, not yet wired into the
-      C++ pipeline (400 classes) (§2c, §16.3) — `lab/pyproject.toml` retargeted to Python
-      3.11 (tf2onnx 1.17.0 needs TF 2.13-2.15, which has no cp312 wheels — the `lab/`
-      Python version was originally pinned to 3.12 for the onnxruntime parity spike, which
+- [x] `genre_discogs400-discogs-effnet-1` converted to ONNX and wired into the C++
+      pipeline (400 classes) (§2c, §16.3) — `lab/pyproject.toml` retargeted to Python 3.11
+      (tf2onnx 1.17.0 needs TF 2.13-2.15, which has no cp312 wheels — the `lab/` Python
+      version was originally pinned to 3.12 for the onnxruntime parity spike, which
       doesn't actually require that specific version). Converted via
       `python -m tf2onnx.convert --graphdef ... --inputs serving_default_model_Placeholder:0
       --outputs PartitionedCall:0`. Verified against TF directly (not just "runs"): max abs
       diff 2.06e-6 on the same random 1280-d input, well inside the ~1e-4 exit criterion.
       Labels in `src/mira/analyze/GenreLabels.h` (generated, 400 raw Discogs genre/style
-      strings). C++ wiring (a fourth head alongside moodtheme/instrument/danceability) is
-      separately scoped, not done in this pass
-- [x] `voice_instrumental-discogs-effnet-1` **converted to ONNX**, not yet wired into the
-      C++ pipeline (§2c, §16.3) — same tf2onnx pipeline, `model/Placeholder:0` →
+      strings). `src/mira/analyze/Genre.cpp` — same shared `runClassificationHead()` as
+      moodtheme/instrument, gated on the content gate's `is_music`, ~2ms cost. Genre
+      labels are the first with spaces/punctuation ("Blues---Boogie Woogie", "Rock---Yé-
+      Yé"), unlike moodtheme/instrument's bare-word labels — `mira inspect`'s lookup needed
+      double-quoting the JSON path key segment (`$.genre."Blues---Boogie Woogie"`), not just
+      `$.genre.label` like the other heads. Verified sensible, not approximately: on
+      flamenco.wav (a real flamenco guitar loop) the top result is literally
+      "Folk, World, & Country---Flamenco" at 0.98 confidence
+- [x] `voice_instrumental-discogs-effnet-1` converted to ONNX and wired into the C++
+      pipeline (§2c, §16.3) — same tf2onnx pipeline, `model/Placeholder:0` →
       `model/Softmax:0`. Verified against TF: max abs diff 1.79e-7. 2 classes
       (`instrumental`, `voice`) — small enough not to need a generated label header, same
-      precedent as `Danceability.cpp`'s 2-class case
+      precedent as `Danceability.cpp`'s 2-class case. `src/mira/analyze/
+      VoiceInstrumental.cpp`, stored as `voice_instrumental.voice_probability`. Verified:
+      flamenco.wav (solo guitar, no vocals) scores 0.00
 - [x] `danceability-discogs-effnet-1` head (§2c, §5) — `src/mira/analyze/Danceability.cpp`,
       stored as `danceability_head.danceable_probability` (distinct JSON key from
       `rhythm.danceability`, Essentia's existing DSP-based `Danceability` algorithm — a

@@ -82,6 +82,12 @@ endif()
 if(NOT EXISTS ${MODELS_ROOT}/classification-heads/irmas-predominant-instrument/irmas-predominant-instrument-1.onnx)
   message(FATAL_ERROR "irmas-predominant-instrument model not found — run lab/export_irmas_instrument_onnx.py (see TASKS.md Phase 2)")
 endif()
+if(NOT EXISTS ${MODELS_ROOT}/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.onnx)
+  message(FATAL_ERROR "genre_discogs400 ONNX not found — run lab/'s tf2onnx conversion (see TASKS.md Phase 2)")
+endif()
+if(NOT EXISTS ${MODELS_ROOT}/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx)
+  message(FATAL_ERROR "voice_instrumental ONNX not found — run lab/'s tf2onnx conversion (see TASKS.md Phase 2)")
+endif()
 if(NOT EXISTS ${SQLITE_VEC_ROOT}/sqlite-vec.h)
   message(FATAL_ERROR "sqlite-vec.h not generated — run scripts/fetch-vendor.sh")
 endif()
@@ -229,6 +235,8 @@ add_executable(mira
   mira/analyze/Instrument.cpp
   mira/analyze/Danceability.cpp
   mira/analyze/StemInstrument.cpp
+  mira/analyze/Genre.cpp
+  mira/analyze/VoiceInstrumental.cpp
 )
 
 target_include_directories(mira PRIVATE
@@ -248,6 +256,8 @@ target_compile_definitions(mira PRIVATE
   MIRA_INSTRUMENT_MODEL="${MODELS_ROOT}/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.onnx"
   MIRA_DANCEABILITY_MODEL="${MODELS_ROOT}/classification-heads/danceability/danceability-discogs-effnet-1.onnx"
   MIRA_IRMAS_INSTRUMENT_MODEL="${MODELS_ROOT}/classification-heads/irmas-predominant-instrument/irmas-predominant-instrument-1.onnx"
+  MIRA_GENRE_MODEL="${MODELS_ROOT}/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.onnx"
+  MIRA_VOICE_INSTRUMENTAL_MODEL="${MODELS_ROOT}/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx"
   MIRA_CED_MODEL="${MODELS_ROOT}/content-gate/ced-small/model.onnx"
   # Captured at configure time, not build time — re-run cmake to refresh after new
   # commits if you care about this being exact; "close enough" for a dev build.
