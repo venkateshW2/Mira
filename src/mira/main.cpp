@@ -1,5 +1,6 @@
 #include "analyze/ActiveRegions.h"
 #include "analyze/AudioLoader.h"
+#include "analyze/Descriptors.h"
 #include "analyze/EssentiaEngine.h"
 #include "analyze/Router.h"
 #include "db/Database.h"
@@ -96,7 +97,7 @@ int runScan(const std::vector<std::string>& args) {
 // the same duration still ends up in one group.
 struct Candidate {
     mira::FileRecord record;
-    std::vector<float> audio;   // kept for the whole run — see TASKS.md's scaling note
+    mira::LoadedAudio audio;    // kept for the whole run — see TASKS.md's scaling note
     bool isDeclared = false;
     std::string contentType;    // declared: "stem"; else the router's classification
     mira::RoutingResult routing; // only meaningful when !isDeclared
@@ -152,7 +153,7 @@ int runAnalyze(const std::vector<std::string>& args) {
     std::vector<Candidate> candidates;
     int failed = 0;
     for (auto& record : candidateRecords) {
-        auto audio = mira::loadMonoAudio(record.path);
+        auto audio = mira::loadAudio(record.path);
         if (!audio) {
             std::cerr << "mira analyze: could not decode " << record.path << std::endl;
             failed++;
@@ -167,7 +168,7 @@ int runAnalyze(const std::vector<std::string>& args) {
         if (c.isDeclared) {
             c.contentType = "stem";
         } else {
-            c.routing = mira::routeContentType(*audio, mira::kAnalysisSampleRate);
+            c.routing = mira::routeContentType(audio->mono, audio->sampleRate);
             c.contentType = c.routing.contentType;
         }
         c.audio = std::move(*audio);
@@ -178,10 +179,8 @@ int runAnalyze(const std::vector<std::string>& args) {
     // content type is already 'stem' (declared) or could become one (router-classified).
     std::map<std::string, std::vector<size_t>> siblingGroups;
     for (size_t i = 0; i < candidates.size(); ++i) {
-        double duration = candidates[i].isDeclared
-                               ? static_cast<double>(candidates[i].audio.size()) / mira::kAnalysisSampleRate
-                               : candidates[i].routing.durationSeconds;
-        siblingGroups[siblingKey(candidates[i].parentDir, duration)].push_back(i);
+        siblingGroups[siblingKey(candidates[i].parentDir, candidates[i].audio.durationSeconds)]
+            .push_back(i);
     }
 
     int64_t analyzedAt = nowUnix();
@@ -197,12 +196,12 @@ int runAnalyze(const std::vector<std::string>& args) {
             std::string finalContentType = (isSiblingSet || c.isDeclared) ? "stem" : c.contentType;
             counts[finalContentType]++;
 
-            double duration = c.isDeclared
-                                   ? static_cast<double>(c.audio.size()) / mira::kAnalysisSampleRate
-                                   : c.routing.durationSeconds;
+            double duration = c.audio.durationSeconds;
 
             std::ostringstream machine;
-            machine << "{\"duration_seconds\":" << duration;
+            machine << "{\"duration_seconds\":" << duration
+                    << ",\"sample_rate\":" << c.audio.sampleRate
+                    << ",\"num_channels\":" << c.audio.numChannels;
             if (!c.isDeclared) {
                 machine << ",\"onset_rate\":" << c.routing.onsetRate
                         << ",\"onset_count\":" << c.routing.onsetCount;
@@ -215,11 +214,16 @@ int runAnalyze(const std::vector<std::string>& args) {
 
             // PRD §5: always for stems, regardless of duration; otherwise only past 5 min.
             if (mira::shouldRunActiveRegionDetection(finalContentType, duration)) {
-                auto activeRegions = mira::detectActiveRegions(c.audio, mira::kAnalysisSampleRate);
+                auto activeRegions = mira::detectActiveRegions(c.audio.mono, c.audio.sampleRate);
                 update.activeRatio = activeRegions.activeRatio;
                 update.activeSpansJson = spansToJson(activeRegions.spans);
                 machine << ",\"active_ratio\":" << activeRegions.activeRatio;
             }
+
+            // DSP descriptors (PRD §5A) — all content types. Not yet restricted to
+            // active spans on stems/long tracks (TASKS.md notes this as still open).
+            auto dsp = mira::computeDspDescriptors(c.audio.left, c.audio.right, c.audio.sampleRate);
+            machine << ",\"dsp\":" << mira::toJson(dsp);
 
             machine << "}";
             update.machineJson = machine.str();

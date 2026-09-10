@@ -217,6 +217,34 @@ else
 fi
 
 echo
+echo "== test: DSP descriptors — sanity-checked against a pure sine wave =="
+if command -v ffmpeg >/dev/null 2>&1; then
+    SINE_DIR=$(mktemp -d)
+    # Mono, native 48kHz (not mira's old fixed-44.1kHz analysis rate) — also exercises
+    # AudioLoader's mono->stereo channel duplication path.
+    ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=2" \
+        -ac 1 "$SINE_DIR/sine440.wav"
+    rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
+    "$MIRA" scan "$SINE_DIR" --db "$TESTDB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$TESTDB" >/dev/null 2>&1
+    MACHINE=$(sqlite3 "$TESTDB" "SELECT machine FROM files")
+    assert_eq "native sample rate preserved (not forced to 44.1kHz)" "48000" \
+        "$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sample_rate"])')"
+    assert_eq "mono channel count recorded correctly" "1" \
+        "$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["num_channels"])')"
+    CENTROID=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dsp"]["spectral_centroid_hz"])')
+    CENTROID_OK=$(awk -v c="$CENTROID" 'BEGIN{print (c>400 && c<500) ? "yes" : "no"}')
+    assert_eq "spectral centroid is near 440Hz for a 440Hz sine" "yes" "$CENTROID_OK"
+    CREST=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dsp"]["crest_factor"])')
+    # A sine wave's peak/mean(|x|) is exactly pi/2 ~= 1.5708
+    CREST_OK=$(awk -v c="$CREST" 'BEGIN{print (c>1.5 && c<1.65) ? "yes" : "no"}')
+    assert_eq "crest factor matches the sine wave's theoretical pi/2" "yes" "$CREST_OK"
+    rm -rf "$SINE_DIR"
+else
+    echo "  SKIP: ffmpeg not found, skipping DSP descriptor sanity test"
+fi
+
+echo
 echo "======================================"
 echo "  $PASS passed, $FAIL failed"
 echo "======================================"

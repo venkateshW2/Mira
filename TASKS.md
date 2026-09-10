@@ -76,16 +76,34 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       conflating; declared stems still need the latter)
 - [x] Runs for everything else when duration > 5 minutes (§5)
 - [x] `active_ratio` + span list stored per file (§6)
-- [ ] All downstream descriptors/MIR/embedding operate only over active spans (§5) — no
-      downstream stages exist yet to honour this; revisit when DSP descriptors land
+- [ ] All downstream descriptors/MIR/embedding operate only over active spans (§5) — DSP
+      descriptors have landed (below) but don't honour this yet; see that section's note
 
 **DSP descriptors (all content types)**
-- [ ] Duration, sample rate, channels (§5)
-- [ ] Integrated LUFS, loudness range, true peak (`LoudnessEBUR128`) (§5)
-- [ ] Crest factor (§5)
-- [ ] Spectral centroid (brightness), spectral flatness (noisiness) (§5)
-- [ ] Harmonicity, onset rate, attack time (§5)
-- [ ] Loudness-on-stems recorded but never used to flag quiet/thin/faulty (§5)
+- [x] Duration, sample rate, channels (§5) — `src/mira/analyze/AudioLoader.cpp` now loads
+      at the file's *native* sample rate (no forced resample) and reports real
+      `numberChannels`; found and fixed an output-type bug along the way (`bit_rate` is
+      `int`, not `Real` — Essentia throws a type-check exception on mismatch, another
+      instance of the Phase 0 lesson that these errors surface at unexpected points)
+- [x] Integrated LUFS, loudness range, true peak (`LoudnessEBUR128`, `TruePeakDetector`)
+      (§5) — `src/mira/analyze/Descriptors.cpp`
+- [x] Crest factor (§5) — verified exactly against a pure sine wave's theoretical
+      peak/mean(|x|) of π/2 (smoke test)
+- [x] Spectral centroid (brightness), spectral flatness (noisiness) (§5) — frame-averaged
+      over Windowing(hann)→Spectrum→Centroid/Flatness. Verified: a 440Hz sine's measured
+      centroid lands at ~459Hz (smoke test)
+- [ ] Harmonicity (§5) — **not implemented**. Needs a pitch+harmonic-peaks pipeline
+      (PitchYinFFT → HarmonicPeaks → Inharmonicity) that hasn't been built; everything
+      else in this section's PRD list is done
+- [x] Onset rate (§5) — was already computed by the router; unchanged
+- [x] Attack time (§5) — whole-file `Envelope` → `LogAttackTime`. Only meaningful for a
+      single dominant transient (one-shots); on a multi-onset track/loop the number is
+      real but not very informative — documented as a known limitation, not fixed
+- [ ] Loudness-on-stems recorded but never used to flag quiet/thin/faulty (§5) — no
+      caller does any such flagging yet (nothing built that would), so trivially true for
+      now; revisit once `mira inspect` or a similar consumer exists
+- [ ] DSP descriptors restricted to active regions only, on stems/long tracks (§5) — not
+      done; currently computed over the whole file regardless of `active_spans`
 
 **MIR (loops, tracks, stems — over active regions only)**
 - [ ] `RhythmExtractor2013` (multifeature) tempo estimate (§5)

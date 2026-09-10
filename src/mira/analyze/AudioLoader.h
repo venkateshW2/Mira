@@ -6,13 +6,21 @@
 
 namespace mira {
 
-inline constexpr int kAnalysisSampleRate = 44100;
+struct LoadedAudio {
+    std::vector<float> mono;    // (left+right)/2, or the single channel if numChannels==1
+    std::vector<float> left;
+    std::vector<float> right;   // == left when numChannels==1
+    int sampleRate = 0;         // the file's own rate — no forced resample
+    int numChannels = 0;
+    double durationSeconds = 0.0;
+};
 
-// Loads `path` as mono audio at kAnalysisSampleRate via Essentia's MonoLoader. Requires
-// an EssentiaEngine to already exist (essentia::init() called). Returns nullopt rather
-// than throwing if the file can't be opened or decoded — callers (an analyze run over a
-// large, imperfect batch) must be able to skip one bad file without dying, the same
-// lesson the Router crash fix already applied.
-std::optional<std::vector<float>> loadMonoAudio(const std::string& path);
+// Loads `path` via Essentia's AudioLoader, at the file's native sample rate (no forced
+// resample — PRD §7 eventually moves runtime decode to JUCE's AudioFormatManager to drop
+// the ffmpeg dependency; this is the analysis-engine path used by the CLI). Mono files
+// get `right` duplicated from `left` (Essentia's AudioLoader leaves it unset). Only
+// mono/stereo are handled correctly — AudioLoader itself doesn't support more channels.
+// Returns nullopt rather than throwing if the file can't be opened or decoded.
+std::optional<LoadedAudio> loadAudio(const std::string& path);
 
 } // namespace mira
