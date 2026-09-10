@@ -30,4 +30,4 @@ if(MIRA_BUILD_SPIKES AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/spike/04_sqlite_vec/
   add_subdirectory(spike/04_sqlite_vec)
 endif()
 
-# add_subdirectory(src)   # Phase 1: the real mira app target
+add_subdirectory(src)

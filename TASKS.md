@@ -32,17 +32,20 @@ beyond that — re-sequence as needed.
 No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 
 **Storage**
-- [ ] SQLite schema: one row per file — path, sha256, mtime, content type, descriptors/tags
-      (JSON columns), provenance (§6)
-- [ ] `machine`/`human` split enforced: re-analysis rewrites `machine` wholesale, never
-      touches `human` (§6)
-- [ ] Vendor + wire in `SQLiteCpp` (§7)
+- [x] SQLite schema: one row per file — path, sha256, mtime, content type, descriptors/tags
+      (JSON columns), provenance (§6) — `src/mira/db/Database.cpp`
+- [x] `machine`/`human` split enforced: re-analysis rewrites `machine` wholesale, never
+      touches `human` (§6) — schema has both columns; `upsertScannedFile` never writes
+      either (scan is index-only, analyzer will own `machine`)
+- [x] Vendor + wire in `SQLiteCpp` (§7) — against our own SQLite 3.53.4 amalgamation, not
+      SQLiteCpp's bundled copy or Apple's `libsqlite3` (`src/CMakeLists.txt`)
 - [ ] Provenance recorded per file: mira version, Essentia version, model
-      names/versions, analysis timestamp (§6)
+      names/versions, analysis timestamp (§6) — column exists, analyzer will populate it
 
 **Scanner + router**
-- [ ] `mira scan <dir>...` — walk, hash (sha256), record mtime, upsert rows, no analysis
-      yet (§8)
+- [x] `mira scan <dir>...` — walk, hash (sha256 via CommonCrypto), record mtime/size,
+      upsert rows, no analysis yet (§8) — `src/mira/scan/Scanner.cpp`, skips re-hashing
+      when mtime is unchanged
 - [ ] `mira scan <dir> --as stem` — route 3, declaration always overrides detection (§8,
       §12.3)
 - [ ] Content-type router: one-shot / loop / track / stem, via duration + onset density +
