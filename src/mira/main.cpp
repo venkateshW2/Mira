@@ -49,8 +49,11 @@ void printUsage() {
         "  mira scan <dir>... [--db <path>] [--follow-symlinks] [--as stem]\n"
         "        index files, no analysis; --as stem declares them delivery stems (§12.3)\n"
         "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
-        "        content-type router (one_shot/loop/track/stem) over scanned files;\n"
-        "        --content-type requires --force (unrouted files are all 'unknown')\n"
+        "               [--chords] [--transcribe] [--verbose]\n"
+        "        content-type router (one_shot/loop/track/stem) + DSP + rhythm + key by\n"
+        "        default; --chords and --transcribe are opt-in (15.0s/3.7s on a 5:08 song,\n"
+        "        vs 0.4s for key alone — see TASKS.md); --content-type requires --force;\n"
+        "        --verbose prints per-stage timing to stderr, per file\n"
         "  mira inspect <file|id> [--db <path>]\n"
         "        human-readable report; flags low-confidence tempo/key, active_ratio\n"
         "\n"
@@ -151,9 +154,35 @@ std::string spansToJson(const std::vector<mira::ActiveSpan>& spans) {
     return oss.str();
 }
 
+// Stage timer for --verbose: prints wall-clock time for each analysis stage to stderr,
+// per file, so a slow run can be attributed to a specific stage instead of guessed at.
+class StageTimer {
+public:
+    explicit StageTimer(bool enabled) : enabled_(enabled) {}
+    void mark(const std::string& stageName) {
+        if (!enabled_) return;
+        auto now = std::chrono::steady_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(now - last_).count();
+        std::cerr << "  " << stageName << ": " << static_cast<int>(ms) << "ms" << std::endl;
+        last_ = now;
+    }
+
+private:
+    bool enabled_;
+    std::chrono::steady_clock::time_point last_ = std::chrono::steady_clock::now();
+};
+
 int runAnalyze(const std::vector<std::string>& args) {
     std::string dbPath = defaultDbPath();
     bool force = false;
+    bool verbose = false;
+    // Chords (Chordino) and transcription (Basic Pitch) are opt-in, not run by default:
+    // measured at 15.0s and 3.7s respectively on a 5:08 real song (39% and 10% of a
+    // 38.4s total analyze time), well past what "BPM/key/loudness across a drive" (the
+    // Phase 1 headline goal, PRD §9) needs. Rhythm and key stay on by default — they're
+    // core to that goal and comparatively cheap (11.8s and 0.4s on the same file).
+    bool runChords = false;
+    bool runTranscription = false;
     std::optional<std::string> contentTypeFilter;
     std::optional<int> limit;
 
@@ -163,6 +192,12 @@ int runAnalyze(const std::vector<std::string>& args) {
             dbPath = args[++i];
         } else if (arg == "--force") {
             force = true;
+        } else if (arg == "--verbose") {
+            verbose = true;
+        } else if (arg == "--chords") {
+            runChords = true;
+        } else if (arg == "--transcribe") {
+            runTranscription = true;
         } else if (arg == "--content-type" && i + 1 < args.size()) {
             contentTypeFilter = args[++i];
         } else if (arg == "--limit" && i + 1 < args.size()) {
@@ -194,12 +229,16 @@ int runAnalyze(const std::vector<std::string>& args) {
     std::vector<Candidate> candidates;
     int failed = 0;
     for (auto& record : candidateRecords) {
+        StageTimer decodeTimer(verbose);
+        if (verbose) std::cerr << record.path << " (decode+route):" << std::endl;
+
         auto audio = mira::loadAudio(record.path);
         if (!audio) {
             std::cerr << "mira analyze: could not decode " << record.path << std::endl;
             failed++;
             continue;
         }
+        decodeTimer.mark("decode");
 
         Candidate c;
         c.record = record;
@@ -215,6 +254,7 @@ int runAnalyze(const std::vector<std::string>& args) {
             // `--as stem` is a real declaration (PRD §12.3).
             c.contentType = looksLikeStemPath(record.path) ? "stem" : c.routing.contentType;
         }
+        decodeTimer.mark("router (duration/onset)");
         c.audio = std::move(*audio);
         candidates.push_back(std::move(c));
     }
@@ -252,6 +292,9 @@ int runAnalyze(const std::vector<std::string>& args) {
             auto& c = candidates[idx];
             std::string finalContentType = (isSiblingSet || c.isDeclared) ? "stem" : c.contentType;
             counts[finalContentType]++;
+
+            if (verbose) std::cerr << c.record.path << ":" << std::endl;
+            StageTimer timer(verbose);
 
             double duration = c.audio.durationSeconds;
 
@@ -297,16 +340,19 @@ int runAnalyze(const std::vector<std::string>& args) {
                 left = &activeLeft;
                 right = &activeRight;
             }
+            timer.mark("active-region detection");
 
             // DSP descriptors (PRD §5A) — all content types.
             auto dsp = mira::computeDspDescriptors(*left, *right, c.audio.sampleRate);
             machine << ",\"dsp\":" << mira::toJson(dsp);
+            timer.mark("DSP descriptors (incl. harmonicity)");
 
             // MIR (PRD §5B) — loops/tracks/stems only. Tempo on a 300ms one-shot is
             // "wasted work [producing] confident nonsense" (PRD §5).
             if (finalContentType != "one_shot") {
                 auto rhythm = mira::analyzeRhythm(*mono, c.audio.sampleRate, MIRA_BEAT_THIS_MODEL);
                 if (rhythm.ok) machine << ",\"rhythm\":" << mira::toJson(rhythm);
+                timer.mark("rhythm (essentia + beat_this_cpp)");
 
                 // Key and chords: both gated on harmonic content (PRD §12b) — never run
                 // blindly on a rhythm stem or noise. Uses the real harmonicity descriptor
@@ -314,27 +360,38 @@ int runAnalyze(const std::vector<std::string>& args) {
                 if (mira::shouldRunKeyDetection(dsp.harmonicity, dsp.harmonicityFrameCount)) {
                     auto key = mira::detectKey(*mono, c.audio.sampleRate);
                     machine << ",\"key\":" << mira::toJson(key);
+                    timer.mark("key (libKeyFinder)");
 
-                    auto chords = mira::detectChords(*mono, c.audio.sampleRate);
-                    if (chords.ok) machine << ",\"chords\":" << mira::toJson(chords);
+                    // Opt-in (--chords): measured at 15.0s on a 5:08 song, 39% of the
+                    // total analyze time — well past what the Phase 1 headline goal needs.
+                    if (runChords) {
+                        auto chords = mira::detectChords(*mono, c.audio.sampleRate);
+                        if (chords.ok) machine << ",\"chords\":" << mira::toJson(chords);
+                        timer.mark("chords (Chordino)");
+                    }
                 }
 
                 // Note transcription (PRD §5, §12b) — "a first-class feature, not a MIR
-                // afterthought." Shares the rhythm/key/chords one_shot gate above (a
-                // 300ms clip has nothing to transcribe) but, unlike key/chords, is NOT
-                // additionally gated on harmonic content — it's useful on percussive
-                // material too, and a transcription that finds few or no notes there is
-                // itself informative, not "confident nonsense".
-                auto transcription = mira::transcribe(*mono, c.audio.sampleRate,
-                                                        MIRA_BASIC_PITCH_MODEL);
-                if (transcription.ok)
-                    machine << ",\"notes\":" << mira::toJson(transcription);
+                // afterthought," but opt-in via --transcribe: measured at 3.7s on a
+                // 5:08 song (10% of total analyze time). Shares the one_shot gate above
+                // (a 300ms clip has nothing to transcribe) but, unlike key/chords, would
+                // NOT be additionally gated on harmonic content if enabled — it's useful
+                // on percussive material too, and a transcription that finds few or no
+                // notes there is itself informative, not "confident nonsense".
+                if (runTranscription) {
+                    auto transcription = mira::transcribe(*mono, c.audio.sampleRate,
+                                                            MIRA_BASIC_PITCH_MODEL);
+                    if (transcription.ok)
+                        machine << ",\"notes\":" << mira::toJson(transcription);
+                    timer.mark("note transcription (Basic Pitch)");
+                }
             }
 
             machine << "}";
             update.machineJson = machine.str();
             update.analyzedAt = analyzedAt;
             db.applyAnalysis(update);
+            timer.mark("database write");
         }
     }
 

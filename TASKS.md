@@ -212,6 +212,17 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       without `--force` already only processes unanalyzed rows) rather than a separate
       flag — `--content-type` without `--force` is a hard error, since every unrouted
       row is `content_type='unknown'` and the filter would silently match nothing
+- [x] `--chords` and `--transcribe`, opt-in (off by default) — added after the first
+      real-world test (a 5:08 song, not a short fixture) showed `mira analyze` taking
+      39s per file. `--verbose` (also added) broke that down by stage: Chordino
+      (chords) was 15.0s/39% of total, Basic Pitch (transcription) 3.7s/10%, vs. 0.4s
+      for key alone — both are well past what "BPM/key/loudness across a drive" (the
+      Phase 1 headline goal, PRD §9) needs, so they're opt-in now. Default `analyze`
+      dropped from 39.0s to 20.6s on the same file (~15x realtime up from ~7.9x).
+      Rhythm (Essentia multifeature + the `beat_this_cpp` neural net) turned out to be
+      the single biggest cost even in default mode — 58% of the 20.6s — left on by
+      default anyway since it's core to the Phase 1 goal, but a candidate for a future
+      optimization pass if 20.6s/song is still too slow for real use
 - [x] `mira inspect <file|id>` — human-readable report, surfaces low-confidence
       tempo/key rather than hiding it, reports `active_ratio` (§8) — `runInspect` in
       `main.cpp`, reads `machine` via SQLite's `json_extract`/`json_array_length` rather

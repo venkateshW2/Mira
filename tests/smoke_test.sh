@@ -142,7 +142,9 @@ rm -f "$APPLEDOUBLE_DB" "$APPLEDOUBLE_DB-wal" "$APPLEDOUBLE_DB-shm"
 echo
 echo "== test: analyze routes a file by duration (flamenco.wav -> loop, 14.2s) =="
 "$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1
-OUT=$("$MIRA" analyze --db "$TESTDB" 2>&1)
+# --chords --transcribe: chords/transcription are opt-in now (TASKS.md), but this
+# $TESTDB/$MACHINE is reused by the key/chords/notes tests immediately below.
+OUT=$("$MIRA" analyze --db "$TESTDB" --chords --transcribe 2>&1)
 assert_contains "reports 1 loop routed" "$OUT" "1 loop"
 CONTENT_TYPE=$(sqlite3 "$TESTDB" "SELECT content_type FROM files WHERE path LIKE '%flamenco.wav'")
 assert_eq "content_type is loop" "loop" "$CONTENT_TYPE"
@@ -181,7 +183,7 @@ if command -v ffmpeg >/dev/null 2>&1; then
     ffmpeg -y -loglevel error -f lavfi -i "anoisesrc=color=white:sample_rate=44100:duration=5" "$NOISE_DIR/noise.wav"
     NOISE_DB="$(mktemp -t mira_smoke_noise_XXXXXX).db"
     "$MIRA" scan "$NOISE_DIR" --db "$NOISE_DB" >/dev/null 2>&1
-    "$MIRA" analyze --db "$NOISE_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$NOISE_DB" --chords >/dev/null 2>&1
     MACHINE_NOISE=$(sqlite3 "$NOISE_DB" "SELECT machine FROM files")
     if [[ "$MACHINE_NOISE" == *"\"key\":{"* ]]; then
         fail "white noise should NOT get a key section (harmonic-content gate), but does"
@@ -222,7 +224,7 @@ if command -v ffmpeg >/dev/null 2>&1; then
         "$TRANSCRIBE_NOISE_DIR/noise.wav"
     TRANSCRIBE_NOISE_DB="$(mktemp -t mira_smoke_transcribe_noise_XXXXXX).db"
     "$MIRA" scan "$TRANSCRIBE_NOISE_DIR" --db "$TRANSCRIBE_NOISE_DB" >/dev/null 2>&1
-    "$MIRA" analyze --db "$TRANSCRIBE_NOISE_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$TRANSCRIBE_NOISE_DB" --transcribe >/dev/null 2>&1
     MACHINE_TRANSCRIBE_NOISE=$(sqlite3 "$TRANSCRIBE_NOISE_DB" "SELECT machine FROM files")
     assert_contains "notes still run on noise (unlike key/chords, no flatness gate)" \
         "$MACHINE_TRANSCRIBE_NOISE" "\"notes\":["
@@ -244,7 +246,9 @@ if command -v ffmpeg >/dev/null 2>&1; then
     ffmpeg -y -loglevel error -f lavfi -i "anullsrc=r=44100:cl=mono:d=5" "$SILENT_DIR/silence.wav"
     SILENT_DB="$(mktemp -t mira_smoke_silentnotes_XXXXXX).db"
     "$MIRA" scan "$SILENT_DIR" --db "$SILENT_DB" >/dev/null 2>&1
-    if run_with_timeout 15 "$MIRA" analyze --db "$SILENT_DB" >/dev/null 2>&1; then
+    # --transcribe: transcription is opt-in now (TASKS.md) — without this flag the buggy
+    # code path never runs at all, and this regression test would pass trivially.
+    if run_with_timeout 15 "$MIRA" analyze --db "$SILENT_DB" --transcribe >/dev/null 2>&1; then
         pass "analyze finished within 15s on a silent (zero-note) file"
     else
         fail "analyze did not finish within 15s on a silent file — the size_t underflow hang is back"
@@ -497,7 +501,7 @@ echo
 echo "== test: mira inspect =="
 rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
 "$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1
-"$MIRA" analyze --db "$TESTDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$TESTDB" --chords --transcribe >/dev/null 2>&1
 OUT=$("$MIRA" inspect "$ROOT/fixtures/flamenco.wav" --db "$TESTDB" 2>&1)
 CODE=$?
 assert_eq "exit code" "0" "$CODE"
