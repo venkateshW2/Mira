@@ -10,6 +10,13 @@
 #   - vendor/beat_this_cpp/CMakeLists.txt: USE_SYSTEM_ONNXRUNTIME path needs
 #     -DONNXRUNTIME_ROOT=<path>, not find_package(onnxruntime) (its CMake config
 #     expects a different install layout than the official prebuilt tarball has).
+#   - vendor/beat_this_cpp/Source/beat_this_api.cpp: BeatThis::Impl constructed its own
+#     Ort::Env per instance (i.e. per file analyzed, every file by default — real crash
+#     found once mira grew enough separate ONNX-backed analyzers that this Env churn
+#     reliably corrupted memory; Ort::Env owns process-global state and repeated
+#     construction/destruction within one process is not a safe pattern). Patched to a
+#     function-local static Env (construct once for the process, never churn) instead of
+#     a per-instance member — see the comment at that patch site for the full story.
 # Check whether upstream has fixed any of these before re-patching.
 set -euo pipefail
 

@@ -345,6 +345,12 @@ int runAnalyze(const std::vector<std::string>& args) {
     // model output is still fully usable without it.
     mira::Taxonomy instrumentTaxonomy(MIRA_INSTRUMENT_TAXONOMY, "mtg_jamendo_instrument");
     mira::Taxonomy stemInstrumentTaxonomy(MIRA_INSTRUMENT_TAXONOMY, "irmas_predominant_instrument");
+    // Purely mechanical (Genre---Style -> "Genre: Style"), unlike the instrument taxonomy
+    // above which encodes real judgment calls — see taxonomy/genre-labels.yaml. moodtheme
+    // and the content gate's AudioSet labels have no taxonomy file: both are already
+    // clean, human-readable words/phrases as-is (checked directly against their full
+    // label lists), so a passthrough mapping would only double JSON size for zero change.
+    mira::Taxonomy genreTaxonomy(MIRA_GENRE_TAXONOMY, "genre_discogs400");
 
     for (auto& [key, indices] : siblingGroups) {
         bool isSiblingSet = indices.size() >= 2;
@@ -448,7 +454,15 @@ int runAnalyze(const std::vector<std::string>& args) {
                 timer.mark("danceability head (model-based)");
 
                 auto genre = mira::classifyGenre(embedding.vector, MIRA_GENRE_MODEL);
-                if (genre.ok) machine << ",\"genre\":" << mira::toJson(genre);
+                if (genre.ok) {
+                    machine << ",\"genre\":" << mira::toJson(genre);
+                    if (genreTaxonomy.ok()) {
+                        std::vector<std::string> names(mira::kGenreClassNames,
+                                                        mira::kGenreClassNames + mira::kGenreClassCount);
+                        machine << ",\"genre_normalized\":"
+                                << normalizedLabelsJson(names, genre.scores, genreTaxonomy);
+                    }
+                }
                 timer.mark("genre (genre_discogs400)");
 
                 auto voiceInstrumental =
@@ -698,7 +712,14 @@ int runInspect(const std::vector<std::string>& args) {
     }
     // Genre labels (unlike moodtheme/instrument) contain spaces and punctuation
     // ("Blues---Boogie Woogie", "Rock---Yé-Yé") — SQLite's json_extract path syntax
-    // needs the key segment double-quoted whenever it's not a bare identifier.
+    // needs the key segment double-quoted whenever it's not a bare identifier. Prefers
+    // genre_normalized (taxonomy/genre-labels.yaml's "Genre: Style" form) over the raw
+    // "Genre---Style" for display, falling back to raw if normalization wasn't available
+    // for this row (e.g. analyzed before this feature existed, or the taxonomy file
+    // failed to load) — never silently showing nothing just because the nicer field is
+    // missing. The "---" -> ": " transform below duplicates genre-labels.yaml's own
+    // mechanical rule (documented there) rather than reading it back out of the taxonomy
+    // file a second time — it's a one-line formatting rule, not a judgment call.
     if (auto sample = db.jsonExtractDouble(
             r.machine, std::string("$.genre.\"") + mira::kGenreClassNames[0] + "\"")) {
         (void)sample; // presence check only — genre is an object keyed by label name,
@@ -706,9 +727,18 @@ int runInspect(const std::vector<std::string>& args) {
                        // whatever the first label actually is rather than guessing one
         std::vector<std::pair<std::string, double>> scored;
         for (int i = 0; i < mira::kGenreClassCount; ++i) {
-            std::string path = std::string("$.genre.\"") + mira::kGenreClassNames[i] + "\"";
-            if (auto score = db.jsonExtractDouble(r.machine, path))
-                scored.emplace_back(mira::kGenreClassNames[i], *score);
+            std::string rawName = mira::kGenreClassNames[i];
+            std::string normalizedName = rawName;
+            size_t sep = normalizedName.find("---");
+            if (sep != std::string::npos) normalizedName.replace(sep, 3, ": ");
+
+            std::string normalizedPath = std::string("$.genre_normalized.\"") + normalizedName + "\"";
+            std::string rawPath = std::string("$.genre.\"") + rawName + "\"";
+            if (auto score = db.jsonExtractDouble(r.machine, normalizedPath)) {
+                scored.emplace_back(normalizedName, *score);
+            } else if (auto rawScore = db.jsonExtractDouble(r.machine, rawPath)) {
+                scored.emplace_back(rawName, *rawScore);
+            }
         }
         std::sort(scored.begin(), scored.end(),
                   [](const auto& a, const auto& b) { return a.second > b.second; });

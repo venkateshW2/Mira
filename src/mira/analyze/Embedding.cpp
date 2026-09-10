@@ -7,6 +7,7 @@
 // degrades gracefully (try/catch, ok=false) instead of exiting on error.
 
 #include "Embedding.h"
+#include "OrtEnv.h"
 
 #include <essentia/algorithmfactory.h>
 #include <onnxruntime_cxx_api.h>
@@ -79,8 +80,15 @@ EmbeddingResult computeEmbedding(const std::vector<float>& mono, int sampleRate,
         }
 
         int nFrames = static_cast<int>(bands.size());
+        // Real bug, found via ASan (container-overflow reading `bands` out of bounds):
+        // C++ integer division truncates toward zero, not floor. When nFrames is just
+        // under kPatchSize, (nFrames - kPatchSize) is negative, and e.g. -4/62 == 0 (not
+        // -1) — so the old `1 + (nFrames-kPatchSize)/kPatchHopSize` formula could compute
+        // nPatches==1 even when there wasn't a full 128-frame patch available, silently
+        // reading past the end of `bands` below. Guarding nFrames < kPatchSize directly,
+        // before the division, avoids relying on truncation behavior to get this right.
+        if (nFrames < kPatchSize) return result; // too short for even one patch — unmeasured, not a failure
         int nPatches = 1 + (nFrames - kPatchSize) / kPatchHopSize;
-        if (nPatches < 1) return result; // too short for even one patch — unmeasured, not a failure
 
         // --- Patch into [n, 128, 96], overlap 62, discard last partial (PRD §16.3) ---
         std::vector<float> patches(static_cast<size_t>(nPatches) * kPatchSize * kNumberBands);
@@ -94,10 +102,9 @@ EmbeddingResult computeEmbedding(const std::vector<float>& mono, int sampleRate,
         }
 
         // --- ONNX Runtime inference ---
-        Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "mira_embedding");
         Ort::SessionOptions sessionOptions;
         sessionOptions.SetIntraOpNumThreads(1);
-        Ort::Session session(env, modelPath.c_str(), sessionOptions);
+        Ort::Session session(sharedOrtEnv(), modelPath.c_str(), sessionOptions);
 
         Ort::AllocatorWithDefaultOptions allocator;
         auto inputNameAlloc = session.GetInputNameAllocated(0, allocator);

@@ -92,6 +92,9 @@ endif()
 if(NOT EXISTS ${TAXONOMY_ROOT}/instrument-labels.yaml)
   message(FATAL_ERROR "taxonomy/instrument-labels.yaml not found — this is a committed, hand-authored file, not fetched; something's wrong with the checkout")
 endif()
+if(NOT EXISTS ${TAXONOMY_ROOT}/genre-labels.yaml)
+  message(FATAL_ERROR "taxonomy/genre-labels.yaml not found — this is a committed, hand-authored file, not fetched; something's wrong with the checkout")
+endif()
 if(NOT EXISTS ${SQLITE_VEC_ROOT}/sqlite-vec.h)
   message(FATAL_ERROR "sqlite-vec.h not generated — run scripts/fetch-vendor.sh")
 endif()
@@ -232,6 +235,7 @@ add_executable(mira
   mira/analyze/BasicPitchOrt.cpp
   mira/analyze/BasicPitchNotes.cpp
   mira/analyze/Transcription.cpp
+  mira/analyze/OrtEnv.cpp
   mira/analyze/Embedding.cpp
   mira/analyze/ContentGate.cpp
   mira/analyze/ClassificationHead.cpp
@@ -264,6 +268,7 @@ target_compile_definitions(mira PRIVATE
   MIRA_GENRE_MODEL="${MODELS_ROOT}/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.onnx"
   MIRA_VOICE_INSTRUMENTAL_MODEL="${MODELS_ROOT}/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx"
   MIRA_INSTRUMENT_TAXONOMY="${TAXONOMY_ROOT}/instrument-labels.yaml"
+  MIRA_GENRE_TAXONOMY="${TAXONOMY_ROOT}/genre-labels.yaml"
   MIRA_CED_MODEL="${MODELS_ROOT}/content-gate/ced-small/model.onnx"
   # Captured at configure time, not build time — re-run cmake to refresh after new
   # commits if you care about this being exact; "close enough" for a dev build.

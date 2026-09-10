@@ -466,10 +466,60 @@ Exit: the Sononym-parity milestone.
       dependency, just not previously used directly by mira's own code) — no new library
       needed. Loaded once per `analyze` run, not per file. Loading failure (missing file,
       no matching model key) degrades to raw-labels-only rather than a hard error.
-      Genre (400 classes), moodtheme (56), and the content gate's AudioSet labels (527,
-      likely only worth normalizing the subset that actually appears in practice) are
-      explicitly deferred — same "start with one, prove the mechanism, then repeat"
-      approach as the Phase 2 vertical slice itself
+      Genre (400 classes) done next, same session — `taxonomy/genre-labels.yaml`. Different
+      character from the instrument file: `genre_discogs400`'s raw labels are Discogs'
+      own `"Genre---Style"` hierarchy (e.g. `"Blues---Boogie Woogie"`), which is a pure
+      *formatting* problem (that `---` separator is a training-data convention, not
+      something a caption would say), not a taxonomy design problem — no per-label
+      judgment calls needed, unlike instrument's electric/acoustic/classical guitar
+      question. Generated mechanically (`"---"` → `": "`) for all 400 labels after
+      confirming every one matches that exact one-separator pattern with no exceptions;
+      hand-typing 400 entries would have been pure risk (typos) for zero benefit over a
+      script applying one rule uniformly. Verified on flamenco.wav: raw
+      `"Folk, World, & Country---Flamenco"` (0.98) → normalized
+      `"Folk, World, & Country: Flamenco"` (0.98), `mira inspect`'s genre line switched to
+      showing the normalized form. moodtheme (56) and the content gate's AudioSet labels
+      (527) get no taxonomy file, on purpose, not as a gap: checked both full label lists
+      directly and both are already clean, human-readable words/phrases as-is (`action`,
+      `calm`, `energetic`; `Music`, `Speech`, `White noise`) — an identity-mapped YAML file
+      for either would only double JSON size for zero actual change
+- [x] Real crash found and fixed while stress-testing the above (unrelated to genre/
+      taxonomy code itself, confirmed by reproducing it on a file where the taxonomy path
+      never even executes): intermittent SIGSEGV in `mira analyze`, reproduced with lldb
+      (crash inside libsystem_platform.dylib's memmove, corrupted pointer, backtrace
+      unable to unwind further — the classic signature of memory corruption manifesting
+      far from its actual cause). Two real, separate bugs, both found via AddressSanitizer
+      after lldb's post-mortem trace couldn't get past frame 0:
+        1. Every ONNX-backed analyzer (`Embedding`, `ContentGate`, `ClassificationHead`,
+           `StemInstrument`, plus `beat_this_cpp`'s vendored `Impl`) constructed its own
+           local `Ort::Env` per call. `Ort::Env` owns process-global state (thread pools,
+           logging); repeated construction/destruction within one process is an ONNX
+           Runtime anti-pattern, not a supported one. With up to 8 ONNX calls now
+           happening per file (embedding, content gate, 5 classification heads, stem
+           instrument — this crash likely existed at lower odds since `beat_this_cpp` was
+           added in Phase 1, but became reliably reproducible only once Phase 2 added
+           enough heads), this reliably corrupted memory. Fixed with one shared,
+           process-lifetime `Ort::Env` (`src/mira/analyze/OrtEnv.h`, function-local static)
+           used by all of mira's own ONNX call sites, plus a documented local patch to
+           `vendor/beat_this_cpp/Source/beat_this_api.cpp` (added to
+           `scripts/fetch-vendor.sh`'s patch list) giving it its own equivalent static —
+           self-contained rather than reaching into mira's headers from an unrelated
+           vendored library.
+        2. That fix alone only reduced the crash rate, it didn't eliminate it — AddressSanitizer
+           then caught the real remaining bug directly: `Embedding.cpp`'s patch-count
+           formula, `nPatches = 1 + (nFrames - kPatchSize) / kPatchHopSize`, relied on C++
+           integer division truncating toward zero to detect "too short for a patch" via
+           `nPatches < 1`. That's wrong: `-4 / 62 == 0` in C++ (truncation toward zero, not
+           floor), so a file with `nFrames` just under `kPatchSize` (128) could compute
+           `nPatches == 1` instead of `0`, then read straight past the end of the `bands`
+           mel-frame vector — a genuine container-overflow, confirmed by ASan pointing at
+           the exact line. Inherited from `spike/02_onnx_parity/main.cpp`, whose bitwise-
+           parity verification never happened to test a file at this exact boundary
+           length. Fixed by guarding `nFrames < kPatchSize` explicitly before the division,
+           not by relying on the division's rounding behavior. Verified with 50 clean runs
+           on the exact previously-crashing file (release build) plus 20 clean runs under
+           AddressSanitizer, after both fixes — 0/70, versus a reproducible ~15-20% crash
+           rate before either fix
 - [x] Label normalisation regression tests; both `raw` and `label` stored (§5) — both
       `instrument`/`instrument_normalized` and `stem_instrument`/`stem_instrument_normalized`
       stored side by side in `machine` JSON (raw is never replaced, only supplemented).

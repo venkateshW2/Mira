@@ -5,6 +5,7 @@
 // original PyTorch model.
 
 #include "StemInstrument.h"
+#include "OrtEnv.h"
 
 #include <essentia/algorithmfactory.h>
 #include <onnxruntime_cxx_api.h>
@@ -95,10 +96,9 @@ StemInstrumentResult classifyStemInstrument(const std::vector<float>& mono, int 
         auto audio16k = resampleTo16k(mono, sampleRate);
         if (static_cast<int>(audio16k.size()) < kWindowSamples) return result;
 
-        Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "mira_stem_instrument");
         Ort::SessionOptions sessionOptions;
         sessionOptions.SetIntraOpNumThreads(1);
-        Ort::Session session(env, modelPath.c_str(), sessionOptions);
+        Ort::Session session(sharedOrtEnv(), modelPath.c_str(), sessionOptions);
 
         Ort::AllocatorWithDefaultOptions allocator;
         auto inputNameAlloc = session.GetInputNameAllocated(0, allocator);

@@ -541,6 +541,25 @@ print("yes" if all(checks) else "no")
 ')
 assert_eq "electric/acoustic/classical guitar stay distinct canonical terms, correctly renamed" "yes" "$NORM_CHECK"
 
+echo
+echo "== test: genre label normalization (taxonomy/genre-labels.yaml) =="
+assert_contains "machine JSON has a genre_normalized section" "$MACHINE_CLASSIFY" "\"genre_normalized\""
+GENRE_NORM_CHECK=$(echo "$MACHINE_CLASSIFY" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+raw, norm = d["genre"], d["genre_normalized"]
+checks = []
+# Mechanical "---" -> ": " fix, score unchanged, on the real top genre for flamenco.wav.
+raw_key = "Folk, World, & Country---Flamenco"
+norm_key = "Folk, World, & Country: Flamenco"
+checks.append(raw_key in raw)
+checks.append(norm.get(norm_key) == raw.get(raw_key))
+# The raw "---" form must not leak into the normalized object.
+checks.append(not any("---" in k for k in norm.keys()))
+print("yes" if all(checks) else "no")
+')
+assert_eq "genre Genre---Style separator becomes Genre: Style, score preserved" "yes" "$GENRE_NORM_CHECK"
+
 if command -v ffmpeg >/dev/null 2>&1; then
     NOISE_GATE_DIR=$(mktemp -d)
     # Fixed seed: an unseeded anoisesrc clip's CED-small music_score drifts run-to-run

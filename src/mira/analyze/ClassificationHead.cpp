@@ -1,4 +1,5 @@
 #include "ClassificationHead.h"
+#include "OrtEnv.h"
 
 #include <onnxruntime_cxx_api.h>
 
@@ -13,10 +14,9 @@ std::vector<double> runClassificationHead(const std::vector<double>& embedding,
     if (static_cast<int>(embedding.size()) != kEmbeddingDim) return {};
 
     try {
-        Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "mira_classification_head");
         Ort::SessionOptions sessionOptions;
         sessionOptions.SetIntraOpNumThreads(1);
-        Ort::Session session(env, modelPath.c_str(), sessionOptions);
+        Ort::Session session(sharedOrtEnv(), modelPath.c_str(), sessionOptions);
 
         Ort::AllocatorWithDefaultOptions allocator;
         auto inputNameAlloc = session.GetInputNameAllocated(0, allocator);

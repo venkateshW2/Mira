@@ -1,12 +1,18 @@
 // ONNX Runtime inference for Basic Pitch's nmp.onnx (PRD §5, §12b), adapted from
 // github.com/sevagh/basicpitch.cpp's src/ort_inference.cpp (MIT) — see Transcription.h
-// for the full attribution. Two changes from upstream:
+// for the full attribution. Three changes from upstream:
 //   - loads the model from a file path each call, rather than a byte array baked into a
 //     header at build time (upstream's WASM target needs that; mira has a filesystem)
 //   - the include path for onnxruntime_cxx_api.h matches mira's own vendored ONNX
 //     Runtime layout, not upstream's submoduled copy's install-tree layout
+//   - uses mira's shared, process-lifetime Ort::Env (OrtEnv.h) instead of constructing a
+//     local one — real crash found and fixed once mira grew enough ONNX-backed
+//     classification heads that each constructing its own Env per call reliably
+//     corrupted memory (Ort::Env owns process-global state; repeated construction/
+//     destruction within one process is an ONNX Runtime anti-pattern, see OrtEnv.h)
 
 #include "BasicPitchInternal.h"
+#include "OrtEnv.h"
 
 #include <algorithm>
 #include <array>
@@ -53,9 +59,8 @@ InferenceResult ort_inference(const std::vector<float>& mono_audio, int sampleRa
     // this function assumes mono_audio is already at that rate, matching upstream.
     (void)sampleRate;
 
-    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "basic_pitch");
     Ort::SessionOptions sessionOptions;
-    Ort::Session session(env, modelPath.c_str(), sessionOptions);
+    Ort::Session session(mira::sharedOrtEnv(), modelPath.c_str(), sessionOptions);
 
     const int chunk_size = static_cast<int>(AUDIO_N_SAMPLES);
     int n_overlapping_frames = 30;

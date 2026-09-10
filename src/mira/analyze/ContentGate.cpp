@@ -7,6 +7,7 @@
 
 #include "ContentGate.h"
 #include "AudioSetLabels.h"
+#include "OrtEnv.h"
 
 #include <essentia/algorithmfactory.h>
 #include <kaldi-native-fbank/csrc/online-feature.h>
@@ -133,10 +134,9 @@ ContentGateResult runContentGate(const std::vector<float>& mono, int sampleRate,
         std::vector<const float*> allFrames(numFrames);
         for (int t = 0; t < numFrames; ++t) allFrames[t] = fbank.GetFrame(t);
 
-        Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "mira_content_gate");
         Ort::SessionOptions sessionOptions;
         sessionOptions.SetIntraOpNumThreads(1);
-        Ort::Session session(env, modelPath.c_str(), sessionOptions);
+        Ort::Session session(sharedOrtEnv(), modelPath.c_str(), sessionOptions);
 
         Ort::AllocatorWithDefaultOptions allocator;
         auto inputNameAlloc = session.GetInputNameAllocated(0, allocator);
