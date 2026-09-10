@@ -102,12 +102,77 @@ assert_contains "reports 0 files scanned" "$OUT" "scanned 0 audio files"
 
 echo
 echo "== test: duplicate content gets the same sha256 =="
-mkdir -p "$ROOT/fixtures/.smoke_test_tmp"
-cp "$ROOT/fixtures/flamenco.wav" "$ROOT/fixtures/.smoke_test_tmp/copy.wav"
-"$MIRA" scan "$ROOT/fixtures/.smoke_test_tmp" --db "$TESTDB" >/dev/null 2>&1
-SHA256_COPY=$(sqlite3 "$TESTDB" "SELECT sha256 FROM files WHERE path LIKE '%copy.wav'")
+# Own throwaway db and dir — otherwise its row for copy.wav outlives the rm -rf below and
+# a later `mira analyze` in this script would try to decode a file that no longer exists.
+DUPTESTDB="$(mktemp -t mira_smoke_dup_XXXXXX).db"
+DUP_DIR=$(mktemp -d)
+cp "$ROOT/fixtures/flamenco.wav" "$DUP_DIR/copy.wav"
+"$MIRA" scan "$DUP_DIR" --db "$DUPTESTDB" >/dev/null 2>&1
+SHA256_COPY=$(sqlite3 "$DUPTESTDB" "SELECT sha256 FROM files WHERE path LIKE '%copy.wav'")
 assert_eq "identical content hashes identically" "$SHA256" "$SHA256_COPY"
-rm -rf "$ROOT/fixtures/.smoke_test_tmp"
+rm -rf "$DUP_DIR" "$DUPTESTDB" "$DUPTESTDB-wal" "$DUPTESTDB-shm"
+
+echo
+echo "== test: analyze routes a file by duration (flamenco.wav -> loop, 14.2s) =="
+"$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1
+OUT=$("$MIRA" analyze --db "$TESTDB" 2>&1)
+assert_contains "reports 1 loop routed" "$OUT" "1 loop"
+CONTENT_TYPE=$(sqlite3 "$TESTDB" "SELECT content_type FROM files WHERE path LIKE '%flamenco.wav'")
+assert_eq "content_type is loop" "loop" "$CONTENT_TYPE"
+CT_SOURCE=$(sqlite3 "$TESTDB" "SELECT content_type_source FROM files WHERE path LIKE '%flamenco.wav'")
+assert_eq "content_type_source is router" "router" "$CT_SOURCE"
+MACHINE=$(sqlite3 "$TESTDB" "SELECT machine FROM files WHERE path LIKE '%flamenco.wav'")
+assert_contains "machine JSON has duration_seconds" "$MACHINE" "duration_seconds"
+
+echo
+echo "== test: analyze skips already-routed files without --force =="
+OUT=$("$MIRA" analyze --db "$TESTDB" 2>&1)
+assert_contains "reports nothing to route" "$OUT" "nothing to route"
+
+echo
+echo "== test: --force re-routes =="
+OUT=$("$MIRA" analyze --db "$TESTDB" --force 2>&1)
+assert_contains "reports 1 loop routed again" "$OUT" "1 loop"
+
+echo
+echo "== test: analyze doesn't crash on a row whose file no longer exists on disk =="
+GONE_DIR=$(mktemp -d)
+cp "$ROOT/fixtures/flamenco.wav" "$GONE_DIR/gone.wav"
+GONE_DB="$(mktemp -t mira_smoke_gone_XXXXXX).db"
+"$MIRA" scan "$GONE_DIR" --db "$GONE_DB" >/dev/null 2>&1
+rm -f "$GONE_DIR/gone.wav" # row still in the db, file is not on disk
+OUT=$("$MIRA" analyze --db "$GONE_DB" 2>&1)
+CODE=$?
+assert_eq "exit code is still 0 (one bad file doesn't fail the whole run)" "0" "$CODE"
+assert_contains "reports the file could not be decoded" "$OUT" "could not be decoded"
+rm -rf "$GONE_DIR" "$GONE_DB" "$GONE_DB-wal" "$GONE_DB-shm"
+
+echo
+echo "== test: sibling-set stem detection (two same-length files, same folder) =="
+rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
+SIBLING_DIR=$(mktemp -d)
+cp "$ROOT/fixtures/flamenco.wav" "$SIBLING_DIR/strings.wav"
+cp "$ROOT/fixtures/flamenco.wav" "$SIBLING_DIR/rhythm.wav"
+"$MIRA" scan "$SIBLING_DIR" --db "$TESTDB" >/dev/null 2>&1
+"$MIRA" analyze --db "$TESTDB" >/dev/null 2>&1
+TYPES=$(sqlite3 "$TESTDB" "SELECT content_type FROM files ORDER BY path")
+assert_eq "both siblings routed as stem" "stem"$'\n'"stem" "$TYPES"
+GROUP_IDS=$(sqlite3 "$TESTDB" "SELECT DISTINCT group_id FROM files")
+assert_eq "both siblings share one group_id" "1" "$(echo "$GROUP_IDS" | wc -l | tr -d ' ')"
+rm -rf "$SIBLING_DIR"
+
+echo
+echo "== test: --as stem declaration always overrides the router =="
+rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
+"$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" --as stem >/dev/null 2>&1
+CONTENT_TYPE=$(sqlite3 "$TESTDB" "SELECT content_type FROM files WHERE path LIKE '%flamenco.wav'")
+CT_SOURCE=$(sqlite3 "$TESTDB" "SELECT content_type_source FROM files WHERE path LIKE '%flamenco.wav'")
+assert_eq "content_type is stem immediately after scan" "stem" "$CONTENT_TYPE"
+assert_eq "content_type_source is declared" "declared" "$CT_SOURCE"
+OUT=$("$MIRA" analyze --db "$TESTDB" 2>&1)
+assert_contains "analyze finds nothing to route (declared stems are never routed)" "$OUT" "nothing to route"
+CONTENT_TYPE_AFTER=$(sqlite3 "$TESTDB" "SELECT content_type FROM files WHERE path LIKE '%flamenco.wav'")
+assert_eq "content_type still stem after analyze" "stem" "$CONTENT_TYPE_AFTER"
 
 echo
 echo "======================================"

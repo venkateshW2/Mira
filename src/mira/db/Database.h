@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mira {
 
@@ -49,6 +50,26 @@ public:
     std::optional<FileRecord> findById(int64_t id);
 
     int64_t countFiles();
+
+    // Sets content_type='stem', content_type_source='declared' for a path — PRD §12.3
+    // route 3, always overrides router-based detection and is never re-routed.
+    void declareStem(const std::string& path);
+
+    // Rows the router (mira analyze) should (re-)classify: excludes declared stems,
+    // which never get routed, and — unless `force` — rows already routed once.
+    std::vector<FileRecord> findFilesForRouting(bool force);
+
+    struct RoutingUpdate {
+        int64_t id = 0;
+        std::string contentType;
+        std::optional<std::string> groupId;
+        std::string machineJson;   // merged into `machine`, not replacing other fields
+        int64_t analyzedAt = 0;
+    };
+    // Applies a router decision: content_type, content_type_source='router', group_id,
+    // analyzed_at, and merges machineJson's keys into the existing `machine` JSON object
+    // (so a later analysis stage's fields aren't clobbered by an earlier one's).
+    void applyRouting(const RoutingUpdate& update);
 
 private:
     void migrate();

@@ -99,6 +99,8 @@ ScanStats scan(Database& db, const ScanOptions& options) {
             if (auto existing = db.findByPath(path);
                 existing && existing->mtime == static_cast<int64_t>(mtime)) {
                 stats.filesUnchanged++;
+                if (options.declareAsStem && existing->contentTypeSource != "declared")
+                    db.declareStem(path);
                 continue;
             }
 
@@ -112,6 +114,8 @@ ScanStats scan(Database& db, const ScanOptions& options) {
                                                sizeBytes, nowUnix());
             if (isNew) stats.filesNew++;
             else stats.filesUpdated++;
+
+            if (options.declareAsStem) db.declareStem(path);
         }
     }
 

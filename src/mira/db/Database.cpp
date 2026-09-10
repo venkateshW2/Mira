@@ -121,4 +121,36 @@ int64_t Database::countFiles() {
     return q.getColumn(0).getInt64();
 }
 
+void Database::declareStem(const std::string& path) {
+    SQLite::Statement update(db,
+        "UPDATE files SET content_type = 'stem', content_type_source = 'declared' "
+        "WHERE path = ?");
+    update.bind(1, path);
+    update.exec();
+}
+
+std::vector<FileRecord> Database::findFilesForRouting(bool force) {
+    std::string sql = "SELECT * FROM files WHERE content_type_source != 'declared'";
+    if (!force) sql += " AND content_type = 'unknown'";
+
+    SQLite::Statement q(db, sql);
+    std::vector<FileRecord> results;
+    while (q.executeStep()) results.push_back(fromRow(q));
+    return results;
+}
+
+void Database::applyRouting(const RoutingUpdate& update) {
+    SQLite::Statement stmt(db,
+        "UPDATE files SET content_type = ?, content_type_source = 'router', "
+        "group_id = ?, machine = json_patch(machine, ?), analyzed_at = ? "
+        "WHERE id = ?");
+    stmt.bind(1, update.contentType);
+    if (update.groupId) stmt.bind(2, *update.groupId);
+    else stmt.bind(2);
+    stmt.bind(3, update.machineJson);
+    stmt.bind(4, update.analyzedAt);
+    stmt.bind(5, update.id);
+    stmt.exec();
+}
+
 } // namespace mira

@@ -46,14 +46,21 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 - [x] `mira scan <dir>...` — walk, hash (sha256 via CommonCrypto), record mtime/size,
       upsert rows, no analysis yet (§8) — `src/mira/scan/Scanner.cpp`, skips re-hashing
       when mtime is unchanged
-- [ ] `mira scan <dir> --as stem` — route 3, declaration always overrides detection (§8,
-      §12.3)
-- [ ] Content-type router: one-shot / loop / track / stem, via duration + onset density +
-      loop-point heuristics (§5)
+- [x] `mira scan <dir> --as stem` — route 3, declaration always overrides detection (§8,
+      §12.3) — always excluded from routing, verified by smoke test
+- [ ] Content-type router (partial — see note): one-shot / loop / track / stem, via duration + onset density +
+      loop-point heuristics (§5) — `src/mira/analyze/Router.cpp`, `mira analyze`. **Only
+      the duration cut is implemented** (≤3s one_shot, ≤30s loop, else track — a
+      documented first-pass guess, not measured on real material). Onset rate is
+      computed and stored in `machine` but doesn't move the boundary yet; the loop-point
+      heuristic (matching start/end for a tight loop) isn't implemented at all. Revisit
+      once there's real material to tune against.
 - [ ] Stem detection route 1: filename/folder pattern (opportunistic) (§12.3)
-- [ ] Stem detection route 2: sibling-set detection — the general case, build well
-      (§12.3)
-- [ ] Nullable `group_id` for cue grouping across sibling stems (§6)
+- [x] Stem detection route 2: sibling-set detection — the general case (§12.3). **Known
+      limitation:** grouping only happens within one `analyze` run's batch, not across
+      the whole library — a folder analyzed in two separate runs won't be grouped
+      correctly. Fine for now, worth fixing before Phase 2 relies on `group_id`.
+- [x] Nullable `group_id` for cue grouping across sibling stems (§6)
 
 **Active-region detection**
 - [ ] Frame-energy gate finding non-silent spans, no model (§5)

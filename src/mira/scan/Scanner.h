@@ -10,6 +10,9 @@ namespace mira {
 struct ScanOptions {
     std::vector<std::string> roots;
     bool followSymlinks = false;
+    // PRD §12.3 route 3: declare every file under `roots` as a stem, overriding whatever
+    // the router (mira analyze) would otherwise decide. Always correct, per the PRD.
+    bool declareAsStem = false;
 };
 
 struct ScanStats {
