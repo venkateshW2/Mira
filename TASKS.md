@@ -106,12 +106,21 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       done; currently computed over the whole file regardless of `active_spans`
 
 **MIR (loops, tracks, stems — over active regions only)**
-- [ ] `RhythmExtractor2013` (multifeature) tempo estimate (§5)
-- [ ] `beat_this_cpp` tempo + downbeat estimate, wired into the app build (spike proved
-      it runs standalone — integrate properly) (§5)
-- [ ] Dual-estimator disagreement stored as the tempo confidence signal (§5, §14.1)
-- [ ] `BeatsLoudness`, `Danceability` (§5)
-- [ ] Full beat array stored, not just the BPM scalar (§6)
+- [x] `RhythmExtractor2013` (multifeature) tempo estimate (§5) —
+      `src/mira/analyze/Mir.cpp`. Gated: only runs for loop/track/stem, never one_shot
+      (verified — a 0.5s clip gets no rhythm section at all), matching PRD §5's "tempo on
+      a 300ms kick is wasted work"
+- [x] `beat_this_cpp` tempo + downbeat estimate, wired into the app build (§5) — the
+      `beat_this_api` shared library now `add_subdirectory`'d straight into `mira`'s
+      CMake build, not just standalone in the spike. On the flamenco fixture: essentia
+      117.8 BPM vs beat_this 82.8 BPM — a real, non-octave disagreement (ratio 1.42, not
+      near 1/2/0.5), exactly the kind of case §14.1 says to surface rather than resolve
+- [x] Dual-estimator disagreement stored as the tempo confidence signal (§5, §14.1) —
+      stored as `bpm_ratio` (essentia/beat_this); resolving *what* counts as agreement
+      vs. a real disagreement is explicitly deferred to a later phase (§12.6)
+- [x] `BeatsLoudness`, `Danceability` (§5)
+- [x] Full beat array stored, not just the BPM scalar (§6) — `essentia_beat_ticks`,
+      `beat_this_beats`, `beat_this_downbeats` all stored in full in `machine`
 - [ ] Vendor + wire in `libKeyFinder` for key detection, gated on harmonic content
       (§5, §12b)
 - [ ] Vendor + wire in `Chordino`/`NNLS-Chroma` for chord sequence, gated on harmonic

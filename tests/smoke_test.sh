@@ -125,6 +125,41 @@ MACHINE=$(sqlite3 "$TESTDB" "SELECT machine FROM files WHERE path LIKE '%flamenc
 assert_contains "machine JSON has duration_seconds" "$MACHINE" "duration_seconds"
 
 echo
+echo "== test: MIR runs for a loop and both tempo estimators produce a plausible BPM =="
+assert_contains "machine JSON has a rhythm section" "$MACHINE" "\"rhythm\""
+ESSENTIA_BPM=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rhythm"]["essentia_bpm"])')
+BEAT_THIS_BPM=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rhythm"]["beat_this_bpm"])')
+ESSENTIA_BPM_OK=$(awk -v b="$ESSENTIA_BPM" 'BEGIN{print (b>40 && b<220) ? "yes" : "no"}')
+BEAT_THIS_BPM_OK=$(awk -v b="$BEAT_THIS_BPM" 'BEGIN{print (b>40 && b<220) ? "yes" : "no"}')
+assert_eq "essentia_bpm is in a plausible range" "yes" "$ESSENTIA_BPM_OK"
+assert_eq "beat_this_bpm is in a plausible range" "yes" "$BEAT_THIS_BPM_OK"
+BEAT_TICK_COUNT=$(echo "$MACHINE" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["rhythm"]["essentia_beat_ticks"]))')
+assert_eq "full essentia beat array stored, not just the BPM scalar" "yes" \
+    "$(awk -v n="$BEAT_TICK_COUNT" 'BEGIN{print (n>5) ? "yes" : "no"}')"
+
+echo
+echo "== test: MIR is skipped for one-shots (tempo on a 0.5s clip is meaningless) =="
+if command -v ffmpeg >/dev/null 2>&1; then
+    ONESHOT_DIR=$(mktemp -d)
+    ffmpeg -y -loglevel error -f lavfi -i "sine=frequency=1000:sample_rate=44100:duration=0.5" "$ONESHOT_DIR/click.wav"
+    ONESHOT_DB="$(mktemp -t mira_smoke_oneshot_XXXXXX).db"
+    "$MIRA" scan "$ONESHOT_DIR" --db "$ONESHOT_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$ONESHOT_DB" >/dev/null 2>&1
+    CONTENT_TYPE=$(sqlite3 "$ONESHOT_DB" "SELECT content_type FROM files")
+    MACHINE_ONESHOT=$(sqlite3 "$ONESHOT_DB" "SELECT machine FROM files")
+    assert_eq "0.5s clip routed as one_shot" "one_shot" "$CONTENT_TYPE"
+    if [[ "$MACHINE_ONESHOT" == *"\"rhythm\""* ]]; then
+        fail "one-shot should NOT have a rhythm section, but does"
+    else
+        pass "one-shot has no rhythm section"
+    fi
+    rm -rf "$ONESHOT_DIR"
+    rm -f "$ONESHOT_DB" "$ONESHOT_DB-wal" "$ONESHOT_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping one-shot MIR-gating test"
+fi
+
+echo
 echo "== test: analyze skips already-routed files without --force =="
 OUT=$("$MIRA" analyze --db "$TESTDB" 2>&1)
 assert_contains "reports nothing to analyze" "$OUT" "nothing to analyze"

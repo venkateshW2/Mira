@@ -5,6 +5,8 @@
 set(SQLITE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/sqlite-amalgamation)
 set(SQLITECPP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/SQLiteCpp)
 set(ESSENTIA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/essentia)
+set(ONNXRUNTIME_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/onnxruntime)
+set(BEAT_THIS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/beat_this_cpp)
 
 if(NOT EXISTS ${SQLITE_ROOT}/sqlite3.c)
   message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE_ROOT} — run scripts/fetch-vendor.sh")
@@ -15,6 +17,12 @@ endif()
 set(ESSENTIA_LIB ${ESSENTIA_ROOT}/build/src/libessentia.a)
 if(NOT EXISTS ${ESSENTIA_LIB})
   message(FATAL_ERROR "libessentia.a not found — see spike/01_essentia_link for the build steps")
+endif()
+if(NOT EXISTS ${BEAT_THIS_ROOT}/CMakeLists.txt)
+  message(FATAL_ERROR "beat_this_cpp not found at ${BEAT_THIS_ROOT} — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${BEAT_THIS_ROOT}/onnx/beat_this.onnx)
+  message(FATAL_ERROR "beat_this.onnx not found — expected committed in-tree in beat_this_cpp's own repo")
 endif()
 
 find_package(PkgConfig REQUIRED)
@@ -50,6 +58,13 @@ set(SQLITECPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SQLITECPP_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(${SQLITECPP_ROOT} sqlitecpp_build)
 
+# beat_this_cpp (PRD §16.5) — its own CMakeLists.txt was patched during the Phase 0 spike
+# (spike/README.md) to accept ONNXRUNTIME_ROOT directly, since the official prebuilt
+# tarball's CMake package doesn't match the install-tree layout beat_this_cpp expects.
+set(USE_SYSTEM_ONNXRUNTIME ON CACHE BOOL "" FORCE)
+set(ONNXRUNTIME_ROOT ${ONNXRUNTIME_ROOT} CACHE PATH "" FORCE)
+add_subdirectory(${BEAT_THIS_ROOT} beat_this_cpp_build)
+
 add_executable(mira
   mira/main.cpp
   mira/db/Database.cpp
@@ -59,14 +74,23 @@ add_executable(mira
   mira/analyze/Router.cpp
   mira/analyze/ActiveRegions.cpp
   mira/analyze/Descriptors.cpp
+  mira/analyze/Mir.cpp
 )
 
-target_include_directories(mira PRIVATE ${ESSENTIA_ROOT}/src)
+target_include_directories(mira PRIVATE
+  ${ESSENTIA_ROOT}/src
+  ${BEAT_THIS_ROOT}/Source
+)
+
+target_compile_definitions(mira PRIVATE
+  MIRA_BEAT_THIS_MODEL="${BEAT_THIS_ROOT}/onnx/beat_this.onnx"
+)
 
 target_link_libraries(mira PRIVATE
   SQLiteCpp
   mira_sqlite3
   ${ESSENTIA_LIB}
+  beat_this_api
   PkgConfig::AVFORMAT
   PkgConfig::AVCODEC
   PkgConfig::SWRESAMPLE
@@ -81,4 +105,8 @@ target_link_libraries(mira PRIVATE
   "-framework Security"
 )
 
-set_target_properties(mira PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+set_target_properties(mira PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
+)

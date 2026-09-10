@@ -2,6 +2,7 @@
 #include "analyze/AudioLoader.h"
 #include "analyze/Descriptors.h"
 #include "analyze/EssentiaEngine.h"
+#include "analyze/Mir.h"
 #include "analyze/Router.h"
 #include "db/Database.h"
 #include "scan/Scanner.h"
@@ -224,6 +225,14 @@ int runAnalyze(const std::vector<std::string>& args) {
             // active spans on stems/long tracks (TASKS.md notes this as still open).
             auto dsp = mira::computeDspDescriptors(c.audio.left, c.audio.right, c.audio.sampleRate);
             machine << ",\"dsp\":" << mira::toJson(dsp);
+
+            // MIR (PRD §5B) — loops/tracks/stems only. Tempo on a 300ms one-shot is
+            // "wasted work [producing] confident nonsense" (PRD §5).
+            if (finalContentType != "one_shot") {
+                auto rhythm = mira::analyzeRhythm(c.audio.mono, c.audio.sampleRate,
+                                                   MIRA_BEAT_THIS_MODEL);
+                if (rhythm.ok) machine << ",\"rhythm\":" << mira::toJson(rhythm);
+            }
 
             machine << "}";
             update.machineJson = machine.str();
