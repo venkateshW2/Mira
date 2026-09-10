@@ -1,0 +1,68 @@
+// Generated from mtg_jamendo_moodtheme-discogs-effnet-1.json's "classes" field
+// (essentia.upf.edu/models/, CC BY-NC-ND 4.0) — raw MTG-Jamendo label names, not
+// yet run through the versioned-YAML normalisation TASKS.md still lists separately.
+#pragma once
+
+namespace mira {
+
+constexpr int kMoodThemeClassCount = 56;
+constexpr const char* kMoodThemeClassNames[kMoodThemeClassCount] = {
+    "action",
+    "adventure",
+    "advertising",
+    "background",
+    "ballad",
+    "calm",
+    "children",
+    "christmas",
+    "commercial",
+    "cool",
+    "corporate",
+    "dark",
+    "deep",
+    "documentary",
+    "drama",
+    "dramatic",
+    "dream",
+    "emotional",
+    "energetic",
+    "epic",
+    "fast",
+    "film",
+    "fun",
+    "funny",
+    "game",
+    "groovy",
+    "happy",
+    "heavy",
+    "holiday",
+    "hopeful",
+    "inspiring",
+    "love",
+    "meditative",
+    "melancholic",
+    "melodic",
+    "motivational",
+    "movie",
+    "nature",
+    "party",
+    "positive",
+    "powerful",
+    "relaxing",
+    "retro",
+    "romantic",
+    "sad",
+    "sexy",
+    "slow",
+    "soft",
+    "soundscape",
+    "space",
+    "sport",
+    "summer",
+    "trailer",
+    "travel",
+    "upbeat",
+    "uplifting",
+};
+
+} // namespace mira

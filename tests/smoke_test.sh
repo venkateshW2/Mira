@@ -504,6 +504,43 @@ else
 fi
 
 echo
+echo "== test: Phase 2 classification vertical slice (embedding + content gate + moodtheme) =="
+CLASSIFY_DB="$(mktemp -t mira_smoke_classify_XXXXXX).db"
+"$MIRA" scan "$ROOT/fixtures" --db "$CLASSIFY_DB" >/dev/null 2>&1
+"$MIRA" analyze --db "$CLASSIFY_DB" >/dev/null 2>&1
+MACHINE_CLASSIFY=$(sqlite3 "$CLASSIFY_DB" "SELECT machine FROM files WHERE path LIKE '%flamenco.wav'")
+assert_contains "machine JSON has an embedding section" "$MACHINE_CLASSIFY" "\"embedding\""
+EMBED_LEN=$(echo "$MACHINE_CLASSIFY" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["embedding"]["vector"]))')
+assert_eq "embedding vector has 1280 dimensions" "1280" "$EMBED_LEN"
+EMBED_NONZERO=$(echo "$MACHINE_CLASSIFY" | python3 -c 'import json,sys; v=json.load(sys.stdin)["embedding"]["vector"]; print("yes" if any(x!=0 for x in v) else "no")')
+assert_eq "embedding vector is not all-zero" "yes" "$EMBED_NONZERO"
+assert_contains "machine JSON has a content_gate section" "$MACHINE_CLASSIFY" "\"content_gate\""
+IS_MUSIC=$(echo "$MACHINE_CLASSIFY" | python3 -c 'import json,sys; print(json.load(sys.stdin)["content_gate"]["is_music"])')
+assert_eq "content gate says flamenco.wav is music" "True" "$IS_MUSIC"
+assert_contains "machine JSON has a moodtheme section (gate passed)" "$MACHINE_CLASSIFY" "\"moodtheme\""
+MOODTHEME_LEN=$(echo "$MACHINE_CLASSIFY" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["moodtheme"]))')
+assert_eq "moodtheme has 56 class scores" "56" "$MOODTHEME_LEN"
+
+if command -v ffmpeg >/dev/null 2>&1; then
+    NOISE_GATE_DIR=$(mktemp -d)
+    ffmpeg -y -loglevel error -f lavfi -i "anoisesrc=color=white:sample_rate=44100:duration=5" \
+        "$NOISE_GATE_DIR/noise.wav"
+    NOISE_GATE_DB="$(mktemp -t mira_smoke_noisegate_XXXXXX).db"
+    "$MIRA" scan "$NOISE_GATE_DIR" --db "$NOISE_GATE_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$NOISE_GATE_DB" >/dev/null 2>&1
+    MACHINE_NOISE_GATE=$(sqlite3 "$NOISE_GATE_DB" "SELECT machine FROM files")
+    IS_MUSIC_NOISE=$(echo "$MACHINE_NOISE_GATE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["content_gate"]["is_music"])')
+    assert_eq "content gate says white noise is NOT music" "False" "$IS_MUSIC_NOISE"
+    NOT_CONTAINS_MOODTHEME=$(echo "$MACHINE_NOISE_GATE" | grep -c "\"moodtheme\"" || true)
+    assert_eq "moodtheme did not run on non-music (gated out)" "0" "$NOT_CONTAINS_MOODTHEME"
+    rm -rf "$NOISE_GATE_DIR"
+    rm -f "$NOISE_GATE_DB" "$NOISE_GATE_DB-wal" "$NOISE_GATE_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping content-gate-on-noise test"
+fi
+rm -f "$CLASSIFY_DB" "$CLASSIFY_DB-wal" "$CLASSIFY_DB-shm"
+
+echo
 echo "== test: mira inspect =="
 rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
 "$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1

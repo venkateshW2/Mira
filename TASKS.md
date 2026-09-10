@@ -314,13 +314,52 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 
 Exit: the Sononym-parity milestone.
 
-- [ ] `discogs-effnet-bs64` embedding pass wired into the pipeline (mandatory input to
-      every head below, and the similarity vector) (§2c, §5)
-- [ ] CED-small content gate (ONNX) — "is this even music?" before running music heads
-      (§2c)
+- [x] `discogs-effnet-bsdynamic-1` embedding pass wired into the pipeline (mandatory
+      input to every head below, and the similarity vector) (§2c, §5) — the "-bs64" name
+      in this line's original text was the wrong variant; `-bsdynamic` is the one PRD
+      §16.3 flags as existing *only* as ONNX (MTG never ported it to TF), and the one
+      spike/02_onnx_parity actually bitwise-verified. `src/mira/analyze/Embedding.cpp`
+      adapts that spike's mel-frontend + patching + inference almost directly, on every
+      content type (not gated like rhythm/key — embedding-based similarity is exactly the
+      point of comparing one-shots). Mean-pools per-patch 1280-d embeddings into one
+      file-level vector; `patch_count` stored alongside so a caller can tell "1 patch" from
+      "125 patches" rather than treating them as equally confident. Cost on a real 2:06
+      score cue: 1.7s
+- [x] CED-small content gate (ONNX) — "is this even music?" before running music heads
+      (§2c). `src/mira/analyze/ContentGate.cpp`. Real integration work beyond the Phase 0
+      spikes (no spike covered this model): its feature frontend is kaldi-style fbank
+      (frame_length_ms=32, dither=0, 64 mel bins, linear not log — read directly from
+      sherpa-onnx's own offline-stream.cc CEDTag constructor, not guessed), not Essentia's
+      TensorflowInputMusiCNN — so `vendor/kaldi-native-fbank` (Apache-2.0,
+      csukuangfj/kaldi-native-fbank, the exact library sherpa-onnx itself links) and
+      `vendor/kissfft` (its real-FFT backend) are now vendored too, compiled directly like
+      nnls-chroma rather than add_subdirectory'd (upstream's own CMake pulls in Python
+      bindings/tests by default). Two real bugs found via real-file testing, not synthetic
+      fixtures alone: (1) CED-small throws an ONNX Runtime broadcast error on long
+      single-shot input (a 2:06 real file failed, a 14.2s one didn't) — sherpa-onnx's own
+      CLI doesn't chunk, but its test fixtures are all short, so this limit was likely
+      never exercised upstream; fixed by chunking into ≤10s windows. (2) Initially
+      mean-pooled probabilities across chunks, which measurably backfired: flamenco.wav
+      split into a 10s chunk (0.52 on "Music") and a 4.2s tail (0.21) — the mean, 0.37,
+      was *lower* than white noise's single-chunk 0.39, inverting the gate. Switched to
+      max-pooling per class across chunks (a quiet/sparse section shouldn't veto an
+      otherwise clearly musical file — the same reasoning active-region detection already
+      applies elsewhere) — flamenco.wav now scores 0.52, a real 2:06 score cue scores
+      0.79. `kContentGateMusicThreshold = 0.45` is a first-pass threshold from these real
+      measurements, not a labeled dataset — explicitly flagged for revisiting
 - [ ] `mtg_jamendo_instrument-discogs-effnet-1` head (40 classes) (§2c, §5)
-- [ ] `mtg_jamendo_moodtheme-discogs-effnet-1` head (56 classes) — already downloaded in
-      Phase 0 spikes (§2c, §5)
+- [x] `mtg_jamendo_moodtheme-discogs-effnet-1` head (56 classes) — already downloaded in
+      Phase 0 spikes (§2c, §5). `src/mira/analyze/MoodTheme.cpp`, gated only on
+      ContentGate's `is_music` signal, not on router content_type at all — "Music heads
+      must only run on music" (§2c), same honesty principle as the harmonicity gate for
+      key/chords, just using a real content classifier instead of a DSP proxy. Known,
+      documented simplification: feeds the single whole-file mean-pooled embedding through
+      the head once, rather than running per-patch and averaging *sigmoid outputs* (MTG's
+      own reference pipeline does the latter — averaging before vs. after a nonlinearity
+      are not equivalent). Verified sensible, not just non-crashing, against two real
+      files: a "Dance"-titled score cue scores highest on happy/corporate/uplifting/
+      positive/energetic; label names are raw MTG-Jamendo strings for now (the
+      versioned-YAML normalisation below is separately scoped, not done here)
 - [ ] `genre_discogs400-discogs-effnet-1` head (400 classes) — needs `tf2onnx`
       conversion in `lab/` first, no ONNX published (§2c, §16.3)
 - [ ] `voice_instrumental-discogs-effnet-1` head — needs `tf2onnx` conversion, no ONNX

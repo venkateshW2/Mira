@@ -2,9 +2,13 @@
 #include "analyze/AudioLoader.h"
 #include "analyze/Descriptors.h"
 #include "analyze/Chords.h"
+#include "analyze/ContentGate.h"
+#include "analyze/Embedding.h"
 #include "analyze/EssentiaEngine.h"
 #include "analyze/Key.h"
 #include "analyze/Mir.h"
+#include "analyze/MoodTheme.h"
+#include "analyze/MoodThemeLabels.h"
 #include "analyze/Router.h"
 #include "analyze/Transcription.h"
 #include "db/Database.h"
@@ -50,9 +54,10 @@ void printUsage() {
         "        index files, no analysis; --as stem declares them delivery stems (§12.3)\n"
         "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
         "               [--chords] [--transcribe] [--recheck-tempo] [--verbose]\n"
-        "        content-type router (one_shot/loop/track/stem) + DSP + rhythm + key by\n"
-        "        default; rhythm defaults to beat_this_cpp only (the more accurate of the\n"
-        "        two tempo estimators); --recheck-tempo also runs Essentia's\n"
+        "        content-type router (one_shot/loop/track/stem) + DSP + embedding +\n"
+        "        content gate + moodtheme (Phase 2 vertical slice, PRD §2c) + rhythm + key\n"
+        "        by default; rhythm defaults to beat_this_cpp only (the more accurate of\n"
+        "        the two tempo estimators); --recheck-tempo also runs Essentia's\n"
         "        RhythmExtractor2013 for comparison (bpm_ratio); --chords and --transcribe\n"
         "        are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone — see\n"
         "        TASKS.md); --content-type requires --force; --verbose prints per-stage\n"
@@ -358,6 +363,28 @@ int runAnalyze(const std::vector<std::string>& args) {
             machine << ",\"dsp\":" << mira::toJson(dsp);
             timer.mark("DSP descriptors (incl. harmonicity)");
 
+            // Classification (Phase 2, PRD §2c vertical slice). Embedding + content gate
+            // run on *every* content type, unlike rhythm/key below — embedding-based
+            // similarity is exactly the point of comparing one-shots (Sononym-style "find
+            // similar samples"), so it isn't content-type-gated. moodtheme is gated only
+            // on the content gate's is_music signal, not on content_type at all — "Music
+            // heads must only run on music" (PRD §2c), the same honesty principle already
+            // applied to key/chords via the harmonicity gate below, just using a real
+            // content classifier instead of a DSP proxy.
+            auto embedding = mira::computeEmbedding(*mono, c.audio.sampleRate, MIRA_EFFNET_MODEL);
+            if (embedding.ok) machine << ",\"embedding\":" << mira::toJson(embedding);
+            timer.mark("embedding (discogs-effnet)");
+
+            auto contentGate = mira::runContentGate(*mono, c.audio.sampleRate, MIRA_CED_MODEL);
+            if (contentGate.ok) machine << ",\"content_gate\":" << mira::toJson(contentGate);
+            timer.mark("content gate (CED-small)");
+
+            if (embedding.ok && contentGate.ok && contentGate.isMusic) {
+                auto moodTheme = mira::classifyMoodTheme(embedding.vector, MIRA_MOODTHEME_MODEL);
+                if (moodTheme.ok) machine << ",\"moodtheme\":" << mira::toJson(moodTheme);
+                timer.mark("moodtheme (mtg_jamendo_moodtheme)");
+            }
+
             // MIR (PRD §5B) — loops/tracks/stems only. Tempo on a 300ms one-shot is
             // "wasted work [producing] confident nonsense" (PRD §5).
             if (finalContentType != "one_shot") {
@@ -500,6 +527,51 @@ int runInspect(const std::vector<std::string>& args) {
         }
         if (auto attack = db.jsonExtractDouble(r.machine, "$.dsp.attack_time_seconds"))
             std::cout << "  attack time:   " << *attack << "s\n";
+    }
+
+    if (auto patchCount = db.jsonExtractDouble(r.machine, "$.embedding.patch_count")) {
+        std::cout << "\nClassification:\n  embedding:     discogs-effnet, " << *patchCount
+                   << " mel patch(es) pooled\n";
+    }
+    if (auto musicScore = db.jsonExtractDouble(r.machine, "$.content_gate.music_score")) {
+        // is_music is a JSON boolean; SQLite's json_extract returns it as integer 0/1,
+        // not text, so read it as a double like every other boolean-ish field here.
+        auto isMusicVal = db.jsonExtractDouble(r.machine, "$.content_gate.is_music");
+        std::cout << "  content gate:  music score " << *musicScore;
+        if (isMusicVal) std::cout << " (" << (*isMusicVal != 0.0 ? "music" : "not music") << ")";
+        std::cout << "\n";
+        if (auto labelCount = db.jsonArrayLength(r.machine, "$.content_gate.top_labels")) {
+            std::cout << "  top labels:    ";
+            for (int64_t i = 0; i < *labelCount && i < 5; ++i) {
+                std::ostringstream namePath, scorePath;
+                namePath << "$.content_gate.top_labels[" << i << "].name";
+                scorePath << "$.content_gate.top_labels[" << i << "].score";
+                auto name = db.jsonExtractString(r.machine, namePath.str());
+                auto score = db.jsonExtractDouble(r.machine, scorePath.str());
+                if (!name || !score) continue;
+                if (i > 0) std::cout << ", ";
+                std::cout << *name << " (" << *score << ")";
+            }
+            std::cout << "\n";
+        }
+    }
+    if (auto sample = db.jsonExtractDouble(r.machine, "$.moodtheme.action")) {
+        (void)sample; // presence check only — moodtheme is an object keyed by label name,
+                       // not an array, so there's no single "is it there" field to probe
+        std::vector<std::pair<std::string, double>> scored;
+        for (int i = 0; i < mira::kMoodThemeClassCount; ++i) {
+            std::string path = std::string("$.moodtheme.") + mira::kMoodThemeClassNames[i];
+            if (auto score = db.jsonExtractDouble(r.machine, path))
+                scored.emplace_back(mira::kMoodThemeClassNames[i], *score);
+        }
+        std::sort(scored.begin(), scored.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::cout << "  moodtheme:     ";
+        for (size_t i = 0; i < scored.size() && i < 5; ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << scored[i].first << " (" << scored[i].second << ")";
+        }
+        std::cout << "\n";
     }
 
     // These numeric rhythm fields are always serialized (default 0.0 when unmeasured,

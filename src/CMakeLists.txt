@@ -28,6 +28,9 @@ set(LIBKEYFINDER_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/libkeyfinder)
 set(VAMP_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/vamp-plugin-sdk)
 set(NNLS_CHROMA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/nnls-chroma)
 set(BASICPITCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/basicpitch.cpp)
+set(KALDI_NATIVE_FBANK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/kaldi-native-fbank)
+set(KISSFFT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/kissfft)
+set(MODELS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../models)
 
 if(NOT EXISTS ${SQLITE_ROOT}/sqlite3.c)
   message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE_ROOT} — run scripts/fetch-vendor.sh")
@@ -56,6 +59,21 @@ if(NOT EXISTS ${NNLS_CHROMA_ROOT}/Chordino.cpp)
 endif()
 if(NOT EXISTS ${BASICPITCH_ROOT}/ort-model/model.onnx)
   message(FATAL_ERROR "basicpitch.cpp not found at ${BASICPITCH_ROOT} — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/online-feature.h)
+  message(FATAL_ERROR "kaldi-native-fbank not found at ${KALDI_NATIVE_FBANK_ROOT} — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${KISSFFT_ROOT}/kiss_fftr.c)
+  message(FATAL_ERROR "kissfft not found at ${KISSFFT_ROOT} — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${MODELS_ROOT}/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx)
+  message(FATAL_ERROR "discogs-effnet model not found — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${MODELS_ROOT}/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx)
+  message(FATAL_ERROR "mtg_jamendo_moodtheme model not found — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${MODELS_ROOT}/content-gate/ced-small/model.onnx)
+  message(FATAL_ERROR "CED-small model not found — run scripts/fetch-vendor.sh")
 endif()
 
 find_package(PkgConfig REQUIRED)
@@ -135,6 +153,34 @@ target_link_libraries(nnls_chroma PUBLIC Boost::boost)
 # just a style choice.
 target_compile_definitions(nnls_chroma PUBLIC _VAMP_PLUGIN_IN_HOST_NAMESPACE=1)
 
+# kaldi-native-fbank (Apache-2.0, csukuangfj/kaldi-native-fbank) — CED-small's content
+# gate (PRD §2c) uses a kaldi-style fbank frontend, not Essentia's TensorflowInputMusiCNN
+# (that's discogs-effnet's frontend, a different model with a different contract). This is
+# the exact feature-extraction library sherpa-onnx itself links against for CED, vendored
+# directly rather than hand-replicating kaldi's fbank math in Essentia. Compiled directly
+# (not add_subdirectory'd — its own CMakeLists.txt pulls in Python bindings/tests by
+# default), same pattern as nnls-chroma above. istft.cc/stft.cc (unused, ISTFT-only) and
+# test-*.cc are excluded.
+add_library(kaldi_native_fbank STATIC
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/feature-fbank.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/feature-functions.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/feature-mfcc.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/feature-raw-audio-samples.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/feature-window.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/kaldi-math.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/log.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/mel-computations.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/online-feature.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/rfft.cc
+  ${KALDI_NATIVE_FBANK_ROOT}/kaldi-native-fbank/csrc/whisper-feature.cc
+  # kissfft (BSD-3-Clause) — rfft.cc's real-FFT backend. Upstream's own CMake
+  # FetchContent-downloads this; vendored directly instead, same as everything else here.
+  ${KISSFFT_ROOT}/kiss_fft.c
+  ${KISSFFT_ROOT}/kiss_fftr.c
+)
+target_include_directories(kaldi_native_fbank PUBLIC ${KALDI_NATIVE_FBANK_ROOT})
+target_include_directories(kaldi_native_fbank PRIVATE ${KISSFFT_ROOT})
+
 add_executable(mira
   mira/main.cpp
   mira/db/Database.cpp
@@ -150,6 +196,9 @@ add_executable(mira
   mira/analyze/BasicPitchOrt.cpp
   mira/analyze/BasicPitchNotes.cpp
   mira/analyze/Transcription.cpp
+  mira/analyze/Embedding.cpp
+  mira/analyze/ContentGate.cpp
+  mira/analyze/MoodTheme.cpp
 )
 
 target_include_directories(mira PRIVATE
@@ -163,6 +212,9 @@ target_include_directories(mira PRIVATE
 target_compile_definitions(mira PRIVATE
   MIRA_BEAT_THIS_MODEL="${BEAT_THIS_ROOT}/onnx/beat_this.onnx"
   MIRA_BASIC_PITCH_MODEL="${BASICPITCH_ROOT}/ort-model/model.onnx"
+  MIRA_EFFNET_MODEL="${MODELS_ROOT}/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx"
+  MIRA_MOODTHEME_MODEL="${MODELS_ROOT}/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx"
+  MIRA_CED_MODEL="${MODELS_ROOT}/content-gate/ced-small/model.onnx"
   # Captured at configure time, not build time — re-run cmake to refresh after new
   # commits if you care about this being exact; "close enough" for a dev build.
   MIRA_GIT_HASH="${MIRA_GIT_HASH}"
@@ -176,6 +228,7 @@ target_link_libraries(mira PRIVATE
   keyfinder
   nnls_chroma
   vamp-hostsdk
+  kaldi_native_fbank
   PkgConfig::AVFORMAT
   PkgConfig::AVCODEC
   PkgConfig::SWRESAMPLE

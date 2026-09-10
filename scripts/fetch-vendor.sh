@@ -119,4 +119,70 @@ clone_if_missing SQLiteCpp https://github.com/SRombauts/SQLiteCpp.git
 # needs libremidi, since mira stores note events directly).
 clone_if_missing basicpitch.cpp https://github.com/sevagh/basicpitch.cpp.git
 
+# Phase 2 — classification (PRD §2c). kaldi-native-fbank (Apache-2.0) is the exact
+# feature-extraction library sherpa-onnx itself links against for CED-small's content
+# gate — its frontend is kaldi-style fbank, not Essentia's TensorflowInputMusiCNN (that's
+# discogs-effnet's frontend, a different model). Vendored rather than hand-replicating
+# kaldi's fbank math; see src/mira/analyze/ContentGate.cpp for the exact FbankOptions,
+# read directly from sherpa-onnx's own offline-stream.cc.
+clone_if_missing kaldi-native-fbank https://github.com/csukuangfj/kaldi-native-fbank.git
+
+# kaldi-native-fbank's rfft.cc needs kissfft (BSD-3-Clause) — upstream's own CMake
+# FetchContent-downloads a pinned commit archive; vendored directly instead (same
+# hand-picked-sources pattern as nnls-chroma), so latest-tag HEAD instead of that exact
+# pinned commit, which is fine since kiss_fft.c/kiss_fftr.c are stable, rarely-changed code.
+clone_if_missing kissfft https://github.com/mborgerding/kissfft.git
+
+# Phase 2 — model weights (PRD §2c, §16.3), gitignored, into repo-root models/ (not
+# vendor/ — this is the location spike/02_onnx_parity already used and proved bitwise
+# parity against). Not git clones: direct downloads from the model's own host.
+MODELS="$ROOT/models"
+mkdir -p "$MODELS/feature-extractors/discogs-effnet" \
+         "$MODELS/classification-heads/mtg_jamendo_moodtheme" \
+         "$MODELS/content-gate/ced-small"
+
+fetch_if_missing() {
+  local dest="$1" url="$2"
+  if [ -f "$dest" ]; then
+    echo "== $(basename "$dest") already present, skipping =="
+    return
+  fi
+  echo "== fetching $(basename "$dest") =="
+  curl -sSL -o "$dest" "$url"
+}
+
+# discogs-effnet-bsdynamic-1 — the embedding, mandatory input to every classification
+# head (PRD §2c). Bitwise-parity-verified against the Python reference (spike/02_onnx_parity).
+EFFNET_BASE="https://essentia.upf.edu/models/feature-extractors/discogs-effnet"
+fetch_if_missing "$MODELS/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx" \
+  "$EFFNET_BASE/discogs-effnet-bsdynamic-1.onnx"
+fetch_if_missing "$MODELS/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.json" \
+  "$EFFNET_BASE/discogs-effnet-bsdynamic-1.json"
+
+# mtg_jamendo_moodtheme — first classification head wired (PRD §2c, Phase 2 vertical slice).
+MOODTHEME_BASE="https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme"
+fetch_if_missing "$MODELS/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx" \
+  "$MOODTHEME_BASE/mtg_jamendo_moodtheme-discogs-effnet-1.onnx"
+fetch_if_missing "$MODELS/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json" \
+  "$MOODTHEME_BASE/mtg_jamendo_moodtheme-discogs-effnet-1.json"
+
+# CED-small — content gate, "is this even music?" (PRD §2c). Not from essentia.upf.edu
+# like the two above — from k2-fsa/sherpa-onnx's own release, converted from
+# github.com/RicherMans/CED. Using the fp32 model (86 MB), not the int8 one, to match
+# every other model in the pipeline (no quantization anywhere else yet).
+CED_TARBALL="/tmp/mira-ced-small-fetch.tar.bz2"
+if [ ! -f "$MODELS/content-gate/ced-small/model.onnx" ]; then
+  echo "== fetching CED-small =="
+  curl -sSL -o "$CED_TARBALL" \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/audio-tagging-models/sherpa-onnx-ced-small-audio-tagging-2024-04-19.tar.bz2"
+  TMP_EXTRACT="/tmp/mira-ced-small-extract"
+  rm -rf "$TMP_EXTRACT" && mkdir -p "$TMP_EXTRACT"
+  tar xjf "$CED_TARBALL" -C "$TMP_EXTRACT"
+  cp "$TMP_EXTRACT"/*/model.onnx "$MODELS/content-gate/ced-small/model.onnx"
+  cp "$TMP_EXTRACT"/*/class_labels_indices.csv "$MODELS/content-gate/ced-small/class_labels_indices.csv"
+  rm -rf "$CED_TARBALL" "$TMP_EXTRACT"
+else
+  echo "== CED-small already present, skipping =="
+fi
+
 echo "== done =="
