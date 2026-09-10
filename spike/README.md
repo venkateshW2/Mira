@@ -81,7 +81,7 @@ ONNX Runtime: official prebuilt `onnxruntime-osx-arm64-1.29.0.tgz` extracted int
 package, and this also keeps the Python (`lab/`, onnxruntime 1.29.0) and C++ sides on the
 same ORT version, which matters for a parity check).
 
-## 03_dragout — day 4, PASSED (build/link); MANUAL DRAG TEST PENDING
+## 03_dragout — day 4, PASSED
 
 Proves: a minimal JUCE 9.0.2 app builds a real macOS `.app` bundle, and
 `DragAndDropContainer::shouldDropFilesWhenDraggedExternally` compiles and links —
@@ -94,11 +94,11 @@ open "build/spike_dragout_artefacts/RelWithDebInfo/mira drag-out spike.app"
 ```
 
 Built and launched cleanly (JUCE 9.0.2, cloned 2026-09-10). A window with a single
-"drag me" tile opens; dragging it out is meant to drop `fixtures/flamenco.wav` onto
-whatever it's released over (Finder, Ableton, Logic), copy not move (PRD §1: "no file
-ever moves"). **This part needs a human mouse gesture — an agent can't verify it.**
-Ask whoever is at the machine to drag the tile onto Finder/Ableton/Logic and confirm a
-real file lands, then update this line with the result.
+"drag me" tile opens; dragging it out drops `fixtures/flamenco.wav` onto whatever it's
+released over (Finder, Ableton, Logic), copy not move (PRD §1: "no file ever moves").
+**Manually confirmed working 2026-09-10** — the OS-level drag-out (NSDraggingItem under
+the hood) lands a real file. This was the founding requirement most likely to force a
+different GUI toolkit (PRD §2d) — it didn't.
 
 Also bundles the day-5 `AudioThumbnailCache` persistence check (see below) as a
 `--selftest` flag on the same binary, since it needed `juce_audio_utils` anyway.
@@ -191,16 +191,19 @@ files").
 
 ## Summary
 
-All five day 1-5 exit criteria from PRD §9 are met except the one that requires a human:
+All five day 1-5 exit criteria from PRD §9 are met, including the manual one:
 
 | Day | Criterion | Result |
 |---|---|---|
 | 1-2 | Essentia C++ builds + links externally | ✅ PASS |
 | 3 | ONNX embedding parity to ~1e-4 | ✅ PASS (exact match) |
-| 4 | Drag-out builds/links | ✅ PASS (build); ⏳ manual drag test pending |
+| 4 | Drag-out builds/links, and the drag itself works | ✅ PASS (manually confirmed 2026-09-10) |
 | 5 | `beat_this_cpp` on arm64 | ✅ PASS |
 | 5 | SQLite + `sqlite-vec`, 10k × 1280-dim | ✅ PASS |
 | 5 | `AudioThumbnailCache` survives relaunch | ✅ PASS |
+
+**Phase 0 is complete.** Every item in PRD §10's risk table that Phase 0 was meant to
+retire has been retired; none of the documented fallbacks were needed.
 
 Three real bugs found and fixed along the way (Essentia/ffmpeg 7.1 API removal,
 `beat_this_cpp` header/impl mismatch, `beat_this_cpp`'s broken `find_package(onnxruntime)`
