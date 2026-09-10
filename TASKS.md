@@ -792,6 +792,91 @@ checked against the actual shipped model configs rather than assumed:
 
 ## Phase 5 — surfaces + multi-target captioning (PRD §9 Phase 5, §13)
 
+### Architecture decisions (2026-09-10 planning discussion — read before touching this phase)
+
+Settled before any Phase 5 code exists, so the reasoning doesn't have to be re-derived
+next session.
+
+**Hand-rolled native JUCE, not a webview/Electron hybrid.** Considered three options: (A)
+pure native JUCE with a custom `LookAndFeel`; (B) JUCE native shell + an embedded
+`WebBrowserComponent` rendering the actual UI in HTML/CSS; (C) full Electron/Tauri (the
+whole app as a web app, à la Tuva's apparent React/Node/Tone.js-or-Howler stack). Went
+with **A**. B and C both lose real things this project already has or needs: B still needs
+a hand-built bridge for anything real-time (a playhead synced to the audio thread doesn't
+map cleanly through a JSON message bridge to DOM), re-solves `TableListBox`'s drive-scale
+virtualization problem in a second stack instead of using JUCE's already-chosen
+`paintCell`-only answer to it, adds a whole npm/bundler dependency ecosystem next to this
+repo's carefully vendored/pinned C++ one, and demotes `SoundBrowser.h`'s existing native
+investment (below) to reference-only instead of directly reusable. Both B and C also carry
+a real RAM cost specifically bad for this app's context: a full embedded browser engine
+(WKWebView/Chromium) has a baseline memory footprint in the 150-300MB+ range, which matters
+for something meant to sit open *alongside a DAW* that's already contesting RAM with sample
+libraries and plugins.
+
+**Not starting cold — verified, not assumed:**
+- `vendor/JUCE` is already vendored.
+- `spike/03_dragout` (Phase 0, Day 4) already proved the founding requirement — system
+  drag-out via `shouldDropFilesWhenDraggedExternally`, confirmed working into Ableton,
+  Logic, and Finder on macOS 15.5. The single riskiest unknown in the whole UI plan is
+  already settled, not theoretical.
+- That spike's own `CMakeLists.txt` already sets `JUCE_WEB_BROWSER=0` — the codebase had
+  already implicitly ruled out option B before this discussion happened.
+- `~/w2app/w2-audio-plugs/src/SoundBrowser.h` (a separate, existing sampler-plugin project,
+  not part of this repo) has real working reference patterns worth copying from, not
+  rebuilding from zero: `WaveThumb` (background-thread waveform thumbnailing, O(width)
+  paint), `AnalysisWorker` (background `juce::Thread` + `callAsync` marshaling — the shape
+  the progress queue below should take), `FolderListModel` (folder navigation, currently
+  one-level drill-down with a `..` up-row, needs upgrading to a persistent tree).
+- Relationship to that sampler plugin, explicitly decided: mira's UI is built standalone
+  first, its own process, own SQLite schema. The sampler plugin's browser folds into mira
+  later — not the reverse, and not scheduled yet.
+
+**Progress queue is required, not optional polish** — a real course-correction from this
+discussion, worth flagging so it isn't lost again: PRD §13's "no queue, no server" language
+is about avoiding a separate server process / inter-process protocol (the shape underfit's
+own Python dashboard uses), **not** about skipping an in-app progress UI. Without live
+progress (files analyzed / remaining / current file / stage) during a big scan, the app
+will look frozen at drive scale. Same `AnalysisWorker`-style background thread as above,
+exposing counts the UI polls or receives via `callAsync` — same mechanism, not a separate
+subsystem.
+
+**Visual direction: glassmorphism, specifically chasing Apple's current "Liquid Glass"
+material** (2025-era — translucent/frosted panels with a dynamic, refractive quality),
+not the older ~2020 static-blur glassmorphism look. The correct native building block
+available *today* is **`NSVisualEffectView`** (real vibrancy/blur, macOS 10.10+) — genuine
+native translucency under arbitrary custom content. Worth being precise: this is **not**
+literally the same rendering system as the newer Liquid Glass material (a distinct, newer,
+more dynamic/specular API surface, exact current class unverified here — check Apple's
+current docs before committing, rather than assume). `NSVisualEffectView` gets most of the
+visual language and is the pragmatic, available choice; the literal newest material is
+less proven for hosting arbitrary custom-painted content rather than Apple's own system
+controls. JUCE has **no built-in wrapper** for `NSVisualEffectView` — using it means real
+Objective-C++ (`.mm`) bridge code hosting it as a native `NSView` behind JUCE's own
+rendering. Real work, but the same category `spike/03_dragout` already proved feasible for
+native Cocoa drag-out, not a new kind of risk.
+
+**Add-on JUCE modules to vendor, chosen deliberately:** Melatonin's modules (e.g.
+`melatonin_blur` — real soft shadows) and JUCE's own `juce_animation` module
+(easing/tweening) — both purely additive, layer under a custom `LookAndFeel` without
+imposing architecture. **Considered and deliberately not using `foleys_gui_magic`** — real
+and well-regarded, but its XML/style-driven declarative layout pulls toward a generic,
+data-bound look, working against the hand-crafted goal here.
+
+**Build order agreed for the first slice**, in this sequence: (1) promote
+`spike/03_dragout` into a real target in `src/CMakeLists.txt`, wired to mira's actual
+SQLite DB, not the spike's toy fixture; (2) base window shell + a `LookAndFeel_V4`
+skeleton — palette/type tokens first, before any real panel is built on top of it; (3) the
+progress queue; (4) persistent folder tree (upgrade from `SoundBrowser.h`'s drill-down
+`FolderListModel`) + the file table (`paintCell`-only, per the virtualization concern
+above); (5) waveform/detail panel + filter bar wired to `mira search`'s existing filter
+grammar (Phase 2).
+
+**Reference mockup** from this planning session:
+https://claude.ai/code/artifact/d590444f-6b62-4ff3-8b9e-8f7ecbae00f1 — palette/type tokens
+(IBM Plex Sans/Mono, warm amber accent, teal active-region color, near-black ground) are a
+starting point for the real `LookAndFeel`, not necessarily final; it's a static HTML
+illustration, not a spec.
+
 - [ ] JUCE UI shell: one native window, same process as analysis (§13)
 - [ ] `TableListBox` file list with `paintCell` only, at drive scale
 - [ ] `AudioThumbnail` + `AudioThumbnailCache` waveform display (persistence already
