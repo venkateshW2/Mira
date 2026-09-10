@@ -116,6 +116,43 @@ int64_t Database::countFiles() {
     return q.getColumn(0).getInt64();
 }
 
+std::vector<std::pair<std::string, int64_t>> Database::countByContentType() {
+    std::vector<std::pair<std::string, int64_t>> result;
+    SQLite::Statement q(db, "SELECT content_type, COUNT(*) FROM files GROUP BY content_type ORDER BY content_type");
+    while (q.executeStep()) {
+        result.emplace_back(q.getColumn(0).getString(), q.getColumn(1).getInt64());
+    }
+    return result;
+}
+
+int64_t Database::countAnalyzed() {
+    SQLite::Statement q(db, "SELECT COUNT(*) FROM files WHERE analyzed_at IS NOT NULL");
+    q.executeStep();
+    return q.getColumn(0).getInt64();
+}
+
+int64_t Database::countEmbeddings() {
+    SQLite::Statement q(db, "SELECT COUNT(*) FROM vec_embeddings");
+    q.executeStep();
+    return q.getColumn(0).getInt64();
+}
+
+int64_t Database::countWhereMachineHas(const std::string& jsonPath) {
+    SQLite::Statement q(db, "SELECT COUNT(*) FROM files WHERE json_extract(machine, ?) IS NOT NULL");
+    q.bind(1, jsonPath);
+    q.executeStep();
+    return q.getColumn(0).getInt64();
+}
+
+std::vector<FileRecord> Database::queryFiles(const std::string& whereClauseSql) {
+    std::vector<FileRecord> result;
+    SQLite::Statement q(db, "SELECT * FROM files WHERE " + whereClauseSql);
+    while (q.executeStep()) {
+        result.push_back(fromRow(q));
+    }
+    return result;
+}
+
 void Database::declareStem(const std::string& path) {
     SQLite::Statement update(db,
         "UPDATE files SET content_type = 'stem', content_type_source = 'declared' "

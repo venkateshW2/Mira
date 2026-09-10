@@ -310,9 +310,12 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 
 ---
 
-## Phase 2 — classify + search (PRD §9 Phase 2, §2c, §5)
+## Phase 2 — classify + search (PRD §9 Phase 2, §2c, §5) ✅ COMPLETE (2026-09-10)
 
-Exit: the Sononym-parity milestone.
+Exit: the Sononym-parity milestone. All items below done; two genuine memory-safety bugs
+(unrelated to Phase 2's own scope — a shared-`Ort::Env` anti-pattern and a container-
+overflow inherited from the Phase 0 spike) found and fixed via AddressSanitizer while
+stress-testing this phase's work, not left as latent risk for Phase 3.
 
 - [x] `discogs-effnet-bsdynamic-1` embedding pass wired into the pipeline (mandatory
       input to every head below, and the similarity vector) (§2c, §5) — the "-bs64" name
@@ -554,9 +557,36 @@ Exit: the Sononym-parity milestone.
       silently: only the overall embedding (no `--by timbre|rhythm|spectrum` subsets),
       `--n`, and only files already in the library (no external-file mode yet) — `--filter`
       and those are separate, still-open work
-- [ ] `mira search "--filter" ...` — expressions over tags/descriptors (§8)
-- [ ] `mira models --download | --list` (§8)
-- [ ] `mira stats` — library composition, coverage, unmapped labels (§8)
+- [x] `mira search "--filter" ...` — expressions over tags/descriptors (§8) — a small,
+      fixed grammar (`src/mira/main.cpp`'s `translateSearchCondition`), not a general
+      query language: comma-separated conditions ANDed, each `field OP value` (a table of
+      ~11 known numeric/string fields — bpm, duration, loudness, danceable, key,
+      content_type, etc.) or `tag:value` (genre/instrument/mood name). Real bug found and
+      fixed while building this: the first tag-matching implementation checked "does this
+      substring appear anywhere in the object's raw JSON text," which is nearly always
+      true for `genre`'s 400-entry object (every label is stored regardless of score,
+      most near zero) — `genre:Techno` matched a flamenco file because *some* of the 400
+      genre labels happened to contain "Techno" at a near-zero score. Fixed with
+      `json_each()` to check the key (substring, so a search for a genre's *style* alone
+      still hits its canonical `"Genre: Style"` form) and the score (a real threshold)
+      together, per entry — a smoke test regression-checks this exact failure mode
+      (`genre:Techno` against flamenco.wav must return 0 matches, not a false hit)
+- [x] `mira models --download | --list` (§8) — `--list` does a straight filesystem check
+      against the same compile-time `MIRA_*_MODEL` paths every analyzer already uses (10
+      models total, rhythm/transcription included), so it can't drift from what `analyze`
+      actually loads. `--download` deliberately doesn't fetch anything itself — no
+      Python/network dependency at runtime (PRD §2d) — it names `scripts/fetch-vendor.sh`
+      or the relevant `lab/` conversion script for whatever's missing
+- [x] `mira stats` — library composition, coverage, unmapped labels (§8) — file counts by
+      content_type, analyzed vs. scanned-only, per-classification-head coverage (`json_extract`
+      presence checks against `machine`, not estimated), embeddings stored (`sqlite-vec`
+      row count). "Unmapped labels" is a taxonomy *completeness* check, not a per-file DB
+      scan: for every raw label a model can actually produce (all 40 instrument classes,
+      all 11 IRMAS codes, all 400 genre classes), does `taxonomy/*.yaml` have an entry?
+      Currently reports 0/0/0 unmapped across all three, since both taxonomy files were
+      generated to cover every label their source model list had at the time — this is
+      the mechanism that will actually catch it if MTG or Discogs ever adds new labels a
+      future model update produces that the taxonomy hasn't caught up to yet
 
 ---
 

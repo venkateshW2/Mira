@@ -47,6 +47,22 @@ public:
 
     int64_t countFiles();
 
+    // PRD §8 `mira stats` support. `countByContentType` groups the existing content_type
+    // column; `countAnalyzed` is files with analyzed_at set; `countEmbeddings` reads
+    // vec_embeddings directly (not machine JSON — same reasoning as getEmbeddingById);
+    // `countWhereMachineHas` is a generic "how many rows have this JSON path set"
+    // (coverage per classification head — e.g. "$.genre", "$.stem_instrument").
+    std::vector<std::pair<std::string, int64_t>> countByContentType();
+    int64_t countAnalyzed();
+    int64_t countEmbeddings();
+    int64_t countWhereMachineHas(const std::string& jsonPath);
+
+    // PRD §8 `mira search`. `whereClauseSql` is a caller-built SQL boolean expression
+    // (mira search's own small filter-expression translator builds this from a fixed
+    // grammar over a known field table — not raw passthrough of arbitrary user SQL),
+    // evaluated as `SELECT ... FROM files WHERE <whereClauseSql>`.
+    std::vector<FileRecord> queryFiles(const std::string& whereClauseSql);
+
     // Sets content_type='stem', content_type_source='declared' for a path — PRD §12.3
     // route 3, always overrides router-based detection and is never re-routed.
     void declareStem(const std::string& path);

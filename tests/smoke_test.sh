@@ -694,6 +694,58 @@ assert_contains "scanned-but-not-analyzed file says so rather than crashing" "$O
 rm -f "$NOTYET_DB" "$NOTYET_DB-wal" "$NOTYET_DB-shm"
 
 echo
+echo "== test: mira stats (PRD §8: library composition, coverage, unmapped labels) =="
+OUT_STATS=$("$MIRA" stats --db "$TESTDB" 2>&1)
+CODE_STATS=$?
+assert_eq "exit code" "0" "$CODE_STATS"
+assert_contains "reports library file count" "$OUT_STATS" "library:"
+assert_contains "reports content type breakdown" "$OUT_STATS" "content type breakdown"
+assert_contains "reports classification coverage" "$OUT_STATS" "classification coverage"
+assert_contains "reports embeddings stored" "$OUT_STATS" "embeddings stored"
+assert_contains "reports taxonomy completeness" "$OUT_STATS" "unmapped labels"
+assert_contains "instrument taxonomy is fully mapped" "$OUT_STATS" "instrument (mtg_jamendo_instrument): none"
+assert_contains "genre taxonomy is fully mapped" "$OUT_STATS" "genre (genre_discogs400): none"
+
+echo
+echo "== test: mira models --list (PRD §8) =="
+OUT_MODELS=$("$MIRA" models --list 2>&1)
+CODE_MODELS=$?
+assert_eq "exit code (all models present in this dev environment)" "0" "$CODE_MODELS"
+assert_contains "lists discogs-effnet" "$OUT_MODELS" "discogs-effnet"
+assert_contains "lists CED-small" "$OUT_MODELS" "CED-small"
+assert_contains "lists genre_discogs400" "$OUT_MODELS" "genre_discogs400"
+NOT_MISSING=$(echo "$OUT_MODELS" | grep -c "MISSING" || true)
+assert_eq "no models reported missing in this dev environment" "0" "$NOT_MISSING"
+
+OUT_MODELS_NOFLAG=$("$MIRA" models 2>&1)
+CODE_MODELS_NOFLAG=$?
+assert_eq "exit code non-zero without --list or --download" "1" "$CODE_MODELS_NOFLAG"
+
+echo
+echo "== test: mira search --filter (PRD §8) =="
+OUT_SEARCH_NUM=$("$MIRA" search --filter "content_type=loop" --db "$TESTDB" 2>&1)
+assert_contains "numeric/string field filter matches flamenco.wav" "$OUT_SEARCH_NUM" "flamenco.wav"
+
+OUT_SEARCH_TAG=$("$MIRA" search --filter "genre:Flamenco" --db "$TESTDB" 2>&1)
+assert_contains "genre tag filter matches (substring of Genre: Style canonical form)" "$OUT_SEARCH_TAG" "flamenco.wav"
+
+OUT_SEARCH_NOMATCH=$("$MIRA" search --filter "genre:Techno" --db "$TESTDB" 2>&1)
+assert_contains "unrelated genre tag correctly finds no match" "$OUT_SEARCH_NOMATCH" "0 matches"
+# Regression: a naive "substring appears anywhere in the 400-label object" check (an
+# earlier, wrong implementation) matched this every time, since some near-zero-score
+# genre label almost always contains any given substring somewhere in the full 400.
+NOT_FALSE_MATCH=$(echo "$OUT_SEARCH_NOMATCH" | grep -c "flamenco.wav" || true)
+assert_eq "unrelated genre tag does not false-match via a near-zero score" "0" "$NOT_FALSE_MATCH"
+
+OUT_SEARCH_AND=$("$MIRA" search --filter "content_type=loop,bpm>0" --db "$TESTDB" 2>&1)
+assert_contains "comma-separated AND conditions both apply" "$OUT_SEARCH_AND" "flamenco.wav"
+
+OUT_SEARCH_BAD=$("$MIRA" search --filter "nonsense>5" --db "$TESTDB" 2>&1)
+CODE_SEARCH_BAD=$?
+assert_eq "exit code non-zero for an unknown field" "1" "$CODE_SEARCH_BAD"
+assert_contains "explains why" "$OUT_SEARCH_BAD" "could not parse"
+
+echo
 echo "======================================"
 echo "  $PASS passed, $FAIL failed"
 echo "======================================"

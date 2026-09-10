@@ -104,8 +104,19 @@ void printUsage() {
         "        exact brute-force KNN over the discogs-effnet embedding (sqlite-vec, no\n"
         "        ANN index — PRD §3); only files already in the library are supported for\n"
         "        now, and only the overall embedding (--by/--filter not yet implemented)\n"
-        "\n"
-        "Not yet implemented: search, models, stats (see TASKS.md)\n";
+        "  mira search --filter \"...\" [--db <path>]\n"
+        "        comma-separated conditions, ANDed: field OP value (bpm>120, duration<180)\n"
+        "        or tag:value (genre:Flamenco, instrument:guitar); fields: content_type,\n"
+        "        key, bpm/tempo, duration, loudness, danceable, harmonicity, centroid,\n"
+        "        crest, music_score, voice_probability; operators >, >=, <, <=, =, !=\n"
+        "  mira models --list | --download [--db <path>]\n"
+        "        --list: which of the 10 models this build expects are present on disk;\n"
+        "        --download: mira doesn't fetch at runtime (PRD §2d) — points at\n"
+        "        scripts/fetch-vendor.sh or lab/'s conversion scripts for what's missing\n"
+        "  mira stats [--db <path>]\n"
+        "        library composition, per-head classification coverage, embeddings\n"
+        "        stored, and taxonomy completeness (which raw labels have no normalized\n"
+        "        form yet, taxonomy/*.yaml)\n";
 }
 
 int runScan(const std::vector<std::string>& args) {
@@ -907,6 +918,314 @@ int runSimilar(const std::vector<std::string>& args) {
     return 0;
 }
 
+// PRD §8: `mira stats` — library composition, coverage, unmapped labels. Coverage is
+// read directly from what's actually stored (json_extract presence checks), not
+// estimated — same discipline as everything else here. "Unmapped labels" is a taxonomy
+// completeness check (Taxonomy.h), not a per-file DB scan: for each label a model can
+// actually produce, does the taxonomy have an entry for it? A label with no entry still
+// gets analyzed and stored (raw), it just doesn't get a normalized form — this surfaces
+// that gap directly rather than requiring someone to notice it by accident.
+int runStats(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+    }
+
+    mira::Database db(dbPath);
+
+    int64_t total = db.countFiles();
+    int64_t analyzed = db.countAnalyzed();
+    std::cout << "library: " << total << " files (" << analyzed << " analyzed, "
+              << (total - analyzed) << " scanned but not yet analyzed)\n";
+
+    std::cout << "\ncontent type breakdown:\n";
+    for (const auto& [type, count] : db.countByContentType()) {
+        std::cout << "  " << type << ": " << count << "\n";
+    }
+
+    std::cout << "\nclassification coverage (of " << analyzed << " analyzed files):\n";
+    struct CoverageField {
+        const char* label;
+        const char* jsonPath;
+    };
+    static const CoverageField kCoverageFields[] = {
+        {"embedding", "$.embedding"},         {"content gate", "$.content_gate"},
+        {"moodtheme", "$.moodtheme"},         {"instrument", "$.instrument"},
+        {"genre", "$.genre"},                 {"voice/instrumental", "$.voice_instrumental"},
+        {"danceability (model)", "$.danceability_head"}, {"stem instrument", "$.stem_instrument"},
+    };
+    for (const auto& field : kCoverageFields) {
+        int64_t count = db.countWhereMachineHas(field.jsonPath);
+        std::cout << "  " << field.label << ": " << count;
+        if (analyzed > 0) {
+            std::cout << " (" << std::fixed << std::setprecision(0)
+                       << (100.0 * count / analyzed) << "%)";
+        }
+        std::cout << "\n";
+    }
+    int64_t embeddingCount = db.countEmbeddings();
+    std::cout << "  embeddings stored (sqlite-vec): " << embeddingCount << "\n";
+
+    std::cout << "\nunmapped labels (models can produce these, taxonomy/*.yaml has no entry yet):\n";
+    mira::Taxonomy instrumentTax(MIRA_INSTRUMENT_TAXONOMY, "mtg_jamendo_instrument");
+    mira::Taxonomy stemInstrumentTax(MIRA_INSTRUMENT_TAXONOMY, "irmas_predominant_instrument");
+    mira::Taxonomy genreTax(MIRA_GENRE_TAXONOMY, "genre_discogs400");
+
+    auto reportUnmapped = [](const char* headName, const mira::Taxonomy& tax, bool taxOk,
+                              const std::vector<std::string>& rawLabels) {
+        if (!taxOk) {
+            std::cout << "  " << headName << ": taxonomy file failed to load, skipped\n";
+            return;
+        }
+        std::vector<std::string> unmapped;
+        for (const auto& raw : rawLabels) {
+            if (!tax.normalize(raw)) unmapped.push_back(raw);
+        }
+        if (unmapped.empty()) {
+            std::cout << "  " << headName << ": none (" << rawLabels.size() << "/"
+                       << rawLabels.size() << " labels mapped)\n";
+        } else {
+            std::cout << "  " << headName << ": " << unmapped.size() << " of " << rawLabels.size()
+                       << " unmapped —";
+            for (size_t i = 0; i < unmapped.size() && i < 10; ++i) std::cout << " " << unmapped[i];
+            if (unmapped.size() > 10) std::cout << " ...";
+            std::cout << "\n";
+        }
+    };
+    reportUnmapped("instrument (mtg_jamendo_instrument)", instrumentTax, instrumentTax.ok(),
+                    std::vector<std::string>(mira::kInstrumentClassNames,
+                                              mira::kInstrumentClassNames + mira::kInstrumentClassCount));
+    reportUnmapped("stem instrument (IRMAS codes)", stemInstrumentTax, stemInstrumentTax.ok(),
+                    {"cel", "cla", "flu", "gac", "gel", "org", "pia", "sax", "tru", "vio", "voi"});
+    reportUnmapped("genre (genre_discogs400)", genreTax, genreTax.ok(),
+                    std::vector<std::string>(mira::kGenreClassNames,
+                                              mira::kGenreClassNames + mira::kGenreClassCount));
+    std::cout << "  moodtheme, content gate (AudioSet): no taxonomy file by design — raw labels\n"
+                 "    are already clean human-readable words/phrases (TASKS.md Phase 2)\n";
+
+    return 0;
+}
+
+// PRD §8: `mira models --download | --list`. `--list` reports whether each model this
+// build was compiled to look for is actually present on disk at its configured path —
+// straight filesystem checks against the same compile-time paths every analyzer uses
+// (MIRA_*_MODEL), so this can never drift from what analyze actually loads. `--download`
+// deliberately doesn't fetch anything itself — mira has no Python/network dependency at
+// runtime by design (PRD §2d); it points at the actual fetch mechanism (scripts/
+// fetch-vendor.sh for 7 of the 9, lab/'s tf2onnx conversion and
+// export_irmas_instrument_onnx.py for the other 2) for whatever's actually missing.
+int runModels(const std::vector<std::string>& args) {
+    bool doList = false, doDownload = false;
+    for (const auto& arg : args) {
+        if (arg == "--list") doList = true;
+        else if (arg == "--download") doDownload = true;
+    }
+    if (!doList && !doDownload) {
+        std::cerr << "mira models: --list or --download is required" << std::endl;
+        return 1;
+    }
+
+    struct ModelEntry {
+        const char* name;
+        const char* path;
+        const char* howToFetch;
+    };
+    const ModelEntry models[] = {
+        {"discogs-effnet (embedding)", MIRA_EFFNET_MODEL, "scripts/fetch-vendor.sh"},
+        {"CED-small (content gate)", MIRA_CED_MODEL, "scripts/fetch-vendor.sh"},
+        {"mtg_jamendo_moodtheme", MIRA_MOODTHEME_MODEL, "scripts/fetch-vendor.sh"},
+        {"mtg_jamendo_instrument", MIRA_INSTRUMENT_MODEL, "scripts/fetch-vendor.sh"},
+        {"danceability", MIRA_DANCEABILITY_MODEL, "scripts/fetch-vendor.sh"},
+        {"genre_discogs400", MIRA_GENRE_MODEL, "lab/'s tf2onnx conversion (see TASKS.md Phase 2)"},
+        {"voice_instrumental", MIRA_VOICE_INSTRUMENTAL_MODEL, "lab/'s tf2onnx conversion (see TASKS.md Phase 2)"},
+        {"IRMAS predominant-instrument", MIRA_IRMAS_INSTRUMENT_MODEL, "lab/export_irmas_instrument_onnx.py"},
+        {"beat_this_cpp (rhythm)", MIRA_BEAT_THIS_MODEL, "scripts/fetch-vendor.sh"},
+        {"Basic Pitch (transcription)", MIRA_BASIC_PITCH_MODEL, "scripts/fetch-vendor.sh"},
+    };
+
+    std::vector<const ModelEntry*> missing;
+    if (doList) std::cout << "models (compiled into this build at these paths):\n";
+    for (const auto& m : models) {
+        bool exists = std::filesystem::exists(m.path);
+        if (!exists) missing.push_back(&m);
+        if (doList) {
+            std::cout << "  [" << (exists ? "x" : " ") << "] " << m.name;
+            if (exists) {
+                auto bytes = std::filesystem::file_size(m.path);
+                std::cout << " (" << (bytes / 1024 / 1024) << " MB)";
+            } else {
+                std::cout << " — MISSING: " << m.path;
+            }
+            std::cout << "\n";
+        }
+    }
+
+    if (doDownload) {
+        if (missing.empty()) {
+            std::cout << "all models present — nothing to fetch\n";
+        } else {
+            std::cout << "missing models and how to get them (mira doesn't fetch at runtime, PRD §2d):\n";
+            for (const auto* m : missing) {
+                std::cout << "  " << m->name << ": run " << m->howToFetch << "\n";
+            }
+        }
+    }
+
+    return missing.empty() ? 0 : 1;
+}
+
+// PRD §8: `mira search --filter "..."`. A small, fixed grammar, not a general query
+// language: comma-separated conditions (ANDed), each either `field OP value` (a known
+// numeric/string field, see kSearchFields below) or `tag:value` (a substring match
+// against whichever head's *_normalized or raw object actually has a matching key —
+// checked across all of them since the caller shouldn't need to know which model
+// happened to produce a given tag; substring, not exact match, since genre's canonical
+// keys are "Genre: Style" and a search for the style alone should still hit).
+namespace {
+struct SearchField {
+    const char* name;
+    const char* jsonPath; // empty = the `content_type` column itself, not JSON
+    bool isNumeric;
+};
+constexpr SearchField kSearchFields[] = {
+    {"content_type", "", false},
+    {"key", "$.key.key", false},
+    {"bpm", "$.rhythm.beat_this_bpm", true},
+    {"tempo", "$.rhythm.beat_this_bpm", true},
+    {"duration", "$.duration_seconds", true},
+    {"loudness", "$.dsp.integrated_loudness_lufs", true},
+    {"danceable", "$.danceability_head.danceable_probability", true},
+    {"harmonicity", "$.dsp.harmonicity", true},
+    {"centroid", "$.dsp.spectral_centroid_hz", true},
+    {"crest", "$.dsp.crest_factor", true},
+    {"music_score", "$.content_gate.music_score", true},
+    {"voice_probability", "$.voice_instrumental.voice_probability", true},
+};
+constexpr double kSearchTagThreshold = 0.2;
+// Every place a tag (genre/instrument/mood name) could show up — normalized where one
+// exists, raw where it doesn't (moodtheme has no taxonomy, TASKS.md Phase 2).
+constexpr const char* kSearchTagPaths[] = {
+    "$.genre_normalized", "$.instrument_normalized", "$.stem_instrument_normalized", "$.moodtheme",
+};
+
+std::string sqlQuoteString(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "''";
+        else out += c;
+    }
+    out += "'";
+    return out;
+}
+
+// Returns the WHERE-clause fragment for one condition, or nullopt if it doesn't parse —
+// callers report that as a user error (an unknown field or bad syntax), not silently
+// dropped.
+std::optional<std::string> translateSearchCondition(const std::string& condition) {
+    // tag:value — no recognized comparison operator, and a literal colon present.
+    size_t colon = condition.find(':');
+    bool hasComparisonOp = condition.find_first_of("<>=!") != std::string::npos;
+    if (colon != std::string::npos && !hasComparisonOp) {
+        std::string tag = condition.substr(colon + 1);
+        std::ostringstream oss;
+        oss << "(";
+        constexpr size_t kNumTagPaths = sizeof(kSearchTagPaths) / sizeof(kSearchTagPaths[0]);
+        for (size_t i = 0; i < kNumTagPaths; ++i) {
+            if (i > 0) oss << " OR ";
+            // json_each, not a LIKE against the whole object's raw JSON text: a naive
+            // "does this substring appear anywhere in the object" check is nearly always
+            // true for a 400-entry genre object where every label is stored regardless of
+            // score (most near zero) — real bug, found by testing "genre:Techno" against
+            // a flamenco file and getting a match, because *some* genre label somewhere
+            // in the 400 contained "Techno" at a near-zero score. json_each lets the key
+            // (substring match — genre's canonical keys are "Genre: Style", so a search
+            // for the style alone should still hit) and the score (real threshold) be
+            // checked together, per entry, properly.
+            oss << "EXISTS (SELECT 1 FROM json_each(machine, '" << kSearchTagPaths[i]
+                << "') WHERE key LIKE '%" << tag << "%' AND value > " << kSearchTagThreshold << ")";
+        }
+        oss << ")";
+        return oss.str();
+    }
+
+    // field OP value — check two-character operators before their one-character prefixes.
+    static const std::pair<const char*, const char*> kOps[] = {
+        {">=", ">="}, {"<=", "<="}, {"!=", "!="}, {">", ">"}, {"<", "<"}, {"=", "="},
+    };
+    for (const auto& [opText, opSql] : kOps) {
+        size_t pos = condition.find(opText);
+        if (pos == std::string::npos) continue;
+        std::string fieldName = condition.substr(0, pos);
+        std::string value = condition.substr(pos + std::string(opText).length());
+        for (const auto& f : kSearchFields) {
+            if (fieldName != f.name) continue;
+            if (std::string(f.jsonPath).empty()) { // content_type column
+                return std::string("content_type ") + opSql + " " + sqlQuoteString(value);
+            }
+            if (f.isNumeric) {
+                return std::string("json_extract(machine, '") + f.jsonPath + "') " + opSql + " " + value;
+            }
+            return std::string("json_extract(machine, '") + f.jsonPath + "') " + opSql + " " +
+                   sqlQuoteString(value);
+        }
+        return std::nullopt; // matched an operator but not a known field name
+    }
+    return std::nullopt;
+}
+} // namespace
+
+int runSearch(const std::vector<std::string>& args) {
+    std::string dbPath = defaultDbPath();
+    std::optional<std::string> filter;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
+        else if (args[i] == "--filter" && i + 1 < args.size()) filter = args[++i];
+    }
+    if (!filter) {
+        std::cerr << "mira search: --filter \"...\" is required, e.g. --filter \"bpm>120,genre:Flamenco\"\n"
+                     "  known fields: content_type, key, bpm/tempo, duration, loudness, danceable,\n"
+                     "  harmonicity, centroid, crest, music_score, voice_probability; operators\n"
+                     "  >, >=, <, <=, =, !=; tag filters like instrument:guitar or genre:Flamenco;\n"
+                     "  comma-separate multiple conditions to AND them"
+                  << std::endl;
+        return 1;
+    }
+
+    std::vector<std::string> conditions;
+    std::string current;
+    for (char c : *filter) {
+        if (c == ',') { conditions.push_back(current); current.clear(); }
+        else current += c;
+    }
+    if (!current.empty()) conditions.push_back(current);
+
+    std::vector<std::string> sqlConditions;
+    for (const auto& cond : conditions) {
+        auto translated = translateSearchCondition(cond);
+        if (!translated) {
+            std::cerr << "mira search: could not parse condition '" << cond << "'" << std::endl;
+            return 1;
+        }
+        sqlConditions.push_back(*translated);
+    }
+
+    std::string whereClause;
+    for (size_t i = 0; i < sqlConditions.size(); ++i) {
+        if (i > 0) whereClause += " AND ";
+        whereClause += sqlConditions[i];
+    }
+
+    mira::Database db(dbPath);
+    auto matches = db.queryFiles(whereClause);
+
+    std::cout << matches.size() << " match" << (matches.size() == 1 ? "" : "es") << ":\n";
+    for (const auto& m : matches) {
+        std::cout << "  " << m.path << " (" << m.contentType << ")\n";
+    }
+
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -937,6 +1256,15 @@ int main(int argc, char* argv[]) {
     }
     if (command == "similar") {
         return runSimilar(rest);
+    }
+    if (command == "stats") {
+        return runStats(rest);
+    }
+    if (command == "models") {
+        return runModels(rest);
+    }
+    if (command == "search") {
+        return runSearch(rest);
     }
 
     std::cerr << "mira: unknown command '" << command << "'\n\n";
