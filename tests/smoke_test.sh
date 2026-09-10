@@ -180,6 +180,32 @@ assert_eq "found a plausible number of chord segments (>3)" "yes" \
     "$(awk -v n="$CHORD_COUNT" 'BEGIN{print (n>3) ? "yes" : "no"}')"
 
 echo
+echo "== test: note transcription (Basic Pitch) runs on a loop, unlike key/chords not gated by flatness =="
+assert_contains "machine JSON has a notes array" "$MACHINE" "\"notes\":["
+NOTE_COUNT=$(echo "$MACHINE" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["notes"]))')
+assert_eq "found a plausible number of notes on a 14s guitar piece (>10)" "yes" \
+    "$(awk -v n="$NOTE_COUNT" 'BEGIN{print (n>10) ? "yes" : "no"}')"
+FIRST_PITCH=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["notes"][0]["pitch"])')
+assert_eq "first note's MIDI pitch is in playable piano range (21-108)" "yes" \
+    "$(awk -v p="$FIRST_PITCH" 'BEGIN{print (p>=21 && p<=108) ? "yes" : "no"}')"
+
+if command -v ffmpeg >/dev/null 2>&1; then
+    TRANSCRIBE_NOISE_DIR=$(mktemp -d)
+    ffmpeg -y -loglevel error -f lavfi -i "anoisesrc=color=white:sample_rate=44100:duration=5" \
+        "$TRANSCRIBE_NOISE_DIR/noise.wav"
+    TRANSCRIBE_NOISE_DB="$(mktemp -t mira_smoke_transcribe_noise_XXXXXX).db"
+    "$MIRA" scan "$TRANSCRIBE_NOISE_DIR" --db "$TRANSCRIBE_NOISE_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$TRANSCRIBE_NOISE_DB" >/dev/null 2>&1
+    MACHINE_TRANSCRIBE_NOISE=$(sqlite3 "$TRANSCRIBE_NOISE_DB" "SELECT machine FROM files")
+    assert_contains "notes still run on noise (unlike key/chords, no flatness gate)" \
+        "$MACHINE_TRANSCRIBE_NOISE" "\"notes\":["
+    rm -rf "$TRANSCRIBE_NOISE_DIR"
+    rm -f "$TRANSCRIBE_NOISE_DB" "$TRANSCRIBE_NOISE_DB-wal" "$TRANSCRIBE_NOISE_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping transcription-not-gated-by-flatness test"
+fi
+
+echo
 echo "== test: MIR is skipped for one-shots (tempo on a 0.5s clip is meaningless) =="
 if command -v ffmpeg >/dev/null 2>&1; then
     ONESHOT_DIR=$(mktemp -d)

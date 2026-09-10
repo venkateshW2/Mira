@@ -6,6 +6,7 @@
 #include "analyze/Key.h"
 #include "analyze/Mir.h"
 #include "analyze/Router.h"
+#include "analyze/Transcription.h"
 #include "db/Database.h"
 #include "scan/Scanner.h"
 
@@ -245,6 +246,17 @@ int runAnalyze(const std::vector<std::string>& args) {
                     auto chords = mira::detectChords(c.audio.mono, c.audio.sampleRate);
                     if (chords.ok) machine << ",\"chords\":" << mira::toJson(chords);
                 }
+
+                // Note transcription (PRD §5, §12b) — "a first-class feature, not a MIR
+                // afterthought." Shares the rhythm/key/chords one_shot gate above (a
+                // 300ms clip has nothing to transcribe) but, unlike key/chords, is NOT
+                // additionally gated on harmonic content — it's useful on percussive
+                // material too, and a transcription that finds few or no notes there is
+                // itself informative, not "confident nonsense".
+                auto transcription = mira::transcribe(c.audio.mono, c.audio.sampleRate,
+                                                        MIRA_BASIC_PITCH_MODEL);
+                if (transcription.ok)
+                    machine << ",\"notes\":" << mira::toJson(transcription);
             }
 
             machine << "}";

@@ -10,6 +10,7 @@ set(BEAT_THIS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/beat_this_cpp)
 set(LIBKEYFINDER_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/libkeyfinder)
 set(VAMP_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/vamp-plugin-sdk)
 set(NNLS_CHROMA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/nnls-chroma)
+set(BASICPITCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/basicpitch.cpp)
 
 if(NOT EXISTS ${SQLITE_ROOT}/sqlite3.c)
   message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE_ROOT} — run scripts/fetch-vendor.sh")
@@ -35,6 +36,9 @@ if(NOT EXISTS ${VAMP_SDK_ROOT}/CMakeLists.txt)
 endif()
 if(NOT EXISTS ${NNLS_CHROMA_ROOT}/Chordino.cpp)
   message(FATAL_ERROR "nnls-chroma not found at ${NNLS_CHROMA_ROOT} — run scripts/fetch-vendor.sh")
+endif()
+if(NOT EXISTS ${BASICPITCH_ROOT}/ort-model/model.onnx)
+  message(FATAL_ERROR "basicpitch.cpp not found at ${BASICPITCH_ROOT} — run scripts/fetch-vendor.sh")
 endif()
 
 find_package(PkgConfig REQUIRED)
@@ -126,6 +130,9 @@ add_executable(mira
   mira/analyze/Mir.cpp
   mira/analyze/Key.cpp
   mira/analyze/Chords.cpp
+  mira/analyze/BasicPitchOrt.cpp
+  mira/analyze/BasicPitchNotes.cpp
+  mira/analyze/Transcription.cpp
 )
 
 target_include_directories(mira PRIVATE
@@ -133,10 +140,12 @@ target_include_directories(mira PRIVATE
   ${BEAT_THIS_ROOT}/Source
   ${LIBKEYFINDER_ROOT}/src
   ${NNLS_CHROMA_ROOT}
+  ${ONNXRUNTIME_ROOT}/include
 )
 
 target_compile_definitions(mira PRIVATE
   MIRA_BEAT_THIS_MODEL="${BEAT_THIS_ROOT}/onnx/beat_this.onnx"
+  MIRA_BASIC_PITCH_MODEL="${BASICPITCH_ROOT}/ort-model/model.onnx"
 )
 
 target_link_libraries(mira PRIVATE

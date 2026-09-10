@@ -108,7 +108,15 @@ clone_if_missing nnls-chroma https://github.com/c4dm/nnls-chroma.git
 # check whether upstream has fixed it.
 clone_if_missing vamp-plugin-sdk https://github.com/c4dm/vamp-plugin-sdk.git
 
-# Phase 1 — storage (PRD §6, §7). Not started yet.
-# clone_if_missing SQLiteCpp https://github.com/SRombauts/SQLiteCpp.git
+clone_if_missing SQLiteCpp https://github.com/SRombauts/SQLiteCpp.git
+
+# Phase 1 — note transcription (PRD §5, §12b). The nmp.onnx model (230,444 bytes,
+# matching PRD §12b exactly) is committed in-tree in this repo at ort-model/model.onnx,
+# not fetched separately. src/mira/analyze/BasicPitch{Ort,Notes}.cpp and Transcription.cpp
+# adapt this repo's src/ort_inference.cpp and src/midi_notes.cpp (MIT) — see those files'
+# header comments for exactly what changed and why (mostly: load the model from a file
+# path instead of an embedded byte array, and drop the MIDI-serialization half, which
+# needs libremidi, since mira stores note events directly).
+clone_if_missing basicpitch.cpp https://github.com/sevagh/basicpitch.cpp.git
 
 echo "== done =="

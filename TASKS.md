@@ -144,7 +144,24 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       its own `unique_ptr` deleted the inner ones twice. Fixed by only owning the
       outermost adapter. Verified on flamenco.wav: 10 chord segments (Cm, F/G, C#, C,
       Eb7/G...), gated off correctly for white noise same as key detection
-- [ ] Basic Pitch (`nmp.onnx`) note transcription via ONNX Runtime (§5, §12b)
+- [x] Basic Pitch (`nmp.onnx`) note transcription via ONNX Runtime (§5, §12b) —
+      `src/mira/analyze/Transcription.cpp` + `BasicPitchOrt.cpp` + `BasicPitchNotes.cpp`.
+      Confirmed the exact 230,444-byte model PRD §12b names is committed in-tree in
+      github.com/sevagh/basicpitch.cpp, not fetched separately. Unlike `beat_this_cpp`
+      and `nnls-chroma`, this one's note-*decoding* logic (peak-picking, the "melodia
+      trick", Gaussian-windowed pitch-bend estimation) was adapted rather than built
+      unmodified — reimplementing Basic Pitch's published post-processing algorithm from
+      scratch here would have carried real correctness risk with no easy way to verify
+      against ground truth, so it's ported from that repo's `midi_notes.cpp` (MIT)
+      instead, trimmed to note-event output (the upstream file's MIDI-serialization half
+      needs `libremidi`, which mira doesn't vendor — not needed since notes are stored
+      directly in `machine`, not as MIDI files). Also had to resample to the model's
+      fixed 22050 Hz internally (via Essentia's `Resample`, already linked) since
+      `AudioLoader` preserves native sample rate. Gated the same as rhythm (skipped for
+      one-shots) but **not** on harmonic content like key/chords — deliberately, since a
+      sparse/empty transcription on noisy material is itself informative. Verified on
+      flamenco.wav: 80 notes, MIDI pitches in a sane guitar range; white noise still
+      gets a (near-empty, 1-note) transcription rather than being gated out entirely
 - [x] Camelot/Open Key notation lookup table (§12b) — two independent direct lookups
       from libKeyFinder's 24-key enum via the circle of fifths, rather than converting
       one system to the other by a numeric offset formula. This sidesteps the exact
