@@ -21,20 +21,25 @@ AlgoPtr create(const std::string& name) {
 }
 
 constexpr essentia::Real kHarmonicityMinPitchConfidence = 0.5f;
+constexpr int kNumMfccCoefficients = 13;
+constexpr int kChromaSize = 12; // HPCP bins, one per pitch class
 
 struct SpectralAverages {
     double centroidHz = 0.0;
     double flatness = 0.0;
     double harmonicity = 0.0;
     int harmonicityFrameCount = 0;
+    std::vector<double> mfcc;    // size kNumMfccCoefficients, empty if unmeasurable
+    std::vector<double> chroma;  // size kChromaSize, empty if unmeasurable
 };
 
 // ONE Windowing(hann) -> Spectrum pass per frame, shared by every spectral descriptor
-// below (Centroid, Flatness, and the PitchYinFFT -> SpectralPeaks -> HarmonicPeaks ->
-// Inharmonicity chain for harmonicity) — these used to be three separate frame loops,
-// each redoing Windowing+Spectrum from scratch over the same audio. Found by comparing
-// against a hand-written analyser (single-STFT-pass design) that does this correctly;
-// this was silently tripling mira's own spectral analysis cost for no reason.
+// below (Centroid, Flatness, MFCC, the SpectralPeaks -> HPCP chroma chain, and the
+// PitchYinFFT -> SpectralPeaks -> HarmonicPeaks -> Inharmonicity chain for harmonicity)
+// — these used to be three separate frame loops, each redoing Windowing+Spectrum from
+// scratch over the same audio. Found by comparing against a hand-written analyser
+// (single-STFT-pass design) that does this correctly; this was silently tripling mira's
+// own spectral analysis cost for no reason.
 SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sampleRate) {
     SpectralAverages result;
     if (static_cast<int>(mono.size()) < kFrameSize) return result;
@@ -46,12 +51,23 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     AlgoPtr centroidAlgo = create("Centroid");
     centroidAlgo->configure("range", essentia::Parameter(sampleRate / 2.0));
     AlgoPtr flatnessAlgo = create("Flatness");
+
+    AlgoPtr mfccAlgo = create("MFCC");
+    // highFrequencyBound must stay below Nyquist — matters for low-sample-rate stems.
+    double mfccHighFreq = std::min(11000.0, sampleRate / 2.0 - 1.0);
+    mfccAlgo->configure("sampleRate", static_cast<essentia::Real>(sampleRate),
+                         "inputSize", kFrameSize / 2 + 1, "numberCoefficients", kNumMfccCoefficients,
+                         "highFrequencyBound", mfccHighFreq);
+
     AlgoPtr pitchYin = create("PitchYinFFT");
     pitchYin->configure("frameSize", kFrameSize, "sampleRate", static_cast<essentia::Real>(sampleRate));
     AlgoPtr spectralPeaks = create("SpectralPeaks");
     spectralPeaks->configure("sampleRate", static_cast<essentia::Real>(sampleRate));
     AlgoPtr harmonicPeaks = create("HarmonicPeaks");
     AlgoPtr inharmonicity = create("Inharmonicity");
+
+    AlgoPtr hpcp = create("HPCP");
+    hpcp->configure("sampleRate", static_cast<essentia::Real>(sampleRate), "size", kChromaSize);
 
     std::vector<essentia::Real> frame(kFrameSize), windowed, spec;
     windowing->input("frame").set(frame);
@@ -67,6 +83,11 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     flatnessAlgo->input("array").set(spec);
     flatnessAlgo->output("flatness").set(flatnessValue);
 
+    std::vector<essentia::Real> mfccBands, mfccCoeffs;
+    mfccAlgo->input("spectrum").set(spec);
+    mfccAlgo->output("bands").set(mfccBands);
+    mfccAlgo->output("mfcc").set(mfccCoeffs);
+
     essentia::Real pitch = 0, pitchConfidence = 0;
     pitchYin->input("spectrum").set(spec);
     pitchYin->output("pitch").set(pitch);
@@ -76,6 +97,11 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     spectralPeaks->input("spectrum").set(spec);
     spectralPeaks->output("frequencies").set(peakFreqs);
     spectralPeaks->output("magnitudes").set(peakMags);
+
+    std::vector<essentia::Real> chromaValues;
+    hpcp->input("frequencies").set(peakFreqs);
+    hpcp->input("magnitudes").set(peakMags);
+    hpcp->output("hpcp").set(chromaValues);
 
     std::vector<essentia::Real> harmFreqs, harmMags;
     harmonicPeaks->input("frequencies").set(peakFreqs);
@@ -91,6 +117,9 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
 
     double centroidSum = 0.0, flatnessSum = 0.0, harmonicitySum = 0.0;
     int frameCount = 0, harmonicityCount = 0;
+    std::vector<double> mfccSum(kNumMfccCoefficients, 0.0);
+    std::vector<double> chromaSum(kChromaSize, 0.0);
+    int mfccCount = 0, chromaCount = 0;
 
     for (size_t start = 0; start + kFrameSize <= mono.size(); start += kHopSize) {
         std::copy(mono.begin() + start, mono.begin() + start + kFrameSize, frame.begin());
@@ -103,11 +132,36 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
         flatnessSum += flatnessValue;
         ++frameCount;
 
-        pitchYin->compute();
-        if (pitchConfidence < kHarmonicityMinPitchConfidence) continue;
+        try {
+            mfccAlgo->compute();
+            if (static_cast<int>(mfccCoeffs.size()) == kNumMfccCoefficients) {
+                for (int i = 0; i < kNumMfccCoefficients; ++i) mfccSum[i] += mfccCoeffs[i];
+                ++mfccCount;
+            }
+        } catch (const essentia::EssentiaException&) {
+            // e.g. a near-silent frame producing an unstable log — skip it, not the file
+        }
+
+        // SpectralPeaks -> HPCP: unconditional per frame (chroma is meaningful on
+        // polyphonic/noisy material too, unlike the monophonic-pitch harmonicity chain
+        // below), and shared with that chain so peaks aren't computed twice.
         try {
             spectralPeaks->compute();
-            if (peakFreqs.empty()) continue; // nothing for HarmonicPeaks to work with
+            if (!peakFreqs.empty()) {
+                hpcp->compute();
+                if (static_cast<int>(chromaValues.size()) == kChromaSize) {
+                    for (int i = 0; i < kChromaSize; ++i) chromaSum[i] += chromaValues[i];
+                    ++chromaCount;
+                }
+            }
+        } catch (const essentia::EssentiaException&) {
+            // skip this frame's chroma contribution
+        }
+
+        pitchYin->compute();
+        if (pitchConfidence < kHarmonicityMinPitchConfidence) continue;
+        if (peakFreqs.empty()) continue; // nothing for HarmonicPeaks to work with
+        try {
             harmonicPeaks->compute();
             inharmonicity->compute();
         } catch (const essentia::EssentiaException&) {
@@ -123,6 +177,14 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     }
     result.harmonicity = harmonicityCount > 0 ? harmonicitySum / harmonicityCount : 0.0;
     result.harmonicityFrameCount = harmonicityCount;
+    if (mfccCount > 0) {
+        result.mfcc.resize(kNumMfccCoefficients);
+        for (int i = 0; i < kNumMfccCoefficients; ++i) result.mfcc[i] = mfccSum[i] / mfccCount;
+    }
+    if (chromaCount > 0) {
+        result.chroma.resize(kChromaSize);
+        for (int i = 0; i < kChromaSize; ++i) result.chroma[i] = chromaSum[i] / chromaCount;
+    }
     return result;
 }
 } // namespace
@@ -184,12 +246,14 @@ DspDescriptors computeDspDescriptors(const std::vector<float>& left,
         d.crestFactor = crestValue;
     }
 
-    // --- Spectral centroid, flatness, and harmonicity — one shared frame loop ---
+    // --- Spectral centroid, flatness, harmonicity, MFCC, chroma — one shared frame loop ---
     auto spectral = computeSpectralAverages(mono, sampleRate);
     d.spectralCentroidHz = spectral.centroidHz;
     d.spectralFlatness = spectral.flatness;
     d.harmonicity = spectral.harmonicity;
     d.harmonicityFrameCount = spectral.harmonicityFrameCount;
+    d.mfcc = spectral.mfcc;
+    d.chroma = spectral.chroma;
 
     // --- Attack time (whole-file envelope; most meaningful on one-shots) ---
     {
@@ -218,6 +282,19 @@ DspDescriptors computeDspDescriptors(const std::vector<float>& left,
     return d;
 }
 
+namespace {
+std::string arrayJson(const std::vector<double>& values) {
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << values[i];
+    }
+    oss << "]";
+    return oss.str();
+}
+} // namespace
+
 std::string toJson(const DspDescriptors& d) {
     std::ostringstream oss;
     oss << "{\"integrated_loudness_lufs\":" << d.integratedLoudnessLufs
@@ -229,6 +306,8 @@ std::string toJson(const DspDescriptors& d) {
         << ",\"attack_time_seconds\":" << d.attackTimeSeconds
         << ",\"harmonicity\":" << d.harmonicity
         << ",\"harmonicity_frame_count\":" << d.harmonicityFrameCount
+        << ",\"mfcc\":" << arrayJson(d.mfcc)
+        << ",\"chroma\":" << arrayJson(d.chroma)
         << "}";
     return oss.str();
 }

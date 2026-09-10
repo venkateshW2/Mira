@@ -142,6 +142,18 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       (`truePeak->configure(..., "oversamplingFactor", 2)`), verified linear: 5543ms→2790ms.
       No smoke test asserts an exact `true_peak_db`, so the slightly coarser oversampling
       is safe. Combined effect on the same real song: DSP ~7.4s → ~4.7s
+- [x] MFCC (13 coefficients) and chroma/HPCP (12 bins), frame-averaged (§5, similarity) —
+      needed for the similarity-search goal (comparable to a "2D corpus" style timbre/
+      pitch-class comparison), and previously entirely missing despite being asked about
+      directly. Added inside the same shared `computeSpectralAverages()` pass rather than
+      a fourth frame loop: MFCC runs unconditionally per frame off the existing magnitude
+      spectrum; chroma reuses the same `SpectralPeaks` output the harmonicity chain
+      already computed, but unconditionally (not gated on pitch confidence — chroma is
+      meaningful on polyphonic/noisy material, unlike the monophonic harmonicity chain).
+      Verified correct, not just non-crashing: a 440Hz (A4) sine's chroma vector peaks
+      exactly at the A bin (index 0, matching HPCP's default `referenceFrequency`=440).
+      Cost: ~110ms added to DSP on the 5:08 real song (4.60s→4.71s) — near-free because it
+      shares the pass
 - [x] Onset rate (§5) — was already computed by the router; unchanged
 - [x] Attack time (§5) — whole-file `Envelope` → `LogAttackTime`. Only meaningful for a
       single dominant transient (one-shots); on a multi-onset track/loop the number is
@@ -185,6 +197,30 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
       `Danceability` (0.13s) stays unconditional — cheap and independent of which tempo
       estimator runs. `mira inspect`'s disagreement warning only fires when
       `--recheck-tempo` was used (bpm_ratio stays 0 otherwise, by design, not a bug)
+- [x] Tempo stability metric (§5, §14.1) — real-file testing on a 14:20 through-composed
+      score mix ("multiple tempos and stuff") showed exactly the failure mode a single
+      whole-file BPM can't represent: `beat_this_bpm` 105.4 (a defensible average) while
+      manually windowing the beat array in 60s chunks showed the piece actually running
+      60→175 BPM across sections. Added `computeTempoStability()` in `Mir.cpp`: local BPM
+      in 60s windows over `beatThisBeats`, then stddev/range across those windows, stored
+      as `tempo_stability_bpm_stddev`/`tempo_range_bpm`/`tempo_window_count`/
+      `tempo_unstable` (first-pass, unmeasured threshold: stddev > 10 BPM). Requires ≥3
+      windows (~3 min of material) before judging anything — 2 windows on a short cue
+      produced a spurious instability flag in testing (noise from beat-tracking edge
+      effects, not real drift), so `tempo_window_count` stays 0 below that, meaning
+      "insufficient duration to judge," not "stable." Verified on the real score mix:
+      stddev 29.25 BPM, range 114.56 BPM over 14 windows, correctly flagged
+- [x] Fixed a real `mira inspect` display bug found while verifying the above: numeric
+      rhythm fields (`essentia_bpm`, `bpm_ratio`) are always serialized in `machine` JSON
+      (default 0.0 when unmeasured, e.g. `--recheck-tempo` wasn't used), so
+      `json_extract`'s "does this field exist" is always true even at 0 — the old
+      presence check (`if (auto x = jsonExtractDouble(...))`, true for any non-null
+      value including 0.0) showed a fabricated "essentia: 0.00 BPM" and a spurious
+      "⚠ estimators disagree (ratio 0.000)" on every file analyzed *without*
+      `--recheck-tempo`. Fixed by gating on `*value > 0.0` (a real BPM), not just
+      optional-has-value — caught by inspecting a real file analyzed both ways back to
+      back, not by the smoke suite (which always paired `--recheck-tempo` with the
+      `inspect` test, masking this)
 - [x] `BeatsLoudness`, `Danceability` (§5)
 - [x] Full beat array stored, not just the BPM scalar (§6) — `essentia_beat_ticks`,
       `beat_this_beats`, `beat_this_downbeats` all stored in full in `machine`

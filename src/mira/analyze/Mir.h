@@ -21,6 +21,24 @@ struct RhythmResult {
     std::vector<double> beatThisBeats;      // seconds
     std::vector<double> beatThisDownbeats;  // seconds
 
+    // Tempo stability — a single whole-file BPM (beatThisBpm above) is a defensible
+    // average but a bad *summary* for through-composed material with real tempo changes
+    // (a long score mix going 60 BPM -> 175 BPM is not "~105 BPM"). Computed from
+    // beatThisBeats by taking local BPM in fixed windows and measuring how much those
+    // windows disagree with each other — the same "store the disagreement, don't resolve
+    // it" spirit as bpmRatio above, just within one estimator instead of across two.
+    double tempoStabilityBpmStddev = 0.0; // stddev of per-window local BPM; 0 if unmeasured
+    double tempoRangeBpm = 0.0;           // max window BPM - min window BPM; 0 if unmeasured
+    int tempoWindowCount = 0;             // number of windows with a measurable local BPM;
+                                           // stays 0 below 3 windows (~3 min of material) —
+                                           // 0 means "not enough beats/duration to judge
+                                           // stability," not "perfectly stable"; check this
+                                           // before trusting stddev==0
+    // First-pass, unmeasured threshold (PRD §12.6: "store everything, tune thresholds
+    // later") — stddev > kTempoUnstableStddevBpm (Mir.cpp). True means "don't treat
+    // beatThisBpm as representing the whole file," not "the estimate is wrong."
+    bool tempoUnstable = false;
+
     // RhythmExtractor2013 (multifeature) — only populated when runRecheck=true
     double essentiaBpm = 0.0;
     double essentiaConfidence = 0.0;

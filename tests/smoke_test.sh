@@ -475,6 +475,11 @@ if command -v ffmpeg >/dev/null 2>&1; then
     FRAME_COUNT=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dsp"]["harmonicity_frame_count"])')
     assert_eq "harmonicity was actually measured (frame_count>0)" "yes" \
         "$(awk -v n="$FRAME_COUNT" 'BEGIN{print (n>0) ? "yes" : "no"}')"
+    MFCC_LEN=$(echo "$MACHINE" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["dsp"]["mfcc"]))')
+    assert_eq "MFCC has 13 coefficients" "13" "$MFCC_LEN"
+    CHROMA_PEAK_BIN=$(echo "$MACHINE" | python3 -c 'import json,sys; c=json.load(sys.stdin)["dsp"]["chroma"]; print(c.index(max(c)))')
+    # 440Hz is exactly A4; HPCP's default referenceFrequency=440 puts A's pitch class at bin 0.
+    assert_eq "chroma peaks at the A bin for a 440Hz (A4) sine" "0" "$CHROMA_PEAK_BIN"
     rm -rf "$SINE_DIR"
 else
     echo "  SKIP: ffmpeg not found, skipping DSP descriptor sanity test"
@@ -517,6 +522,36 @@ assert_contains "shows transcribed note count" "$OUT" "Notes:"
 
 OUT_BY_ID=$("$MIRA" inspect 1 --db "$TESTDB" 2>&1)
 assert_eq "inspecting by numeric id matches inspecting by path" "$OUT" "$OUT_BY_ID"
+
+echo
+echo "== test: mira inspect doesn't fabricate an essentia/disagreement line when --recheck-tempo wasn't used =="
+# Regression test: essentia_bpm/bpm_ratio are always serialized (default 0.0 when
+# unmeasured), so a naive "does this JSON field exist" presence check is always true even
+# at 0 — this previously showed a fake "essentia: 0.00 BPM" and a spurious "estimators
+# disagree (ratio 0.000)" on every file analyzed without --recheck-tempo. Found by
+# inspecting a real file analyzed both ways back to back; the suite's other inspect test
+# above always paired --recheck-tempo with inspect, which masked this.
+NORECHECK_DB="$(mktemp -t mira_smoke_norecheck_XXXXXX).db"
+"$MIRA" scan "$ROOT/fixtures" --db "$NORECHECK_DB" >/dev/null 2>&1
+"$MIRA" analyze --db "$NORECHECK_DB" >/dev/null 2>&1
+OUT_NORECHECK=$("$MIRA" inspect "$ROOT/fixtures/flamenco.wav" --db "$NORECHECK_DB" 2>&1)
+assert_contains "still shows the default beat_this estimate" "$OUT_NORECHECK" "beat_this:"
+assert_contains "explains only one estimator ran" "$OUT_NORECHECK" "single estimator"
+NOT_CONTAINS=$(echo "$OUT_NORECHECK" | grep -c "essentia:" || true)
+assert_eq "does not show a fabricated essentia BPM line" "0" "$NOT_CONTAINS"
+NOT_CONTAINS_RATIO=$(echo "$OUT_NORECHECK" | grep -c "estimators disagree" || true)
+assert_eq "does not show a spurious disagreement warning" "0" "$NOT_CONTAINS_RATIO"
+rm -f "$NORECHECK_DB" "$NORECHECK_DB-wal" "$NORECHECK_DB-shm"
+
+echo
+echo "== test: tempo stability fields are well-formed (short fixture stays unmeasured) =="
+# flamenco.wav is only 14.2s — far under the 3-window (~3 min) minimum, so tempo
+# stability must stay unmeasured (window_count 0), not report a false "stable" (stddev 0).
+MACHINE_FLAMENCO=$(sqlite3 "$TESTDB" "SELECT machine FROM files WHERE path LIKE '%flamenco.wav'")
+TEMPO_WINDOWS=$(echo "$MACHINE_FLAMENCO" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rhythm"]["tempo_window_count"])')
+assert_eq "short file: tempo stability stays unmeasured (window_count 0)" "0" "$TEMPO_WINDOWS"
+NOT_CONTAINS_UNSTABLE=$(echo "$OUT" | grep -c "tempo is not stable" || true)
+assert_eq "short file: no tempo-instability warning shown" "0" "$NOT_CONTAINS_UNSTABLE"
 
 echo
 echo "== test: provenance (PRD §6) recorded per file =="

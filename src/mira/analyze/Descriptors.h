@@ -22,6 +22,12 @@ struct DspDescriptors {
     // all (e.g. a rhythm stem) — a true "unmeasured", not a claim of total inharmonicity.
     double harmonicity = 0.0;
     int harmonicityFrameCount = 0;
+    // Timbre (13-coefficient MFCC, mel filterbank -> DCT) and pitch-class content
+    // (12-bin HPCP/chroma), both frame-averaged over the same shared spectral pass as
+    // centroid/flatness/harmonicity above. For similarity search (PRD's 2D-corpus-style
+    // "sounds like" comparison), not for a human to read directly.
+    std::vector<double> mfcc;    // size 13 (numberCoefficients), or empty if unmeasurable
+    std::vector<double> chroma;  // size 12 (HPCP), or empty if unmeasurable
 };
 
 // Computes descriptors from already-loaded stereo channels at their native sample rate.

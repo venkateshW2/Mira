@@ -502,26 +502,46 @@ int runInspect(const std::vector<std::string>& args) {
             std::cout << "  attack time:   " << *attack << "s\n";
     }
 
-    auto beatThisBpm = db.jsonExtractDouble(r.machine, "$.rhythm.beat_this_bpm");
-    auto essentiaBpm = db.jsonExtractDouble(r.machine, "$.rhythm.essentia_bpm");
-    if (beatThisBpm || essentiaBpm) {
+    // These numeric rhythm fields are always serialized (default 0.0 when unmeasured,
+    // e.g. essentia_bpm/bpm_ratio when --recheck-tempo wasn't used), so json_extract
+    // always returns a present-but-possibly-0 value — an optional-has-value check alone
+    // would treat "unmeasured" as "measured as zero." Gate on a real BPM (>0) instead.
+    auto beatThisBpmRaw = db.jsonExtractDouble(r.machine, "$.rhythm.beat_this_bpm");
+    auto essentiaBpmRaw = db.jsonExtractDouble(r.machine, "$.rhythm.essentia_bpm");
+    bool haveBeatThis = beatThisBpmRaw && *beatThisBpmRaw > 0.0;
+    bool haveEssentia = essentiaBpmRaw && *essentiaBpmRaw > 0.0;
+    if (haveBeatThis || haveEssentia) {
         std::cout << "\nRhythm:\n";
-        if (beatThisBpm) std::cout << "  beat_this:     " << *beatThisBpm << " BPM (default estimator)\n";
-        if (essentiaBpm) {
-            std::cout << "  essentia:      " << *essentiaBpm << " BPM (--recheck-tempo)";
+        if (haveBeatThis) std::cout << "  beat_this:     " << *beatThisBpmRaw << " BPM (default estimator)\n";
+        if (haveEssentia) {
+            std::cout << "  essentia:      " << *essentiaBpmRaw << " BPM (--recheck-tempo)";
             if (auto conf = db.jsonExtractDouble(r.machine, "$.rhythm.essentia_confidence"))
                 std::cout << "  (confidence " << *conf << ")";
             std::cout << "\n";
         }
-        if (auto ratio = db.jsonExtractDouble(r.machine, "$.rhythm.bpm_ratio")) {
-            if (std::abs(*ratio - 1.0) > 0.05) {
-                std::cout << std::setprecision(3)
-                           << "  ⚠ estimators disagree (ratio " << *ratio
-                           << ") — treat both with caution (PRD §14.1)\n"
-                           << std::setprecision(2);
+        if (haveBeatThis && haveEssentia) {
+            if (auto ratio = db.jsonExtractDouble(r.machine, "$.rhythm.bpm_ratio")) {
+                if (std::abs(*ratio - 1.0) > 0.05) {
+                    std::cout << std::setprecision(3)
+                               << "  ⚠ estimators disagree (ratio " << *ratio
+                               << ") — treat both with caution (PRD §14.1)\n"
+                               << std::setprecision(2);
+                }
             }
-        } else if (!essentiaBpm && beatThisBpm) {
+        } else if (haveBeatThis) {
             std::cout << "  (single estimator — pass --recheck-tempo to compare against Essentia)\n";
+        }
+        auto tempoWindows = db.jsonExtractDouble(r.machine, "$.rhythm.tempo_window_count");
+        if (tempoWindows && *tempoWindows >= 3) {
+            auto unstable = db.jsonExtractDouble(r.machine, "$.rhythm.tempo_unstable");
+            if (unstable && *unstable != 0.0) {
+                auto stddev = db.jsonExtractDouble(r.machine, "$.rhythm.tempo_stability_bpm_stddev");
+                auto range = db.jsonExtractDouble(r.machine, "$.rhythm.tempo_range_bpm");
+                std::cout << "  ⚠ tempo is not stable across the file (stddev "
+                           << (stddev ? *stddev : 0.0) << " BPM, range " << (range ? *range : 0.0)
+                           << " BPM over " << *tempoWindows
+                           << " windows) — the single BPM above is an average, not a summary\n";
+            }
         }
         if (auto dance = db.jsonExtractDouble(r.machine, "$.rhythm.danceability"))
             std::cout << "  danceability:  " << *dance << "\n";
@@ -541,7 +561,7 @@ int runInspect(const std::vector<std::string>& args) {
             std::cout << ")";
         }
         std::cout << "\n";
-    } else if (essentiaBpm) {
+    } else if (haveBeatThis || haveEssentia) {
         std::cout << "\nKey:    not analyzed (gated on harmonic content — likely noisy/non-tonal)\n";
     }
 
