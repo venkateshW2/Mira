@@ -49,11 +49,14 @@ void printUsage() {
         "  mira scan <dir>... [--db <path>] [--follow-symlinks] [--as stem]\n"
         "        index files, no analysis; --as stem declares them delivery stems (§12.3)\n"
         "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
-        "               [--chords] [--transcribe] [--verbose]\n"
+        "               [--chords] [--transcribe] [--recheck-tempo] [--verbose]\n"
         "        content-type router (one_shot/loop/track/stem) + DSP + rhythm + key by\n"
-        "        default; --chords and --transcribe are opt-in (15.0s/3.7s on a 5:08 song,\n"
-        "        vs 0.4s for key alone — see TASKS.md); --content-type requires --force;\n"
-        "        --verbose prints per-stage timing to stderr, per file\n"
+        "        default; rhythm defaults to beat_this_cpp only (the more accurate of the\n"
+        "        two tempo estimators); --recheck-tempo also runs Essentia's\n"
+        "        RhythmExtractor2013 for comparison (bpm_ratio); --chords and --transcribe\n"
+        "        are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone — see\n"
+        "        TASKS.md); --content-type requires --force; --verbose prints per-stage\n"
+        "        timing to stderr, per file\n"
         "  mira inspect <file|id> [--db <path>]\n"
         "        human-readable report; flags low-confidence tempo/key, active_ratio\n"
         "\n"
@@ -180,9 +183,15 @@ int runAnalyze(const std::vector<std::string>& args) {
     // measured at 15.0s and 3.7s respectively on a 5:08 real song (39% and 10% of a
     // 38.4s total analyze time), well past what "BPM/key/loudness across a drive" (the
     // Phase 1 headline goal, PRD §9) needs. Rhythm and key stay on by default — they're
-    // core to that goal and comparatively cheap (11.8s and 0.4s on the same file).
+    // core to that goal and comparatively cheap (9.3s and 0.4s on the same file).
+    // Rhythm's default estimator is beat_this_cpp only — measured more accurate than
+    // Essentia's RhythmExtractor2013 (only one that gives downbeats; better on syncopated
+    // material) and, on the same song, running it costs 9.2s vs Essentia's 2.7s, so
+    // Essentia is an opt-in recheck (--recheck-tempo) for comparing the two, not a
+    // default-on second opinion.
     bool runChords = false;
     bool runTranscription = false;
+    bool runRecheckTempo = false;
     std::optional<std::string> contentTypeFilter;
     std::optional<int> limit;
 
@@ -198,6 +207,8 @@ int runAnalyze(const std::vector<std::string>& args) {
             runChords = true;
         } else if (arg == "--transcribe") {
             runTranscription = true;
+        } else if (arg == "--recheck-tempo") {
+            runRecheckTempo = true;
         } else if (arg == "--content-type" && i + 1 < args.size()) {
             contentTypeFilter = args[++i];
         } else if (arg == "--limit" && i + 1 < args.size()) {
@@ -350,7 +361,8 @@ int runAnalyze(const std::vector<std::string>& args) {
             // MIR (PRD §5B) — loops/tracks/stems only. Tempo on a 300ms one-shot is
             // "wasted work [producing] confident nonsense" (PRD §5).
             if (finalContentType != "one_shot") {
-                auto rhythm = mira::analyzeRhythm(*mono, c.audio.sampleRate, MIRA_BEAT_THIS_MODEL);
+                auto rhythm = mira::analyzeRhythm(*mono, c.audio.sampleRate, MIRA_BEAT_THIS_MODEL,
+                                                   runRecheckTempo);
                 if (rhythm.ok) machine << ",\"rhythm\":" << mira::toJson(rhythm);
                 timer.mark("rhythm (essentia + beat_this_cpp)");
 
@@ -490,14 +502,17 @@ int runInspect(const std::vector<std::string>& args) {
             std::cout << "  attack time:   " << *attack << "s\n";
     }
 
+    auto beatThisBpm = db.jsonExtractDouble(r.machine, "$.rhythm.beat_this_bpm");
     auto essentiaBpm = db.jsonExtractDouble(r.machine, "$.rhythm.essentia_bpm");
-    if (essentiaBpm) {
-        std::cout << "\nRhythm:\n  essentia:      " << *essentiaBpm << " BPM";
-        if (auto conf = db.jsonExtractDouble(r.machine, "$.rhythm.essentia_confidence"))
-            std::cout << "  (confidence " << *conf << ")";
-        std::cout << "\n";
-        if (auto beatThisBpm = db.jsonExtractDouble(r.machine, "$.rhythm.beat_this_bpm"))
-            std::cout << "  beat_this:     " << *beatThisBpm << " BPM\n";
+    if (beatThisBpm || essentiaBpm) {
+        std::cout << "\nRhythm:\n";
+        if (beatThisBpm) std::cout << "  beat_this:     " << *beatThisBpm << " BPM (default estimator)\n";
+        if (essentiaBpm) {
+            std::cout << "  essentia:      " << *essentiaBpm << " BPM (--recheck-tempo)";
+            if (auto conf = db.jsonExtractDouble(r.machine, "$.rhythm.essentia_confidence"))
+                std::cout << "  (confidence " << *conf << ")";
+            std::cout << "\n";
+        }
         if (auto ratio = db.jsonExtractDouble(r.machine, "$.rhythm.bpm_ratio")) {
             if (std::abs(*ratio - 1.0) > 0.05) {
                 std::cout << std::setprecision(3)
@@ -505,6 +520,8 @@ int runInspect(const std::vector<std::string>& args) {
                            << ") — treat both with caution (PRD §14.1)\n"
                            << std::setprecision(2);
             }
+        } else if (!essentiaBpm && beatThisBpm) {
+            std::cout << "  (single estimator — pass --recheck-tempo to compare against Essentia)\n";
         }
         if (auto dance = db.jsonExtractDouble(r.machine, "$.rhythm.danceability"))
             std::cout << "  danceability:  " << *dance << "\n";

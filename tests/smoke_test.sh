@@ -142,9 +142,10 @@ rm -f "$APPLEDOUBLE_DB" "$APPLEDOUBLE_DB-wal" "$APPLEDOUBLE_DB-shm"
 echo
 echo "== test: analyze routes a file by duration (flamenco.wav -> loop, 14.2s) =="
 "$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1
-# --chords --transcribe: chords/transcription are opt-in now (TASKS.md), but this
-# $TESTDB/$MACHINE is reused by the key/chords/notes tests immediately below.
-OUT=$("$MIRA" analyze --db "$TESTDB" --chords --transcribe 2>&1)
+# --chords --transcribe --recheck-tempo: chords/transcription/essentia-tempo-recheck are
+# all opt-in now (TASKS.md), but this $TESTDB/$MACHINE is reused by the key/chords/notes
+# tests immediately below, which need essentia's rhythm fields present too.
+OUT=$("$MIRA" analyze --db "$TESTDB" --chords --transcribe --recheck-tempo 2>&1)
 assert_contains "reports 1 loop routed" "$OUT" "1 loop"
 CONTENT_TYPE=$(sqlite3 "$TESTDB" "SELECT content_type FROM files WHERE path LIKE '%flamenco.wav'")
 assert_eq "content_type is loop" "loop" "$CONTENT_TYPE"
@@ -501,7 +502,7 @@ echo
 echo "== test: mira inspect =="
 rm -f "$TESTDB" "$TESTDB-wal" "$TESTDB-shm"
 "$MIRA" scan "$ROOT/fixtures" --db "$TESTDB" >/dev/null 2>&1
-"$MIRA" analyze --db "$TESTDB" --chords --transcribe >/dev/null 2>&1
+"$MIRA" analyze --db "$TESTDB" --chords --transcribe --recheck-tempo >/dev/null 2>&1
 OUT=$("$MIRA" inspect "$ROOT/fixtures/flamenco.wav" --db "$TESTDB" 2>&1)
 CODE=$?
 assert_eq "exit code" "0" "$CODE"

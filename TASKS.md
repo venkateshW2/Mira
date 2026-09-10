@@ -168,6 +168,23 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 - [x] Dual-estimator disagreement stored as the tempo confidence signal (§5, §14.1) —
       stored as `bpm_ratio` (essentia/beat_this); resolving *what* counts as agreement
       vs. a real disagreement is explicitly deferred to a later phase (§12.6)
+- [x] Revised: both estimators no longer run by default (§5, §14.1 amended) — prompted by
+      comparing mira's rhythm stage against the user's own sampler project (a
+      hand-written, Goertzel/RMS-flux based key+tempo detector that runs in milliseconds
+      by design) and a question of which estimator is actually worth its cost. Profiled
+      each in isolation on the 5:08 real song: `beat_this_cpp` 9.2s vs
+      `RhythmExtractor2013` 2.7s (+ `BeatsLoudness`) — `beat_this_cpp` is ~3.4x more
+      expensive but also the more accurate one (the only estimator that gives downbeats;
+      a neural model trained specifically for beat/downbeat tracking, generally stronger
+      than a classical multifeature extractor on syncopated/complex material). Made
+      `beat_this_cpp` the default, primary estimator; `RhythmExtractor2013` (+
+      `BeatsLoudness`, + `bpm_ratio`) is now opt-in via `--recheck-tempo`, for comparison
+      against `beat_this_cpp` rather than a default-on second opinion — same
+      "store-everything, don't resolve automatically" spirit as before, just no longer
+      unconditional. Default rhythm-stage cost on the same song: ~12.1s → ~9.4s.
+      `Danceability` (0.13s) stays unconditional — cheap and independent of which tempo
+      estimator runs. `mira inspect`'s disagreement warning only fires when
+      `--recheck-tempo` was used (bpm_ratio stays 0 otherwise, by design, not a bug)
 - [x] `BeatsLoudness`, `Danceability` (§5)
 - [x] Full beat array stored, not just the BPM scalar (§6) — `essentia_beat_ticks`,
       `beat_this_beats`, `beat_this_downbeats` all stored in full in `machine`

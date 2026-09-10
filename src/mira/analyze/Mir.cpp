@@ -22,51 +22,24 @@ double meanBeatIntervalBpm(const std::vector<float>& beats) {
 } // namespace
 
 RhythmResult analyzeRhythm(const std::vector<float>& mono, int sampleRate,
-                            const std::string& beatThisModelPath) {
+                            const std::string& beatThisModelPath, bool runRecheck) {
     RhythmResult result;
     if (mono.empty() || sampleRate <= 0) return result;
 
     std::vector<essentia::Real> audio(mono.begin(), mono.end());
 
-    // --- Essentia: RhythmExtractor2013 (multifeature) ---
+    // --- beat_this_cpp: the default, primary tempo/beat/downbeat estimator ---
     try {
-        auto& factory = essentia::standard::AlgorithmFactory::instance();
-        std::unique_ptr<essentia::standard::Algorithm> rhythm(
-            factory.create("RhythmExtractor2013", "method", "multifeature"));
-
-        essentia::Real bpm = 0, confidence = 0;
-        std::vector<essentia::Real> ticks, estimates, bpmIntervals;
-        rhythm->input("signal").set(audio);
-        rhythm->output("bpm").set(bpm);
-        rhythm->output("ticks").set(ticks);
-        rhythm->output("confidence").set(confidence);
-        rhythm->output("estimates").set(estimates);
-        rhythm->output("bpmIntervals").set(bpmIntervals);
-        rhythm->compute();
-
-        result.essentiaBpm = bpm;
-        result.essentiaConfidence = confidence;
-        result.essentiaBeatTicks.assign(ticks.begin(), ticks.end());
-
-        // --- BeatsLoudness, at the beats RhythmExtractor2013 just found ---
-        std::unique_ptr<essentia::standard::Algorithm> beatsLoudness(
-            factory.create("BeatsLoudness", "sampleRate", static_cast<essentia::Real>(sampleRate),
-                            "beats", ticks));
-        std::vector<essentia::Real> loudness;
-        std::vector<std::vector<essentia::Real>> loudnessBand;
-        beatsLoudness->input("signal").set(audio);
-        beatsLoudness->output("loudness").set(loudness);
-        beatsLoudness->output("loudnessBandRatio").set(loudnessBand);
-        beatsLoudness->compute();
-        if (!loudness.empty()) {
-            result.beatsLoudnessMean =
-                std::accumulate(loudness.begin(), loudness.end(), 0.0) / loudness.size();
-        }
-    } catch (const essentia::EssentiaException&) {
-        // essentia fields stay at 0 — beat_this_cpp's estimate below can still stand alone.
+        BeatThis::BeatThis beatThis(beatThisModelPath, /*use_dbn=*/true);
+        auto beatResult = beatThis.process_audio(mono, sampleRate, /*channels=*/1);
+        result.beatThisBeats.assign(beatResult.beats.begin(), beatResult.beats.end());
+        result.beatThisDownbeats.assign(beatResult.downbeats.begin(), beatResult.downbeats.end());
+        result.beatThisBpm = meanBeatIntervalBpm(beatResult.beats);
+    } catch (const std::exception&) {
+        // beatThis* fields stay at their defaults — essentia's recheck below can still stand alone.
     }
 
-    // --- Danceability ---
+    // --- Danceability (cheap, independent of which tempo estimator runs) ---
     try {
         auto& factory = essentia::standard::AlgorithmFactory::instance();
         std::unique_ptr<essentia::standard::Algorithm> danceability(
@@ -82,19 +55,52 @@ RhythmResult analyzeRhythm(const std::vector<float>& mono, int sampleRate,
         // stays 0
     }
 
-    // --- beat_this_cpp ---
-    try {
-        BeatThis::BeatThis beatThis(beatThisModelPath, /*use_dbn=*/true);
-        auto beatResult = beatThis.process_audio(mono, sampleRate, /*channels=*/1);
-        result.beatThisBeats.assign(beatResult.beats.begin(), beatResult.beats.end());
-        result.beatThisDownbeats.assign(beatResult.downbeats.begin(), beatResult.downbeats.end());
-        result.beatThisBpm = meanBeatIntervalBpm(beatResult.beats);
-    } catch (const std::exception&) {
-        // beatThis* fields stay at their defaults — essentia's estimate can still stand alone.
-    }
+    // --- Essentia: RhythmExtractor2013 (multifeature) — opt-in recheck/comparison only.
+    // Measured ~3.4x cheaper than beat_this_cpp (2.7s vs 9.2s on a 5:08 song) but also
+    // the less accurate of the two (no downbeats, weaker on syncopated material), so it's
+    // not worth its cost by default — only run it when a recheck against beat_this_cpp is
+    // explicitly requested.
+    if (runRecheck) {
+        try {
+            auto& factory = essentia::standard::AlgorithmFactory::instance();
+            std::unique_ptr<essentia::standard::Algorithm> rhythm(
+                factory.create("RhythmExtractor2013", "method", "multifeature"));
 
-    if (result.beatThisBpm > 0.0 && result.essentiaBpm > 0.0) {
-        result.bpmRatio = result.essentiaBpm / result.beatThisBpm;
+            essentia::Real bpm = 0, confidence = 0;
+            std::vector<essentia::Real> ticks, estimates, bpmIntervals;
+            rhythm->input("signal").set(audio);
+            rhythm->output("bpm").set(bpm);
+            rhythm->output("ticks").set(ticks);
+            rhythm->output("confidence").set(confidence);
+            rhythm->output("estimates").set(estimates);
+            rhythm->output("bpmIntervals").set(bpmIntervals);
+            rhythm->compute();
+
+            result.essentiaBpm = bpm;
+            result.essentiaConfidence = confidence;
+            result.essentiaBeatTicks.assign(ticks.begin(), ticks.end());
+
+            // --- BeatsLoudness, at the beats RhythmExtractor2013 just found ---
+            std::unique_ptr<essentia::standard::Algorithm> beatsLoudness(
+                factory.create("BeatsLoudness", "sampleRate", static_cast<essentia::Real>(sampleRate),
+                                "beats", ticks));
+            std::vector<essentia::Real> loudness;
+            std::vector<std::vector<essentia::Real>> loudnessBand;
+            beatsLoudness->input("signal").set(audio);
+            beatsLoudness->output("loudness").set(loudness);
+            beatsLoudness->output("loudnessBandRatio").set(loudnessBand);
+            beatsLoudness->compute();
+            if (!loudness.empty()) {
+                result.beatsLoudnessMean =
+                    std::accumulate(loudness.begin(), loudness.end(), 0.0) / loudness.size();
+            }
+        } catch (const essentia::EssentiaException&) {
+            // essentia recheck fields stay at 0 — beat_this_cpp's estimate above still stands.
+        }
+
+        if (result.beatThisBpm > 0.0 && result.essentiaBpm > 0.0) {
+            result.bpmRatio = result.essentiaBpm / result.beatThisBpm;
+        }
     }
 
     result.ok = (result.essentiaBpm > 0.0 || result.beatThisBpm > 0.0);
