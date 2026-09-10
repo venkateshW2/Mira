@@ -12,6 +12,7 @@
 #include "analyze/Instrument.h"
 #include "analyze/InstrumentLabels.h"
 #include "analyze/Danceability.h"
+#include "analyze/StemInstrument.h"
 #include "analyze/Router.h"
 #include "analyze/Transcription.h"
 #include "db/Database.h"
@@ -62,8 +63,11 @@ void printUsage() {
         "        content-type router (one_shot/loop/track/stem) + DSP + embedding +\n"
         "        content gate + moodtheme/instrument/danceability heads (Phase 2, PRD §2c)\n"
         "        + rhythm + key by default; classification heads gated on the content\n"
-        "        gate's is_music signal; rhythm defaults to beat_this_cpp only (the more\n"
-        "        accurate of the two tempo estimators); --recheck-tempo also runs\n"
+        "        gate's is_music signal; stems additionally get a second, isolated-audio-\n"
+        "        tuned instrument opinion (stem_instrument — mtg_jamendo_instrument's\n"
+        "        embedding is full-mix-trained and unreliable on isolated stems, TASKS.md);\n"
+        "        rhythm defaults to beat_this_cpp only (the more accurate of the two tempo\n"
+        "        estimators); --recheck-tempo also runs\n"
         "        Essentia's RhythmExtractor2013 for comparison (bpm_ratio); --chords and\n"
         "        --transcribe are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone\n"
         "        — see TASKS.md); --content-type requires --force; --verbose prints\n"
@@ -401,6 +405,19 @@ int runAnalyze(const std::vector<std::string>& args) {
                 auto danceabilityHead = mira::classifyDanceability(embedding.vector, MIRA_DANCEABILITY_MODEL);
                 if (danceabilityHead.ok) machine << ",\"danceability_head\":" << mira::toJson(danceabilityHead);
                 timer.mark("danceability head (model-based)");
+
+                // Stem-specific: mtg_jamendo_instrument's embedding is full-mix-trained
+                // and unreliable on isolated stems (real finding, TASKS.md) — this is a
+                // complementary signal for stems only, not a replacement, since the two
+                // can and do disagree. Operates on *mono directly, not the embedding
+                // (different model family, its own 16kHz/1s-window frontend).
+                if (finalContentType == "stem") {
+                    auto stemInstrument = mira::classifyStemInstrument(*mono, c.audio.sampleRate,
+                                                                        MIRA_IRMAS_INSTRUMENT_MODEL);
+                    if (stemInstrument.ok)
+                        machine << ",\"stem_instrument\":" << mira::toJson(stemInstrument);
+                    timer.mark("stem instrument (IRMAS/nii-yamagishilab)");
+                }
             }
 
             // MIR (PRD §5B) — loops/tracks/stems only. Tempo on a 300ms one-shot is
@@ -614,6 +631,27 @@ int runInspect(const std::vector<std::string>& args) {
     }
     if (auto danceableProb = db.jsonExtractDouble(r.machine, "$.danceability_head.danceable_probability")) {
         std::cout << "  danceable:     " << *danceableProb << " (model-based; see also DSP danceability below)\n";
+    }
+    if (auto windowCount = db.jsonExtractDouble(r.machine, "$.stem_instrument.window_count")) {
+        // IRMAS's own label order (write_metadata_irmas.py's label_dict) with display names.
+        static const std::pair<const char*, const char*> kStemInstrumentLabels[] = {
+            {"cel", "cello"}, {"cla", "clarinet"}, {"flu", "flute"}, {"gac", "acoustic guitar"},
+            {"gel", "electric guitar"}, {"org", "organ"}, {"pia", "piano"}, {"sax", "saxophone"},
+            {"tru", "trumpet"}, {"vio", "violin"}, {"voi", "voice"},
+        };
+        std::vector<std::pair<std::string, double>> scored;
+        for (const auto& [code, name] : kStemInstrumentLabels) {
+            std::string path = std::string("$.stem_instrument.scores.") + code;
+            if (auto score = db.jsonExtractDouble(r.machine, path)) scored.emplace_back(name, *score);
+        }
+        std::sort(scored.begin(), scored.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::cout << "  stem instrument (predominant-instrument model, " << *windowCount << " windows): ";
+        for (size_t i = 0; i < scored.size() && i < 3; ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << scored[i].first << " (" << scored[i].second << ")";
+        }
+        std::cout << "\n";
     }
 
     // These numeric rhythm fields are always serialized (default 0.0 when unmeasured,

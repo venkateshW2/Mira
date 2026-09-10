@@ -383,11 +383,29 @@ Exit: the Sononym-parity milestone.
       normalization via `pyloudnorm`, matching `IRMASDataset` exactly) surprisingly
       predicts **voice** (mean 0.79 across 14 windows) over guitar (mean 0.029, though its
       per-window max reaches 0.32). Graph correctness and real-world reliability are two
-      different questions — the first is settled, the second is not. Not yet wired into
-      the C++ pipeline pending that: needs either a wider real-file validation pass before
-      trusting it as a stem-specific instrument signal, or accepting it as one noisy input
-      among several (e.g. shown alongside `mtg_jamendo_instrument`'s guess rather than
-      replacing it) rather than a fixed answer
+      different questions — the first is settled, the second is not.
+- [x] Wired into the C++ pipeline as `src/mira/analyze/StemInstrument.cpp`, run only for
+      `content_type == 'stem'` (gated on `is_music` too), stored under a separate
+      `stem_instrument` JSON key alongside (not replacing) `instrument` — "store the
+      disagreement" (PRD §14.1), same as tempo. Before wiring it in, re-tested the
+      flamenco.wav "voice" surprise against a second, more representative real file — a
+      real 37-minute "STRINGS LOW" delivery stem — which the model got right and far more
+      decisively than `mtg_jamendo_instrument` did on the same file (cello 0.52 mean vs.
+      `mtg_jamendo_instrument`'s weaker 0.27/0.24 violin/cello split); read the flamenco.wav
+      result as likely specific to that short demo-loop fixture (unusual percussive
+      rasgueado guitar technique), not a systemic failure, and proceeded on that basis.
+      C++ implementation runs 1-second non-overlapping windows (matching training) over
+      the already active-region-restricted audio, mean-pooled. One approximation,
+      documented not hidden: the model's training used `pyloudnorm`'s exact ITU-R BS.1770
+      loudness measurement to normalize each window to -12 LUFS; Essentia's
+      `LoudnessEBUR128` only measures stereo, so a mono window is duplicated to L=R and
+      corrected by -10·log10(2) (≈3.01 dB) for the doubled channel power, rather than
+      implementing BS.1770 K-weighting from scratch in C++. Verified end-to-end on the
+      same real STRINGS LOW stem through the actual C++ pipeline: cello 0.53 mean (vs.
+      0.52 in the Python/pyloudnorm reference) — close enough to confirm the approximation
+      holds up in practice, not just in theory. Cost: 27.8s on this 933-window (37-minute,
+      active-region-restricted to ~15.5 min) stem — real but bounded by how much of a
+      stem is actually active, same as every other stage here
 - [x] `mtg_jamendo_moodtheme-discogs-effnet-1` head (56 classes) — already downloaded in
       Phase 0 spikes (§2c, §5). `src/mira/analyze/MoodTheme.cpp`, now built on the shared
       `runClassificationHead()` (see instrument entry above), gated only on ContentGate's
