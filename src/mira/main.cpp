@@ -2,6 +2,7 @@
 #include "analyze/AudioLoader.h"
 #include "analyze/Descriptors.h"
 #include "analyze/EssentiaEngine.h"
+#include "analyze/Key.h"
 #include "analyze/Mir.h"
 #include "analyze/Router.h"
 #include "db/Database.h"
@@ -232,6 +233,13 @@ int runAnalyze(const std::vector<std::string>& args) {
                 auto rhythm = mira::analyzeRhythm(c.audio.mono, c.audio.sampleRate,
                                                    MIRA_BEAT_THIS_MODEL);
                 if (rhythm.ok) machine << ",\"rhythm\":" << mira::toJson(rhythm);
+
+                // Key: gated on harmonic content (PRD §12b) — never run blindly on a
+                // rhythm stem or noise. See Key.h for the spectral-flatness proxy caveat.
+                if (mira::shouldRunKeyDetection(dsp.spectralFlatness)) {
+                    auto key = mira::detectKey(c.audio.mono, c.audio.sampleRate);
+                    machine << ",\"key\":" << mira::toJson(key);
+                }
             }
 
             machine << "}";

@@ -87,8 +87,11 @@ else
   echo "== sqlite-amalgamation already present, skipping =="
 fi
 
-# Phase 1 — key/chords (PRD §12b). Not started yet.
-# clone_if_missing libkeyfinder https://github.com/mixxxdj/libkeyfinder.git
+# Phase 1 — key (PRD §12b). Verified against a real fixture (spike/README.md-style
+# check, see TASKS.md) — gated on harmonic content via a spectral-flatness proxy.
+clone_if_missing libkeyfinder https://github.com/mixxxdj/libkeyfinder.git
+
+# Phase 1 — chords (PRD §12b). Not started yet.
 # clone_if_missing chordino https://github.com/ohollo/chord-extractor.git
 
 # Phase 1 — storage (PRD §6, §7). Not started yet.

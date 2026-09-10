@@ -138,6 +138,36 @@ assert_eq "full essentia beat array stored, not just the BPM scalar" "yes" \
     "$(awk -v n="$BEAT_TICK_COUNT" 'BEGIN{print (n>5) ? "yes" : "no"}')"
 
 echo
+echo "== test: key detection runs on tonal content and is gated off for noise =="
+assert_contains "flamenco.wav (tonal) got a key section" "$MACHINE" "\"key\":{"
+KEY_NAME=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"]["key"])')
+if [[ -n "$KEY_NAME" && "$KEY_NAME" != "silence" ]]; then
+    pass "key name is non-empty and not silence ($KEY_NAME)"
+else
+    fail "expected a real key name, got '$KEY_NAME'"
+fi
+CAMELOT=$(echo "$MACHINE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"]["camelot"])')
+assert_contains "camelot notation looks like N(A|B)" "1A 1B 2A 2B 3A 3B 4A 4B 5A 5B 6A 6B 7A 7B 8A 8B 9A 9B 10A 10B 11A 11B 12A 12B" "$CAMELOT"
+
+if command -v ffmpeg >/dev/null 2>&1; then
+    NOISE_DIR=$(mktemp -d)
+    ffmpeg -y -loglevel error -f lavfi -i "anoisesrc=color=white:sample_rate=44100:duration=5" "$NOISE_DIR/noise.wav"
+    NOISE_DB="$(mktemp -t mira_smoke_noise_XXXXXX).db"
+    "$MIRA" scan "$NOISE_DIR" --db "$NOISE_DB" >/dev/null 2>&1
+    "$MIRA" analyze --db "$NOISE_DB" >/dev/null 2>&1
+    MACHINE_NOISE=$(sqlite3 "$NOISE_DB" "SELECT machine FROM files")
+    if [[ "$MACHINE_NOISE" == *"\"key\":{"* ]]; then
+        fail "white noise should NOT get a key section (harmonic-content gate), but does"
+    else
+        pass "white noise correctly gated out of key detection"
+    fi
+    rm -rf "$NOISE_DIR"
+    rm -f "$NOISE_DB" "$NOISE_DB-wal" "$NOISE_DB-shm"
+else
+    echo "  SKIP: ffmpeg not found, skipping key-detection gating test"
+fi
+
+echo
 echo "== test: MIR is skipped for one-shots (tempo on a 0.5s clip is meaningless) =="
 if command -v ffmpeg >/dev/null 2>&1; then
     ONESHOT_DIR=$(mktemp -d)

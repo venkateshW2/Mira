@@ -7,6 +7,7 @@ set(SQLITECPP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/SQLiteCpp)
 set(ESSENTIA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/essentia)
 set(ONNXRUNTIME_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/onnxruntime)
 set(BEAT_THIS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/beat_this_cpp)
+set(LIBKEYFINDER_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/libkeyfinder)
 
 if(NOT EXISTS ${SQLITE_ROOT}/sqlite3.c)
   message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE_ROOT} — run scripts/fetch-vendor.sh")
@@ -23,6 +24,9 @@ if(NOT EXISTS ${BEAT_THIS_ROOT}/CMakeLists.txt)
 endif()
 if(NOT EXISTS ${BEAT_THIS_ROOT}/onnx/beat_this.onnx)
   message(FATAL_ERROR "beat_this.onnx not found — expected committed in-tree in beat_this_cpp's own repo")
+endif()
+if(NOT EXISTS ${LIBKEYFINDER_ROOT}/CMakeLists.txt)
+  message(FATAL_ERROR "libkeyfinder not found at ${LIBKEYFINDER_ROOT} — run scripts/fetch-vendor.sh")
 endif()
 
 find_package(PkgConfig REQUIRED)
@@ -65,6 +69,12 @@ set(USE_SYSTEM_ONNXRUNTIME ON CACHE BOOL "" FORCE)
 set(ONNXRUNTIME_ROOT ${ONNXRUNTIME_ROOT} CACHE PATH "" FORCE)
 add_subdirectory(${BEAT_THIS_ROOT} beat_this_cpp_build)
 
+# libKeyFinder (PRD §12b) — GPL-3.0, fine under mira's AGPL-3.0 (PRD header, §12 Q9).
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
+add_subdirectory(${LIBKEYFINDER_ROOT} libkeyfinder_build)
+
 add_executable(mira
   mira/main.cpp
   mira/db/Database.cpp
@@ -75,11 +85,13 @@ add_executable(mira
   mira/analyze/ActiveRegions.cpp
   mira/analyze/Descriptors.cpp
   mira/analyze/Mir.cpp
+  mira/analyze/Key.cpp
 )
 
 target_include_directories(mira PRIVATE
   ${ESSENTIA_ROOT}/src
   ${BEAT_THIS_ROOT}/Source
+  ${LIBKEYFINDER_ROOT}/src
 )
 
 target_compile_definitions(mira PRIVATE
@@ -91,6 +103,7 @@ target_link_libraries(mira PRIVATE
   mira_sqlite3
   ${ESSENTIA_LIB}
   beat_this_api
+  keyfinder
   PkgConfig::AVFORMAT
   PkgConfig::AVCODEC
   PkgConfig::SWRESAMPLE

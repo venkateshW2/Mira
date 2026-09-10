@@ -121,13 +121,22 @@ No neural yet. Exit: BPM/key/loudness across a drive, via `mira inspect`.
 - [x] `BeatsLoudness`, `Danceability` (§5)
 - [x] Full beat array stored, not just the BPM scalar (§6) — `essentia_beat_ticks`,
       `beat_this_beats`, `beat_this_downbeats` all stored in full in `machine`
-- [ ] Vendor + wire in `libKeyFinder` for key detection, gated on harmonic content
-      (§5, §12b)
+- [x] Vendor + wire in `libKeyFinder` for key detection, gated on harmonic content
+      (§5, §12b) — `src/mira/analyze/Key.cpp`. **Gate is a stand-in, not the real thing:**
+      PRD says "gated on harmonic content," but no harmonicity descriptor exists yet
+      (deferred in the DSP section above), so spectral flatness (already computed) is
+      used as a proxy — threshold 0.3, documented as an unmeasured first guess. Verified
+      the gate actually works: white noise (flatness 0.84) correctly gets no key section;
+      flamenco.wav (flatness 0.06) gets one ("F minor")
 - [ ] Vendor + wire in `Chordino`/`NNLS-Chroma` for chord sequence, gated on harmonic
       content (§5, §12b)
 - [ ] Basic Pitch (`nmp.onnx`) note transcription via ONNX Runtime (§5, §12b)
-- [ ] Camelot/Open Key notation lookup table (verify numeric offset against
-      openkeyscan-analyzer first) (§12b)
+- [x] Camelot/Open Key notation lookup table (§12b) — two independent direct lookups
+      from libKeyFinder's 24-key enum via the circle of fifths, rather than converting
+      one system to the other by a numeric offset formula. This sidesteps the exact
+      ambiguity the PRD flags ("sources disagree on the exact Camelot<->Open Key numeric
+      offset") instead of resolving it — worth the openkeyscan-analyzer cross-check the
+      PRD suggests before treating this as ground truth, which hasn't been done yet
 
 **CLI**
 - [ ] `mira analyze` — idempotent, resumable (skip unchanged sha256 + model version),
