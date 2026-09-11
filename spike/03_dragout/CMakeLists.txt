@@ -13,7 +13,17 @@ if(NOT EXISTS ${JUCE_ROOT}/CMakeLists.txt)
   message(FATAL_ERROR "JUCE not found at ${JUCE_ROOT} — run scripts/fetch-vendor.sh first")
 endif()
 
-add_subdirectory(${JUCE_ROOT} juce_build)
+# Guarded: TASKS.md Phase 5's real mira_ui target (src/mira_ui/CMakeLists.txt) also
+# add_subdirectory()s this same JUCE_ROOT, and both this spike and mira_ui are reachable
+# from the top-level CMakeLists.txt within a single configure — CMake errors if the same
+# source directory is added twice in one run. Whichever runs first (this spike, since the
+# top-level file lists spikes before src/) actually adds it; the guard makes the other a
+# no-op while still leaving the juce:: targets it already created visible. Standalone
+# builds of this spike (its own `cmake ..` invocation) are unaffected — the guard is
+# trivially true the first time either way.
+if(NOT TARGET juce::juce_core)
+  add_subdirectory(${JUCE_ROOT} juce_build)
+endif()
 
 juce_add_gui_app(spike_dragout
   PRODUCT_NAME "mira drag-out spike"

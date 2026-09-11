@@ -1042,13 +1042,51 @@ https://claude.ai/code/artifact/d590444f-6b62-4ff3-8b9e-8f7ecbae00f1 — palette
 starting point for the real `LookAndFeel`, not necessarily final; it's a static HTML
 illustration, not a spec.
 
-- [ ] JUCE UI shell: one native window, same process as analysis (§13)
-- [ ] `TableListBox` file list with `paintCell` only, at drive scale
+### Build order step 1 — done (2026-09-11)
+
+Promoted `spike/03_dragout` into a real target. Two structural things worth recording,
+since they weren't decided in the planning session above:
+
+- **`mira_core`** (new, `src/CMakeLists.txt`) — `Database.{h,cpp}` split into its own
+  static library (SQLiteCpp + sqlite-vec, nothing else) so `mira_ui` can read the real
+  library without linking the CLI's entire Essentia/ONNX/beat_this dependency graph. The
+  `mira` executable now links this too, instead of compiling `Database.cpp` directly —
+  one implementation, not two.
+- **JUCE add_subdirectory collision** — `spike/03_dragout` and `mira_ui` both need
+  `vendor/JUCE` add_subdirectory'd, and both are reachable from the top-level
+  `CMakeLists.txt` in one configure; CMake errors if the same source directory is added
+  twice in a single run. Fixed with an `if(NOT TARGET juce::juce_core)` guard in both —
+  whichever runs first (the spike, since spikes are listed before `src/`) actually adds
+  it, the other becomes a no-op. Standalone spike builds are unaffected.
+
+`src/mira_ui/` is a real `mira_ui` app target: one `DocumentWindow`, reads
+`~/.mira/library.db` via `mira_core::Database` (same default path the CLI's
+`defaultDbPath()` uses), lists every scanned file as its own draggable row (a plain
+`Viewport` + stacked rows for now, **not** yet the `paintCell`-virtualized `TableListBox`
+— that's still a separate, open checklist item below). Drag-out is the spike's proven
+mechanics, generalized from one hardcoded fixture to reading each row's own real file path
+off `SourceDetails::sourceComponent` at drop time.
+
+Verified: builds clean (`mira_core`, `mira_ui`, and the unmodified `mira` CLI all link),
+launches without crashing, and — confirmed via the accessibility tree (`System Events`),
+since this environment's `screencapture` doesn't actually capture the real display —
+correctly showed "15 file(s) in /Users/justmac/.mira/library.db" with 15 row elements
+after scanning a real 15-file folder, matching exactly. Quit cleanly, no crash.
+
+- [x] JUCE UI shell: one native window, same process as analysis (§13) — `mira_ui`
+      target above. "Same process as analysis" still means "architecturally the same
+      process the way the CLI's analyze loop is" (mira_core is shared), not that
+      analysis has been wired to run from inside the UI yet — that's real work still
+      ahead, not claimed here.
+- [ ] `TableListBox` file list with `paintCell` only, at drive scale — currently a plain
+      `Viewport` + stacked rows (fine at 15-file test scale, not virtualized; this is the
+      literal next build-order step)
 - [ ] `AudioThumbnail` + `AudioThumbnailCache` waveform display (persistence already
       proven in Phase 0 spike)
 - [ ] Playback: `AudioDeviceManager` → `AudioSourcePlayer` → `AudioTransportSource` →
       `AudioFormatReaderSource`
-- [ ] Drag-out wired into the real app (mechanics already proven in Phase 0 spike)
+- [x] Drag-out wired into the real app (mechanics already proven in Phase 0 spike) —
+      generalized to any real file in the library, verified above
 - [ ] Filter bar (stackable chips — SonikSearch-inspired, NOTES.md UI research)
 - [ ] Per-field source-of-truth display (Analysis/Filename/Manual — SonikSearch-inspired,
       NOTES.md UI research)

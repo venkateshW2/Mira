@@ -154,6 +154,22 @@ set(SQLITECPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SQLITECPP_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(${SQLITECPP_ROOT} sqlitecpp_build)
 
+# mira_core (TASKS.md Phase 5, build-order step 1: "wired to mira's actual SQLite DB, not
+# the spike's toy fixture") — just Database.{h,cpp} and its own dependencies (SQLiteCpp,
+# sqlite-vec), split out as its own static library so the JUCE UI target below can read
+# the real library without linking the whole CLI's Essentia/ONNX/beat_this/etc dependency
+# graph, which it has no use for. The `mira` executable target further down links this
+# too, replacing what used to be a directly-compiled source — one Database implementation,
+# not two.
+add_library(mira_core STATIC mira/db/Database.cpp)
+target_include_directories(mira_core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/sqlite_vec_include
+)
+target_link_libraries(mira_core PUBLIC SQLiteCpp mira_sqlite3 mira_sqlite_vec)
+target_compile_definitions(mira_core PUBLIC SQLITE_VEC_STATIC SQLITE_CORE)
+set_target_properties(mira_core PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+
 # beat_this_cpp (PRD §16.5) — its own CMakeLists.txt was patched during the Phase 0 spike
 # (spike/README.md) to accept ONNXRUNTIME_ROOT directly, since the official prebuilt
 # tarball's CMake package doesn't match the install-tree layout beat_this_cpp expects.
@@ -228,7 +244,6 @@ target_include_directories(kaldi_native_fbank PRIVATE ${KISSFFT_ROOT})
 
 add_executable(mira
   mira/main.cpp
-  mira/db/Database.cpp
   mira/scan/Scanner.cpp
   mira/analyze/EssentiaEngine.cpp
   mira/analyze/AudioLoader.cpp
@@ -292,6 +307,7 @@ target_compile_definitions(mira PRIVATE
 )
 
 target_link_libraries(mira PRIVATE
+  mira_core
   SQLiteCpp
   mira_sqlite3
   mira_sqlite_vec
@@ -321,3 +337,8 @@ set_target_properties(mira PROPERTIES
   CXX_STANDARD_REQUIRED ON
   BUILD_RPATH "${ONNXRUNTIME_ROOT}/lib"
 )
+
+# TASKS.md Phase 5 — the JUCE UI, real target as of build-order step 1.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/mira_ui/CMakeLists.txt)
+  add_subdirectory(mira_ui)
+endif()
