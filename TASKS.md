@@ -1078,9 +1078,40 @@ after scanning a real 15-file folder, matching exactly. Quit cleanly, no crash.
       process the way the CLI's analyze loop is" (mira_core is shared), not that
       analysis has been wired to run from inside the UI yet — that's real work still
       ahead, not claimed here.
-- [ ] `TableListBox` file list with `paintCell` only, at drive scale — currently a plain
-      `Viewport` + stacked rows (fine at 15-file test scale, not virtualized; this is the
-      literal next build-order step)
+- [x] `TableListBox` file list with `paintCell` only, at drive scale — `FileTable.{h,cpp}`
+      (build-order step 4). Six columns (File/BPM/Key/Loudness/Active/Type) matching the
+      reference mockup's table, `paintCell`-only per row (no per-row Components — the
+      thing that actually matters at drive scale, unlike step 1's stacked-Viewport
+      version). Missing values render as an em dash in `--text-faint` (mockup's `.dash`
+      convention) rather than a blank cell or a false zero — genuinely distinct meanings
+      (e.g. BPM `—` on a one-shot means "never measured", not "0 BPM"). Drag-out moved
+      from step 1's per-row `dynamic_cast` trick to `TableListBoxModel::
+      getDragSourceDescription`, JUCE's own mechanism for this — the dragged file's path
+      now travels as the drag description itself, since `TableListBox` owns its row
+      components and there's no app-defined row type left to cast back to.
+
+      Verified on the 15-file snare test library, screenshotted after `mira analyze`
+      actually ran (not just `scan`): BPM correctly dashed on every row (single drum hits
+      have no measurable tempo — real, expected, matches PRD §5), Key populated where
+      libKeyFinder found one and dashed elsewhere, Loudness populated on every row,
+      Active dashed specifically on the 3 `one_shot` rows (active-region detection is
+      gated to stems/declared stems/files over 5 min, PRD §5 — correctly never ran on
+      those) and a real percentage (82–100%) on the 12 `stem` rows, Type showing the
+      correct content type per row. Row selection confirmed too: selecting a row tints
+      its background `--accent-soft` and its filename `--accent`, matching the mockup's
+      `tr.sel`/`tr.sel td.name` rule exactly.
+- [x] `LookAndFeel_V4` skeleton with the mockup's palette/type tokens (build-order step
+      2) — `MiraLookAndFeel.{h,cpp}`. Every color is the mockup's `:root` custom property
+      verbatim (`--bg`/`--surface`/`--surface-2`/`--surface-3`/`--border`/`--text`/
+      `--text-dim`/`--text-faint`/`--accent`/`--active`/`--warn`/`--good`, each with its
+      documented `-soft` alpha variant). Typography is IBM Plex Sans (UI text) / IBM Plex
+      Mono (numeric/technical fields — BPM, Loudness, Active%, the status line — matching
+      the mockup's own tabular-nums convention), fetched from `IBM/plex` (SIL OFL 1.1,
+      `vendor/fonts/`, added to `scripts/fetch-vendor.sh`) and embedded via JUCE
+      `BinaryData` rather than depending on the fonts being installed system-wide.
+      Applied to every component step 1/4 already had (window background, labels, the
+      table's header/rows/selection) — not yet to panels that don't exist yet (filter
+      bar, waveform, detail grid — later build-order steps).
 - [ ] `AudioThumbnail` + `AudioThumbnailCache` waveform display (persistence already
       proven in Phase 0 spike)
 - [ ] Playback: `AudioDeviceManager` → `AudioSourcePlayer` → `AudioTransportSource` →

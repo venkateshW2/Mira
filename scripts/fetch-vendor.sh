@@ -209,6 +209,25 @@ else
   echo "== CED-small already present, skipping =="
 fi
 
+# --- Phase 5 — mira_ui typography (TASKS.md build-order step 2) ----------------
+# IBM Plex Sans/Mono (SIL OFL 1.1, IBM/plex — permissive, fine under mira's AGPL-3.0),
+# embedded into mira_ui via BinaryData (src/mira_ui/CMakeLists.txt), not a system-font
+# dependency. Only the weights MiraLookAndFeel actually uses, not the full family.
+if [ ! -f "$VENDOR/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf" ]; then
+  echo "== fetching IBM Plex Sans/Mono =="
+  mkdir -p "$VENDOR/fonts/ibm-plex-sans" "$VENDOR/fonts/ibm-plex-mono"
+  for f in IBMPlexSans-Regular.ttf IBMPlexSans-Medium.ttf IBMPlexSans-SemiBold.ttf license.txt; do
+    gh api repos/IBM/plex/contents/packages/plex-sans/fonts/complete/ttf/$f --jq .content \
+      | base64 -d > "$VENDOR/fonts/ibm-plex-sans/$f"
+  done
+  for f in IBMPlexMono-Regular.ttf IBMPlexMono-Medium.ttf license.txt; do
+    gh api repos/IBM/plex/contents/packages/plex-mono/fonts/complete/ttf/$f --jq .content \
+      | base64 -d > "$VENDOR/fonts/ibm-plex-mono/$f"
+  done
+else
+  echo "== IBM Plex fonts already present, skipping =="
+fi
+
 # --- lab/conversion_sources (Phase 2, PRD §16.3) --------------------------------
 # One-time model-conversion inputs (gitignored, not committed — same "fetched, not
 # authored here" pattern as vendor/ and models/). genre_discogs400 and voice_instrumental

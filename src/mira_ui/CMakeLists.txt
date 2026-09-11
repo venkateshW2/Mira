@@ -22,7 +22,30 @@ juce_add_gui_app(mira_ui
   BUNDLE_ID "app.mira.ui"
 )
 
-target_sources(mira_ui PRIVATE Source/Main.cpp)
+# TASKS.md Phase 5 build-order step 2 ("palette/type tokens first"): IBM Plex Sans/Mono
+# (SIL OFL 1.1, vendor/fonts/ibm-plex-*/license.txt — permissive, fine under mira's
+# AGPL-3.0), embedded via JUCE's BinaryData so the app doesn't depend on the fonts being
+# installed system-wide. Only the weights MiraLookAndFeel actually uses (Regular/Medium/
+# SemiBold for Sans, Regular/Medium for Mono), not the full family — this app has no use
+# for italics/thin/extralight/etc.
+set(MIRA_FONTS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/fonts)
+if(NOT EXISTS ${MIRA_FONTS_ROOT}/ibm-plex-sans/IBMPlexSans-Regular.ttf)
+  message(FATAL_ERROR "IBM Plex fonts not found at ${MIRA_FONTS_ROOT} — run scripts/fetch-vendor.sh")
+endif()
+juce_add_binary_data(mira_ui_fonts SOURCES
+  ${MIRA_FONTS_ROOT}/ibm-plex-sans/IBMPlexSans-Regular.ttf
+  ${MIRA_FONTS_ROOT}/ibm-plex-sans/IBMPlexSans-Medium.ttf
+  ${MIRA_FONTS_ROOT}/ibm-plex-sans/IBMPlexSans-SemiBold.ttf
+  ${MIRA_FONTS_ROOT}/ibm-plex-mono/IBMPlexMono-Regular.ttf
+  ${MIRA_FONTS_ROOT}/ibm-plex-mono/IBMPlexMono-Medium.ttf
+)
+set_target_properties(mira_ui_fonts PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_sources(mira_ui PRIVATE
+  Source/Main.cpp
+  Source/MiraLookAndFeel.cpp
+  Source/FileTable.cpp
+)
 
 target_include_directories(mira_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
@@ -35,6 +58,7 @@ target_compile_definitions(mira_ui PRIVATE
 
 target_link_libraries(mira_ui PRIVATE
   mira_core
+  mira_ui_fonts
   juce::juce_gui_extra
   juce::juce_audio_utils
   juce::juce_audio_formats

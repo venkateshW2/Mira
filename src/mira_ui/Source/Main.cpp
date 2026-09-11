@@ -1,19 +1,18 @@
-// TASKS.md Phase 5, build-order step 1: "promote spike/03_dragout into a real target in
-// src/CMakeLists.txt, wired to mira's actual SQLite DB, not the spike's toy fixture."
-//
-// Drag-out mechanics (shouldDropFilesWhenDraggedExternally + DragAndDropContainer) were
-// already proven working into Ableton/Logic/Finder in spike/03_dragout (Phase 0 day 4) —
-// this is that same foundation, generalized from one hardcoded fixture file to a
-// scrollable list backed by mira_core's real Database. Everything else Phase 5's build
-// order calls for (LookAndFeel/palette, progress queue, persistent folder tree,
-// paintCell-virtualized file table, waveform panel) comes in later steps — this step is
-// specifically "prove the real app target + real data source", nothing more.
+// TASKS.md Phase 5. Build-order step 1 promoted spike/03_dragout into this real app
+// target, reading mira_core's real Database instead of one hardcoded fixture file. Step
+// 2 applied the real palette/type tokens (MiraLookAndFeel). This file now also carries
+// step 4: FileTableComponent below replaces step 1's plain Viewport + stacked
+// Components with the real paintCell-only TableListBox (FileTable.h/.cpp) — the
+// virtualization that actually matters at drive scale. Progress queue and the
+// waveform/detail panel are still open build-order steps.
 
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "mira/db/Database.h"
+#include "MiraLookAndFeel.h"
+#include "FileTable.h"
 
 #include <cstdlib>
 
@@ -29,128 +28,46 @@ static juce::File defaultDbFile()
     return dir.getChildFile("library.db");
 }
 
-class DraggableFileRow : public juce::Component
+// The drag target: the dragged file's path travels as TableListBox's own drag
+// description (FileTableModel::getDragSourceDescription), not via SourceDetails::
+// sourceComponent — TableListBox owns its row components, so there's no app-defined row
+// type to dynamic_cast back to the way step 1's DraggableFileRow allowed.
+class FileTableComponent : public juce::Component, public juce::DragAndDropContainer
 {
 public:
-    DraggableFileRow(juce::String pathIn, juce::String contentTypeIn)
-        : filePath(std::move(pathIn)), contentType(std::move(contentTypeIn))
+    FileTableComponent(mira::Database& databaseIn, const MiraLookAndFeel& lafIn)
+        : model(databaseIn, lafIn)
     {
-        setSize(400, 32);
+        table.setModel(&model);
+        table.setRowHeight(28);
+        table.setHeaderHeight(24);
+        table.setMultipleSelectionEnabled(false);
+        FileTableModel::setupColumns(table.getHeader());
+        addAndMakeVisible(table);
+        table.updateContent();
     }
 
-    const juce::String& getFilePath() const { return filePath; }
-
-    void paint(juce::Graphics& g) override
-    {
-        auto bounds = getLocalBounds().toFloat().reduced(1.0f);
-        g.setColour(isMouseOver() ? juce::Colours::darkslateblue.brighter(0.15f)
-                                   : juce::Colours::darkslateblue);
-        g.fillRoundedRectangle(bounds, 4.0f);
-
-        g.setColour(juce::Colours::white);
-        g.setFont(juce::FontOptions(13.0f));
-        auto textBounds = getLocalBounds().reduced(8, 0);
-        g.drawFittedText(juce::File(filePath).getFileName(), textBounds.removeFromLeft(280),
-                          juce::Justification::centredLeft, 1);
-        g.setColour(juce::Colours::lightgrey);
-        g.setFont(juce::FontOptions(11.0f));
-        g.drawFittedText(contentType, textBounds, juce::Justification::centredRight, 1);
-    }
-
-    void mouseEnter(const juce::MouseEvent&) override { repaint(); }
-    void mouseExit(const juce::MouseEvent&) override { repaint(); }
-    void mouseDown(const juce::MouseEvent&) override {}
-
-    void mouseDrag(const juce::MouseEvent& event) override
-    {
-        if (event.getDistanceFromDragStart() < 5)
-            return;
-
-        if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
-        {
-            if (!container->isDragAndDropActive())
-                container->startDragging("mira-file", this, juce::ScaledImage(), true);
-        }
-    }
-
-private:
-    juce::String filePath, contentType;
-};
-
-// The drag target: reads which row was dragged from SourceDetails::sourceComponent (not
-// a single stored fixture path, the spike's simplification) so any row in the list can be
-// dropped as its own real file — the actual generalization this step exists to prove.
-class FileListComponent : public juce::Component, public juce::DragAndDropContainer
-{
-public:
-    explicit FileListComponent(mira::Database& databaseIn) : database(databaseIn)
-    {
-        rebuild();
-    }
-
-    void rebuild()
-    {
-        rows.clear();
-        content = std::make_unique<juce::Component>();
-
-        // Every scanned file, newest-scanned first — no filter, no pagination yet
-        // (TableListBox at drive scale is a later build-order step). Fine at today's
-        // library sizes; revisit alongside the real file table.
-        auto files = database.queryFiles("1=1 ORDER BY scanned_at DESC");
-        for (const auto& f : files)
-        {
-            auto* row = new DraggableFileRow(f.path, f.contentType);
-            rows.add(row);
-            content->addAndMakeVisible(row);
-        }
-        content->setSize(400, juce::jmax(1, static_cast<int>(rows.size()) * 34));
-
-        viewport.setViewedComponent(content.get(), false);
-        addAndMakeVisible(viewport);
-        layoutRows();
-    }
-
-    void resized() override
-    {
-        viewport.setBounds(getLocalBounds());
-        layoutRows();
-    }
+    void resized() override { table.setBounds(getLocalBounds()); }
 
     bool shouldDropFilesWhenDraggedExternally(const juce::DragAndDropTarget::SourceDetails& details,
                                                juce::StringArray& files, bool& canMoveFiles) override
     {
-        if (details.description.toString() != "mira-file")
-            return false;
-        if (auto* row = dynamic_cast<DraggableFileRow*>(details.sourceComponent.get()))
-        {
-            files.add(row->getFilePath());
-            canMoveFiles = false; // copy, never move — PRD §1: "no file ever moves"
-            return true;
-        }
-        return false;
+        auto path = details.description.toString();
+        if (path.isEmpty()) return false;
+        files.add(path);
+        canMoveFiles = false; // copy, never move — PRD §1: "no file ever moves"
+        return true;
     }
 
 private:
-    void layoutRows()
-    {
-        int y = 0;
-        for (auto* row : rows)
-        {
-            row->setBounds(0, y, content->getWidth(), 32);
-            y += 34;
-        }
-    }
-
-    mira::Database& database;
-    juce::Viewport viewport;
-    std::unique_ptr<juce::Component> content;
-    juce::OwnedArray<DraggableFileRow> rows;
+    FileTableModel model;
+    juce::TableListBox table;
 };
 
 class MainComponent : public juce::Component
 {
 public:
-    MainComponent()
+    explicit MainComponent(const MiraLookAndFeel& lafIn) : laf(lafIn)
     {
         auto dbFile = defaultDbFile();
         database = std::make_unique<mira::Database>(dbFile.getFullPathName().toStdString());
@@ -159,14 +76,17 @@ public:
         statusLabel.setText(juce::String(count) + " file(s) in " + dbFile.getFullPathName()
                                  + (count == 0 ? "  — run `mira scan` first" : ""),
                              juce::dontSendNotification);
-        statusLabel.setFont(juce::FontOptions(12.0f));
+        statusLabel.setFont(laf.monoRegular(11.5f)); // mockup's .lib-stat: mono, tabular-nums
+        statusLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
         addAndMakeVisible(statusLabel);
 
-        fileList = std::make_unique<FileListComponent>(*database);
+        fileList = std::make_unique<FileTableComponent>(*database, laf);
         addAndMakeVisible(*fileList);
 
-        setSize(440, 500);
+        setSize(600, 520); // wide enough for FileTable's six columns without cramping
     }
+
+    void paint(juce::Graphics& g) override { g.fillAll(MiraLookAndFeel::surface); }
 
     void resized() override
     {
@@ -177,19 +97,20 @@ public:
     }
 
 private:
+    const MiraLookAndFeel& laf;
     std::unique_ptr<mira::Database> database;
-    std::unique_ptr<FileListComponent> fileList;
+    std::unique_ptr<FileTableComponent> fileList;
     juce::Label statusLabel;
 };
 
 class MainWindow : public juce::DocumentWindow
 {
 public:
-    explicit MainWindow(juce::String name)
-        : DocumentWindow(name, juce::Colours::darkgrey, DocumentWindow::allButtons)
+    MainWindow(juce::String name, const MiraLookAndFeel& lafIn)
+        : DocumentWindow(name, MiraLookAndFeel::surface, DocumentWindow::allButtons)
     {
         setUsingNativeTitleBar(true);
-        setContentOwned(new MainComponent(), true);
+        setContentOwned(new MainComponent(lafIn), true);
         centreWithSize(getWidth(), getHeight());
         setResizable(true, true);
         setVisible(true);
@@ -204,10 +125,24 @@ public:
     const juce::String getApplicationName() override { return "mira"; }
     const juce::String getApplicationVersion() override { return "0.1"; }
 
-    void initialise(const juce::String&) override { mainWindow = std::make_unique<MainWindow>(getApplicationName()); }
-    void shutdown() override { mainWindow = nullptr; }
+    void initialise(const juce::String&) override
+    {
+        // Declared before mainWindow (member order below) so it outlives every component
+        // that reads its colours/fonts; shutdown() below still clears the *default* LAF
+        // pointer explicitly before either is torn down, rather than relying on
+        // destruction order alone for that part.
+        juce::LookAndFeel::setDefaultLookAndFeel(&lookAndFeel);
+        mainWindow = std::make_unique<MainWindow>(getApplicationName(), lookAndFeel);
+    }
+
+    void shutdown() override
+    {
+        mainWindow = nullptr;
+        juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
+    }
 
 private:
+    MiraLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> mainWindow;
 };
 
