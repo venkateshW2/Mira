@@ -180,6 +180,36 @@ public:
     std::vector<SimilarMatch> findSimilarDclap(const std::vector<float>& embedding, int topK,
                                                 std::optional<int64_t> excludeId = std::nullopt);
 
+    // TASKS.md Phase 4 "per-dimension similarity" (PRD §12 item 5, and `mira similar
+    // --by overall|timbre|rhythm|spectrum` in PRD §8's CLI spec) — dimensions derived
+    // from what mira already measures per file (Descriptors.h), not Sononym's fixed
+    // five. `timbre` is the 13-coefficient MFCC vector (its own vec0 table, same
+    // brute-force-KNN pattern as the embeddings above — MFCC coefficients are already
+    // comparable units to each other, no extra normalization needed for a defensible
+    // first cut). `spectrum` is a small 2-dim [centroid, flatness] vector — see
+    // DspDescriptors.h and main.cpp's construction of it for why harmonicity and chroma
+    // are deliberately left out (harmonicity's "0.0 means unmeasured" convention can't
+    // be folded into a metric distance without corrupting it; chroma has no named PRD
+    // dimension to attach to yet). `rhythm` has no per-file vector at all today (only a
+    // scalar BPM) — findSimilarByBpm is a plain SQL brute-force scan, not a vec0 table,
+    // since there's nothing to vectorize.
+    void upsertTimbre(int64_t fileId, const std::vector<float>& mfcc);
+    std::optional<std::vector<float>> getTimbreById(int64_t fileId);
+    std::vector<SimilarMatch> findSimilarTimbre(const std::vector<float>& mfcc, int topK,
+                                                 std::optional<int64_t> excludeId = std::nullopt);
+
+    void upsertSpectrum(int64_t fileId, const std::vector<float>& centroidFlatness);
+    std::optional<std::vector<float>> getSpectrumById(int64_t fileId);
+    std::vector<SimilarMatch> findSimilarSpectrum(const std::vector<float>& centroidFlatness, int topK,
+                                                   std::optional<int64_t> excludeId = std::nullopt);
+
+    // No stored vector — reads files.machine directly for every candidate. `bpm` is the
+    // query file's own beat_this_bpm (caller looks it up); rows with no BPM, a BPM of
+    // exactly 0 (RhythmResult's "unmeasured" value), or content_type='one_shot' (tempo on
+    // a one-shot is meaningless, PRD §5) are excluded, not treated as distance-0 matches.
+    std::vector<SimilarMatch> findSimilarByBpm(double bpm, int topK,
+                                                std::optional<int64_t> excludeId = std::nullopt);
+
     // Small JSON helpers for reading `machine` (mira inspect's job) — mira has no C++
     // JSON parser vendored (kept off the dependency list deliberately), so these lean on
     // SQLite's own json_extract/json_array_length instead of parsing in C++.

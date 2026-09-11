@@ -602,6 +602,22 @@ int runAnalyze(const std::vector<std::string>& args) {
                                                     dclapEmbedding.vector.end());
                 db.upsertDclapEmbedding(c.record.id, dclapEmbeddingF);
             }
+            // Per-dimension similarity (TASKS.md Phase 4, PRD §12 item 5, `mira similar
+            // --by timbre|spectrum`). dsp.mfcc/spectralCentroidHz/spectralFlatness come
+            // from the same shared frame loop (Descriptors.cpp) -- mfcc.empty() is the
+            // one guard needed, since an empty mfcc means no frame was measurable at all
+            // (the file was too short), and centroid/flatness are computed in that same
+            // loop. 11000.0 here is Descriptors.cpp's own MFCC highFrequencyBound, reused
+            // as the normalization ceiling rather than inventing a new constant.
+            if (!dsp.mfcc.empty()) {
+                std::vector<float> mfccF(dsp.mfcc.begin(), dsp.mfcc.end());
+                db.upsertTimbre(c.record.id, mfccF);
+
+                double centroidNorm = std::log1p(dsp.spectralCentroidHz) / std::log1p(11000.0);
+                std::vector<float> spectrumF = {static_cast<float>(centroidNorm),
+                                                 static_cast<float>(dsp.spectralFlatness)};
+                db.upsertSpectrum(c.record.id, spectrumF);
+            }
             timer.mark("database write");
         }
     }
@@ -1418,31 +1434,44 @@ int runExportSegments(const std::vector<std::string>& args) {
     return cutCount > 0 ? 0 : 1;
 }
 
-// PRD §8: `mira similar <file|id>`. Deliberately scoped narrow for this first cut: only
-// the overall embedding (no --by timbre|rhythm|spectrum subsets yet, no --filter, no
-// external not-yet-scanned files) — those are real, separately-tracked TASKS.md items,
-// not silently dropped. Exact brute-force KNN (PRD §3: "no ANN index").
+// PRD §8: `mira similar <file|id> [--by overall|timbre|rhythm|spectrum]`. `--filter` and
+// external not-yet-scanned files are still separately-tracked TASKS.md items, not
+// silently dropped — everything else in the PRD's spec'd CLI surface is now wired.
+// Exact brute-force KNN throughout (PRD §3: "no ANN index").
 //
-// --embedding=effnet|dclap (default effnet) selects which of the two stored spaces to
-// query (TASKS.md Phase 4 "Embedding A/B") — this is the actual A/B mechanism: run the
-// same query file against both and compare which neighbors come back more sensible for
-// a given content type.
+// --embedding=effnet|dclap (default effnet), only meaningful with --by overall (the
+// default), selects which of the two stored embedding spaces to query (TASKS.md Phase 4
+// "Embedding A/B") — this is the actual A/B mechanism: run the same query file against
+// both and compare which neighbors come back more sensible for a given content type.
+//
+// --by timbre|spectrum query the small per-dimension vec0 tables built in main.cpp's
+// analyze loop (TASKS.md Phase 4 "per-dimension similarity", PRD §12 item 5 — dimensions
+// derived from what mira already measures, not Sononym's fixed five). --by rhythm has no
+// stored vector (Database.h's findSimilarByBpm comment) — it reads the query file's own
+// BPM and brute-force-scans `files` directly.
 int runSimilar(const std::vector<std::string>& args) {
     std::string dbPath = defaultDbPath();
     int topN = 10;
     std::string embeddingSpace = "effnet";
+    std::string by = "overall";
     std::vector<std::string> positional;
 
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
         else if (args[i] == "--n" && i + 1 < args.size()) topN = std::stoi(args[++i]);
         else if (args[i] == "--embedding" && i + 1 < args.size()) embeddingSpace = args[++i];
+        else if (args[i] == "--by" && i + 1 < args.size()) by = args[++i];
         else positional.push_back(args[i]);
     }
 
     if (embeddingSpace != "effnet" && embeddingSpace != "dclap") {
         std::cerr << "mira similar: --embedding must be 'effnet' or 'dclap', got '"
                   << embeddingSpace << "'" << std::endl;
+        return 1;
+    }
+    if (by != "overall" && by != "timbre" && by != "rhythm" && by != "spectrum") {
+        std::cerr << "mira similar: --by must be 'overall', 'timbre', 'rhythm', or 'spectrum', got '"
+                  << by << "'" << std::endl;
         return 1;
     }
 
@@ -1468,24 +1497,58 @@ int runSimilar(const std::vector<std::string>& args) {
         return 1;
     }
 
-    bool useDclap = embeddingSpace == "dclap";
-    auto embedding = useDclap ? db.getDclapEmbeddingById(record->id) : db.getEmbeddingById(record->id);
-    if (!embedding) {
-        std::cerr << "mira similar: '" << record->path << "' has no stored " << embeddingSpace
-                  << " embedding — run `mira analyze` on it first "
-                     "(or it was too short to embed, PRD §16.3)"
-                  << std::endl;
-        return 1;
+    std::vector<mira::Database::SimilarMatch> matches;
+
+    if (by == "timbre") {
+        auto vec = db.getTimbreById(record->id);
+        if (!vec) {
+            std::cerr << "mira similar: '" << record->path
+                      << "' has no stored timbre vector — run `mira analyze` on it first "
+                         "(or it was too short for even one DSP frame)"
+                      << std::endl;
+            return 1;
+        }
+        matches = db.findSimilarTimbre(*vec, topN, record->id);
+    } else if (by == "spectrum") {
+        auto vec = db.getSpectrumById(record->id);
+        if (!vec) {
+            std::cerr << "mira similar: '" << record->path
+                      << "' has no stored spectrum vector — run `mira analyze` on it first "
+                         "(or it was too short for even one DSP frame)"
+                      << std::endl;
+            return 1;
+        }
+        matches = db.findSimilarSpectrum(*vec, topN, record->id);
+    } else if (by == "rhythm") {
+        auto bpm = db.jsonExtractDouble(record->machine, "$.rhythm.beat_this_bpm");
+        if (!bpm || *bpm <= 0.0) {
+            std::cerr << "mira similar: '" << record->path
+                      << "' has no measured BPM — either a one-shot (tempo is never "
+                         "measured, PRD §5) or `mira analyze` hasn't run on it yet"
+                      << std::endl;
+            return 1;
+        }
+        matches = db.findSimilarByBpm(*bpm, topN, record->id);
+    } else {
+        bool useDclap = embeddingSpace == "dclap";
+        auto embedding = useDclap ? db.getDclapEmbeddingById(record->id) : db.getEmbeddingById(record->id);
+        if (!embedding) {
+            std::cerr << "mira similar: '" << record->path << "' has no stored " << embeddingSpace
+                      << " embedding — run `mira analyze` on it first "
+                         "(or it was too short to embed, PRD §16.3)"
+                      << std::endl;
+            return 1;
+        }
+        matches = useDclap ? db.findSimilarDclap(*embedding, topN, record->id)
+                            : db.findSimilar(*embedding, topN, record->id);
     }
 
-    auto matches = useDclap ? db.findSimilarDclap(*embedding, topN, record->id)
-                             : db.findSimilar(*embedding, topN, record->id);
     if (matches.empty()) {
-        std::cout << "no similar files found (library may only contain this one embedding)\n";
+        std::cout << "no similar files found (library may only contain this one measurement)\n";
         return 0;
     }
 
-    std::cout << "similar to " << record->path << ":\n";
+    std::cout << "similar to " << record->path << " (--by " << by << "):\n";
     for (const auto& m : matches) {
         auto matchRecord = db.findById(m.id);
         std::cout << "  " << std::fixed << std::setprecision(4) << m.distance << "  "

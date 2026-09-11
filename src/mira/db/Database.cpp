@@ -40,6 +40,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding float[128
 -- query of their own kind.
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings_dclap USING vec0(embedding float[512]);
 
+-- TASKS.md Phase 4 "per-dimension similarity" — timbre (13-dim MFCC) and spectrum
+-- (2-dim [centroid, flatness]) each get their own small vec0 table, same pattern as the
+-- embeddings above. Rhythm has no table (Database.h's findSimilarByBpm comment).
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_timbre USING vec0(embedding float[13]);
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_spectrum USING vec0(embedding float[2]);
+
 -- TASKS.md Phase 3 addition: a time-ranged counterpart to files.human, for the case a
 -- whole-file caption can't be honest about -- a single long, through-composed file (or a
 -- synced set of delivery stems sharing one files.group_id) whose character changes at a
@@ -510,6 +516,109 @@ std::vector<Database::SimilarMatch> Database::findSimilarDclap(const std::vector
     q.bind(1, embedding.data(), static_cast<int>(embedding.size() * sizeof(float)));
     q.bind(2, fetchK);
 
+    while (q.executeStep()) {
+        int64_t rowId = q.getColumn(0).getInt64();
+        if (excludeId && rowId == *excludeId) continue;
+        results.push_back({rowId, q.getColumn(1).getDouble()});
+        if (static_cast<int>(results.size()) >= topK) break;
+    }
+    return results;
+}
+
+void Database::upsertTimbre(int64_t fileId, const std::vector<float>& mfcc) {
+    if (mfcc.size() != 13) return; // caller's bug — Descriptors.h's kNumMfccCoefficients
+    SQLite::Statement del(db, "DELETE FROM vec_timbre WHERE rowid = ?");
+    del.bind(1, fileId);
+    del.exec();
+    SQLite::Statement ins(db, "INSERT INTO vec_timbre(rowid, embedding) VALUES (?, ?)");
+    ins.bind(1, fileId);
+    ins.bind(2, mfcc.data(), static_cast<int>(mfcc.size() * sizeof(float)));
+    ins.exec();
+}
+
+std::optional<std::vector<float>> Database::getTimbreById(int64_t fileId) {
+    SQLite::Statement q(db, "SELECT embedding FROM vec_timbre WHERE rowid = ?");
+    q.bind(1, fileId);
+    if (!q.executeStep()) return std::nullopt;
+    const void* blob = q.getColumn(0).getBlob();
+    int bytes = q.getColumn(0).getBytes();
+    if (bytes != 13 * static_cast<int>(sizeof(float))) return std::nullopt;
+    std::vector<float> v(13);
+    std::memcpy(v.data(), blob, bytes);
+    return v;
+}
+
+std::vector<Database::SimilarMatch> Database::findSimilarTimbre(const std::vector<float>& mfcc, int topK,
+                                                                   std::optional<int64_t> excludeId) {
+    std::vector<SimilarMatch> results;
+    if (mfcc.size() != 13) return results;
+    int fetchK = excludeId ? topK + 1 : topK;
+    SQLite::Statement q(db,
+        "SELECT rowid, distance FROM vec_timbre WHERE embedding MATCH ? AND k = ? ORDER BY distance");
+    q.bind(1, mfcc.data(), static_cast<int>(mfcc.size() * sizeof(float)));
+    q.bind(2, fetchK);
+    while (q.executeStep()) {
+        int64_t rowId = q.getColumn(0).getInt64();
+        if (excludeId && rowId == *excludeId) continue;
+        results.push_back({rowId, q.getColumn(1).getDouble()});
+        if (static_cast<int>(results.size()) >= topK) break;
+    }
+    return results;
+}
+
+void Database::upsertSpectrum(int64_t fileId, const std::vector<float>& centroidFlatness) {
+    if (centroidFlatness.size() != 2) return; // caller's bug — [centroid, flatness]
+    SQLite::Statement del(db, "DELETE FROM vec_spectrum WHERE rowid = ?");
+    del.bind(1, fileId);
+    del.exec();
+    SQLite::Statement ins(db, "INSERT INTO vec_spectrum(rowid, embedding) VALUES (?, ?)");
+    ins.bind(1, fileId);
+    ins.bind(2, centroidFlatness.data(), static_cast<int>(centroidFlatness.size() * sizeof(float)));
+    ins.exec();
+}
+
+std::optional<std::vector<float>> Database::getSpectrumById(int64_t fileId) {
+    SQLite::Statement q(db, "SELECT embedding FROM vec_spectrum WHERE rowid = ?");
+    q.bind(1, fileId);
+    if (!q.executeStep()) return std::nullopt;
+    const void* blob = q.getColumn(0).getBlob();
+    int bytes = q.getColumn(0).getBytes();
+    if (bytes != 2 * static_cast<int>(sizeof(float))) return std::nullopt;
+    std::vector<float> v(2);
+    std::memcpy(v.data(), blob, bytes);
+    return v;
+}
+
+std::vector<Database::SimilarMatch> Database::findSimilarSpectrum(const std::vector<float>& centroidFlatness,
+                                                                     int topK, std::optional<int64_t> excludeId) {
+    std::vector<SimilarMatch> results;
+    if (centroidFlatness.size() != 2) return results;
+    int fetchK = excludeId ? topK + 1 : topK;
+    SQLite::Statement q(db,
+        "SELECT rowid, distance FROM vec_spectrum WHERE embedding MATCH ? AND k = ? ORDER BY distance");
+    q.bind(1, centroidFlatness.data(), static_cast<int>(centroidFlatness.size() * sizeof(float)));
+    q.bind(2, fetchK);
+    while (q.executeStep()) {
+        int64_t rowId = q.getColumn(0).getInt64();
+        if (excludeId && rowId == *excludeId) continue;
+        results.push_back({rowId, q.getColumn(1).getDouble()});
+        if (static_cast<int>(results.size()) >= topK) break;
+    }
+    return results;
+}
+
+std::vector<Database::SimilarMatch> Database::findSimilarByBpm(double bpm, int topK,
+                                                                  std::optional<int64_t> excludeId) {
+    std::vector<SimilarMatch> results;
+    if (bpm <= 0.0) return results;
+    SQLite::Statement q(db,
+        "SELECT id, ABS(json_extract(machine,'$.rhythm.beat_this_bpm') - ?) AS d "
+        "FROM files "
+        "WHERE content_type != 'one_shot' "
+        "AND json_extract(machine,'$.rhythm.beat_this_bpm') IS NOT NULL "
+        "AND json_extract(machine,'$.rhythm.beat_this_bpm') > 0 "
+        "ORDER BY d");
+    q.bind(1, bpm);
     while (q.executeStep()) {
         int64_t rowId = q.getColumn(0).getInt64();
         if (excludeId && rowId == *excludeId) continue;

@@ -837,8 +837,45 @@ checked against the actual shipped model configs rather than assumed:
       better, including on content effnet was expected to win. Per-dimension similarity
       (below) and any future default-embedding decision for `mira similar` should start from
       DCLAP, not assume effnet's genre-classifier space is the stronger prior.
-- [ ] Per-dimension similarity (timbre / rhythm / spectrum), not Sononym's fixed five
-      (§12 Q5)
+- [x] Per-dimension similarity (timbre / rhythm / spectrum), not Sononym's fixed five
+      (§12 item 5). Built from what mira already measures (Descriptors.h's DSP
+      descriptors) rather than new models — matches PRD §8's spec'd CLI surface exactly:
+      `mira similar <file|id> --by overall|timbre|rhythm|spectrum`, `overall` being the
+      existing embedding-based similarity (Phase 4's DCLAP/effnet A/B, above).
+
+      **Built:** `timbre` is the 13-coefficient MFCC vector, its own `vec_timbre` vec0
+      table (raw L2, no extra normalization — MFCC coefficients are already comparable
+      units to each other, a standard choice in the literature). `spectrum` is a small
+      2-dim `[log1p(centroid)/log1p(11000), flatness]` vector — deliberately excludes
+      harmonicity (its "0.0 means unmeasured" convention can't be folded into a metric
+      distance without corrupting it) and chroma (no named PRD dimension to attach it to
+      yet). `rhythm` has no per-file vector at all — there's nothing to vectorize beyond
+      the single BPM scalar already stored, so `findSimilarByBpm` is a plain SQL
+      brute-force scan over `files`, gated to exclude one-shots (tempo is never measured
+      on them) and unmeasured (0/null) BPMs.
+
+      **Measured — real finding, not the expected one:** ran `--by timbre` against the
+      same snare one-shot used in the embedding A/B write-up above. DCLAP's `--by overall`
+      still won decisively: 5/6 neighbors were exact drum-hit-family matches (snares +
+      one clap) at distances 0.15–0.24, while `--by timbre`'s top-6 was 1/6 clean (a clap)
+      with loops and a vocal one-shot mixed in at much larger, less-separated distances
+      (58–96). This is the opposite of what Descriptors.h's own comment expects ("the
+      backbone of one-shot similarity") — raw MFCC alone, unweighted and uncalibrated
+      against real material, does not beat a learned embedding even on the content type
+      it's supposed to be strongest at. `--by spectrum` and `--by rhythm` both work
+      mechanically (verified: different, non-degenerate rankings; `--by rhythm` correctly
+      clustered same-BPM loops at distance 0) but are intentionally coarse single-purpose
+      filters (brightness/noisiness; tempo-only), not general-purpose similarity, and
+      weren't expected to compete with `overall` head-to-head.
+
+      **Conclusion:** the CLI surface and storage are real and working, but on this
+      library plain DSP-descriptor dimensions don't yet improve on the embedding spaces
+      built earlier in Phase 4 — they're additive/complementary filters (useful for "same
+      tempo" or "same brightness" queries specifically), not a better default for general
+      one-shot similarity. If per-dimension similarity needs to actually beat `overall`,
+      the embedding-derived-axes approach (PCA/clustering on the effnet/DCLAP vectors
+      themselves, considered and deferred when this item was scoped) is the more promising
+      next direction, not further DSP feature engineering.
 - [x] Per-head confidence calibration → sets the Phase 3 render-gate thresholds
       (`CaptionFields.h`'s `kCaption*Threshold` constants). Ran all four gated heads
       (genre, instrument, moodtheme, voice_instrumental) across the same real 294-file
@@ -993,3 +1030,16 @@ illustration, not a spec.
       anything). Fine at today's scale; revisit — probably a duration-only first pass,
       re-decoding for the real analysis — before running this over a real drive-sized
       batch
+- [ ] One-time observed crash at process exit during Phase 4 per-dimension-similarity
+      testing: `libc++abi: terminating due to uncaught exception of type
+      std::__1::system_error: recursive_mutex lock failed` — printed *after*
+      "analyzed N files" and after all DB writes had already completed (confirmed via
+      `mira stats` on the same DB immediately after: all 294 rows present, correct
+      counts). Did not reproduce on an immediate full rerun of the same 294-file library
+      (ran clean, exit 0). Looks like a load-dependent teardown race in one of the
+      vendored libraries' own static/thread-pool state (ONNX Runtime and Essentia both
+      keep process-global state — OrtEnv.h documents one such prior bug in this exact
+      area) rather than anything in the per-dimension-similarity code itself, which is
+      synchronous DSP math and plain SQL writes with no threads of its own. Flagged, not
+      chased further yet — no reproduction, no data-loss, but a crash at exit is still a
+      real bug worth a proper investigation before this ships anywhere unattended.
