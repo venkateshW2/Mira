@@ -782,7 +782,61 @@ checked against the actual shipped model configs rather than assumed:
 
 ## Phase 4 — quality (PRD §9 Phase 4)
 
-- [ ] Embedding A/B: `discogs-effnet` vs CLAP vs MuQ-MuLan, measured on the real library
+- [x] Embedding A/B: `discogs-effnet` vs **DCLAP** (not full CLAP or MuQ-MuLan — PRD §14.5
+      recommends DCLAP specifically as the torch-free, licence-clear candidate; §14.6 defers
+      MuQ-MuLan "only if DCLAP disappoints", and it didn't), measured on a real 294-file
+      sample library (`/Sample Magic - Dark Pop`, mixed one-shots/loops).
+
+      **Built:** `models/similarity-embeddings/dclap/` (AudioMuse-AI-DCLAP v1's audio
+      encoder + text tower, AGPL-3.0, no licence conflict per §12 Q9). `spike/05_dclap_parity`
+      reimplements the model author's exact preprocessing (48kHz, int16 quantize round-trip,
+      10s/50%-overlap segmentation, a hand-built librosa-formula slaney mel filterbank —
+      Essentia ships nothing that reproduces librosa's specific normalization, so this is
+      generated from the closed-form formulas in librosa/filters.py directly, not guessed —
+      plus libsoxr for resampling, since the Python reference's librosa.load(sr=48000)
+      defaults to res_type='soxr_hq', a different algorithm than Essentia's own
+      libsamplerate-backed Resample) and verified it against `lab/dclap_parity_reference.py`
+      to cosine similarity >0.999 on flamenco.wav — the residual ~1e-3 is consistent with the
+      two sides calling into soxr's HQ preset via different code paths, not a bug in the mel
+      math. Ported into `src/mira/analyze/DclapEmbedding.{h,cpp}`, a second `vec_embeddings_
+      dclap` vec0 table (512-dim, separate from discogs-effnet's 1280-dim one — the two spaces
+      are never compared to each other, only independently against a query of their own kind),
+      and `mira similar --embedding effnet|dclap`. Both embeddings now compute unconditionally
+      on every analyzed file, same as discogs-effnet always did (PRD §4: comparing across
+      content types is the whole point).
+
+      **Measured — coverage:** discogs-effnet embedded 199/294 files (68%); DCLAP embedded
+      294/294 (100%). Broken down by content type, the gap is almost entirely one-shots:
+      effnet got 8/43 one-shots (19%) — its frontend needs ~2s of audio to form even one
+      128-frame mel patch, and most one-shots are shorter than that, so similarity search is
+      simply *unavailable* for 81% of one-shots today. DCLAP zero-pads short clips to a full
+      10s segment instead of requiring a minimum length, so it never fails to produce a vector.
+
+      **Measured — quality on one-shots:** of 6 sampled one-shots (snare, percussion, bass,
+      synth, vocal — folder names as ground truth), 5 had no effnet embedding to compare at
+      all. DCLAP's top-5 neighbors landed 100% within the query's own folder/category for
+      every one of the 6 (snare→snares; percussion→snares/snaps/claps/percussion; synth→synths;
+      vocal→vocals). The one query with both embeddings (a bass 808 hit) also went 5/5 same-
+      folder for DCLAP vs 3/5 for effnet, which additionally pulled in a bass *loop* and a
+      songstarter synth-bass clip — crossing the one-shot/loop boundary DCLAP kept clean.
+
+      **Measured — quality on loops:** effnet's expected home turf (long enough to embed,
+      genre-classifiable). Of 6 sampled loops (melodic synth ×2, percussion ×2, guitar, synth
+      bass), DCLAP matched or beat effnet on every query and was clearly tighter on 3: a guitar
+      loop where effnet returned guitar for only 2 of 5 neighbors (rest synth-stab/pad/
+      percussion) vs DCLAP's 5/5 guitar; two percussion loops where effnet dragged in one
+      unrelated melodic-synth or pad loop each, DCLAP staying 5/5 drum-family both times.
+      Effnet also repeatedly surfaced one-shots as "similar" to loop queries, a content-type
+      bleed DCLAP never exhibited. **This is a real finding against the PRD's stated
+      expectation** (§4: "discogs-effnet... good for tracks and loops") — n=6 is small and
+      this isn't conclusive, but nothing in this sample showed effnet's hypothesized edge on
+      its own home turf.
+
+      **Conclusion:** keep both embedding spaces (not a replacement — PRD §14.5's "additional
+      index behind a flag" framing), but on this library DCLAP is never worse and often
+      better, including on content effnet was expected to win. Per-dimension similarity
+      (below) and any future default-embedding decision for `mira similar` should start from
+      DCLAP, not assume effnet's genre-classifier space is the stronger prior.
 - [ ] Per-dimension similarity (timbre / rhythm / spectrum), not Sononym's fixed five
       (§12 Q5)
 - [ ] Per-head confidence calibration → sets the Phase 3 render-gate thresholds

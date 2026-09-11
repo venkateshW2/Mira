@@ -4,6 +4,7 @@
 #include "analyze/Chords.h"
 #include "analyze/ContentGate.h"
 #include "analyze/Embedding.h"
+#include "analyze/DclapEmbedding.h"
 #include "analyze/EssentiaEngine.h"
 #include "analyze/Key.h"
 #include "analyze/Mir.h"
@@ -471,6 +472,15 @@ int runAnalyze(const std::vector<std::string>& args) {
             if (embedding.ok) machine << ",\"embedding\":" << mira::toJson(embedding);
             timer.mark("embedding (discogs-effnet)");
 
+            // Second embedding space (TASKS.md Phase 4 "Embedding A/B", PRD §4, §14.5) —
+            // not content-type-gated either, same reasoning as discogs-effnet above: the
+            // whole point is comparing across content types to see which space actually
+            // separates them better, so both run on every file unconditionally.
+            auto dclapEmbedding = mira::computeDclapEmbedding(*mono, c.audio.sampleRate,
+                                                                MIRA_DCLAP_AUDIO_MODEL);
+            if (dclapEmbedding.ok) machine << ",\"dclap_embedding\":" << mira::toJson(dclapEmbedding);
+            timer.mark("embedding (dclap)");
+
             auto contentGate = mira::runContentGate(*mono, c.audio.sampleRate, MIRA_CED_MODEL);
             if (contentGate.ok) machine << ",\"content_gate\":" << mira::toJson(contentGate);
             timer.mark("content gate (CED-small)");
@@ -586,6 +596,11 @@ int runAnalyze(const std::vector<std::string>& args) {
             if (embedding.ok) {
                 std::vector<float> embeddingF(embedding.vector.begin(), embedding.vector.end());
                 db.upsertEmbedding(c.record.id, embeddingF);
+            }
+            if (dclapEmbedding.ok) {
+                std::vector<float> dclapEmbeddingF(dclapEmbedding.vector.begin(),
+                                                    dclapEmbedding.vector.end());
+                db.upsertDclapEmbedding(c.record.id, dclapEmbeddingF);
             }
             timer.mark("database write");
         }
@@ -1404,18 +1419,31 @@ int runExportSegments(const std::vector<std::string>& args) {
 }
 
 // PRD §8: `mira similar <file|id>`. Deliberately scoped narrow for this first cut: only
-// the overall discogs-effnet embedding (no --by timbre|rhythm|spectrum subsets yet, no
-// --filter, no external not-yet-scanned files) — those are real, separately-tracked
-// TASKS.md items, not silently dropped. Exact brute-force KNN (PRD §3: "no ANN index").
+// the overall embedding (no --by timbre|rhythm|spectrum subsets yet, no --filter, no
+// external not-yet-scanned files) — those are real, separately-tracked TASKS.md items,
+// not silently dropped. Exact brute-force KNN (PRD §3: "no ANN index").
+//
+// --embedding=effnet|dclap (default effnet) selects which of the two stored spaces to
+// query (TASKS.md Phase 4 "Embedding A/B") — this is the actual A/B mechanism: run the
+// same query file against both and compare which neighbors come back more sensible for
+// a given content type.
 int runSimilar(const std::vector<std::string>& args) {
     std::string dbPath = defaultDbPath();
     int topN = 10;
+    std::string embeddingSpace = "effnet";
     std::vector<std::string> positional;
 
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--db" && i + 1 < args.size()) dbPath = args[++i];
         else if (args[i] == "--n" && i + 1 < args.size()) topN = std::stoi(args[++i]);
+        else if (args[i] == "--embedding" && i + 1 < args.size()) embeddingSpace = args[++i];
         else positional.push_back(args[i]);
+    }
+
+    if (embeddingSpace != "effnet" && embeddingSpace != "dclap") {
+        std::cerr << "mira similar: --embedding must be 'effnet' or 'dclap', got '"
+                  << embeddingSpace << "'" << std::endl;
+        return 1;
     }
 
     if (positional.empty()) {
@@ -1440,16 +1468,18 @@ int runSimilar(const std::vector<std::string>& args) {
         return 1;
     }
 
-    auto embedding = db.getEmbeddingById(record->id);
+    bool useDclap = embeddingSpace == "dclap";
+    auto embedding = useDclap ? db.getDclapEmbeddingById(record->id) : db.getEmbeddingById(record->id);
     if (!embedding) {
-        std::cerr << "mira similar: '" << record->path
-                  << "' has no stored embedding — run `mira analyze` on it first "
-                     "(or it was too short for even one mel patch, PRD §16.3)"
+        std::cerr << "mira similar: '" << record->path << "' has no stored " << embeddingSpace
+                  << " embedding — run `mira analyze` on it first "
+                     "(or it was too short to embed, PRD §16.3)"
                   << std::endl;
         return 1;
     }
 
-    auto matches = db.findSimilar(*embedding, topN, record->id);
+    auto matches = useDclap ? db.findSimilarDclap(*embedding, topN, record->id)
+                             : db.findSimilar(*embedding, topN, record->id);
     if (matches.empty()) {
         std::cout << "no similar files found (library may only contain this one embedding)\n";
         return 0;
@@ -1512,7 +1542,9 @@ int runStats(const std::vector<std::string>& args) {
         std::cout << "\n";
     }
     int64_t embeddingCount = db.countEmbeddings();
-    std::cout << "  embeddings stored (sqlite-vec): " << embeddingCount << "\n";
+    std::cout << "  embeddings stored (sqlite-vec, discogs-effnet): " << embeddingCount << "\n";
+    int64_t dclapEmbeddingCount = db.countDclapEmbeddings();
+    std::cout << "  embeddings stored (sqlite-vec, dclap): " << dclapEmbeddingCount << "\n";
 
     std::cout << "\nunmapped labels (models can produce these, taxonomy/*.yaml has no entry yet):\n";
     mira::Taxonomy instrumentTax(MIRA_INSTRUMENT_TAXONOMY, "mtg_jamendo_instrument");
@@ -1580,6 +1612,8 @@ int runModels(const std::vector<std::string>& args) {
     };
     const ModelEntry models[] = {
         {"discogs-effnet (embedding)", MIRA_EFFNET_MODEL, "scripts/fetch-vendor.sh"},
+        {"DCLAP audio encoder (embedding, TASKS.md Phase 4)", MIRA_DCLAP_AUDIO_MODEL,
+         "gh release download v1 --repo NeptuneHub/AudioMuse-AI-DCLAP -D models/similarity-embeddings/dclap"},
         {"CED-small (content gate)", MIRA_CED_MODEL, "scripts/fetch-vendor.sh"},
         {"mtg_jamendo_moodtheme", MIRA_MOODTHEME_MODEL, "scripts/fetch-vendor.sh"},
         {"mtg_jamendo_instrument", MIRA_INSTRUMENT_MODEL, "scripts/fetch-vendor.sh"},

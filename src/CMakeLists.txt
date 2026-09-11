@@ -101,6 +101,11 @@ endif()
 if(NOT EXISTS ${MODELS_ROOT}/content-gate/ced-small/model.onnx)
   message(FATAL_ERROR "CED-small model not found — run scripts/fetch-vendor.sh")
 endif()
+if(NOT EXISTS ${MODELS_ROOT}/similarity-embeddings/dclap/model_epoch_36.onnx)
+  message(FATAL_ERROR "DCLAP audio encoder not found — "
+                       "gh release download v1 --repo NeptuneHub/AudioMuse-AI-DCLAP "
+                       "-D models/similarity-embeddings/dclap (TASKS.md Phase 4)")
+endif()
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(EIGEN3 REQUIRED IMPORTED_TARGET eigen3)
@@ -113,6 +118,7 @@ pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
 pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
 pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
 pkg_check_modules(SWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
+pkg_check_modules(SOXR REQUIRED IMPORTED_TARGET soxr)
 
 # Our own vendored SQLite (3.53.4, PRD §7) as the SQLite::SQLite3 target SQLiteCpp
 # expects — never Apple's libsqlite3 (built SQLITE_OMIT_LOAD_EXTENSION) and not
@@ -237,6 +243,7 @@ add_executable(mira
   mira/analyze/Transcription.cpp
   mira/analyze/OrtEnv.cpp
   mira/analyze/Embedding.cpp
+  mira/analyze/DclapEmbedding.cpp
   mira/analyze/ContentGate.cpp
   mira/analyze/ClassificationHead.cpp
   mira/analyze/MoodTheme.cpp
@@ -264,6 +271,7 @@ target_compile_definitions(mira PRIVATE
   MIRA_BEAT_THIS_MODEL="${BEAT_THIS_ROOT}/onnx/beat_this.onnx"
   MIRA_BASIC_PITCH_MODEL="${BASICPITCH_ROOT}/ort-model/model.onnx"
   MIRA_EFFNET_MODEL="${MODELS_ROOT}/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx"
+  MIRA_DCLAP_AUDIO_MODEL="${MODELS_ROOT}/similarity-embeddings/dclap/model_epoch_36.onnx"
   MIRA_MOODTHEME_MODEL="${MODELS_ROOT}/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx"
   MIRA_INSTRUMENT_MODEL="${MODELS_ROOT}/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.onnx"
   MIRA_DANCEABILITY_MODEL="${MODELS_ROOT}/classification-heads/danceability/danceability-discogs-effnet-1.onnx"
@@ -293,6 +301,7 @@ target_link_libraries(mira PRIVATE
   nnls_chroma
   vamp-hostsdk
   kaldi_native_fbank
+  PkgConfig::SOXR
   PkgConfig::AVFORMAT
   PkgConfig::AVCODEC
   PkgConfig::SWRESAMPLE

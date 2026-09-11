@@ -68,6 +68,7 @@ public:
     std::vector<std::pair<std::string, int64_t>> countByContentType();
     int64_t countAnalyzed();
     int64_t countEmbeddings();
+    int64_t countDclapEmbeddings();
     int64_t countWhereMachineHas(const std::string& jsonPath);
 
     // PRD §8 `mira search`. `whereClauseSql` is a caller-built SQL boolean expression
@@ -169,6 +170,15 @@ public:
     // itself would otherwise always be the (distance 0) top result.
     std::vector<SimilarMatch> findSimilar(const std::vector<float>& embedding, int topK,
                                            std::optional<int64_t> excludeId = std::nullopt);
+
+    // DCLAP's separate 512-dim embedding space (TASKS.md Phase 4 "Embedding A/B",
+    // DclapEmbedding.h) — its own vec0 table (vec_embeddings_dclap), mirroring the
+    // discogs-effnet methods above exactly rather than parameterizing over table/dim,
+    // since the two spaces are never queried against each other.
+    void upsertDclapEmbedding(int64_t fileId, const std::vector<float>& embedding);
+    std::optional<std::vector<float>> getDclapEmbeddingById(int64_t fileId);
+    std::vector<SimilarMatch> findSimilarDclap(const std::vector<float>& embedding, int topK,
+                                                std::optional<int64_t> excludeId = std::nullopt);
 
     // Small JSON helpers for reading `machine` (mira inspect's job) — mira has no C++
     // JSON parser vendored (kept off the dependency list deliberately), so these lean on

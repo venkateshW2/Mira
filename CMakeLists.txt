@@ -29,5 +29,8 @@ endif()
 if(MIRA_BUILD_SPIKES AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/spike/04_sqlite_vec/CMakeLists.txt)
   add_subdirectory(spike/04_sqlite_vec)
 endif()
+if(MIRA_BUILD_SPIKES AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/spike/05_dclap_parity/CMakeLists.txt)
+  add_subdirectory(spike/05_dclap_parity)
+endif()
 
 add_subdirectory(src)

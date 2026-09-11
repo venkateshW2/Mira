@@ -33,6 +33,13 @@ CREATE INDEX IF NOT EXISTS idx_files_content_type ON files(content_type);
 CREATE INDEX IF NOT EXISTS idx_files_group_id ON files(group_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding float[1280]);
 
+-- TASKS.md Phase 4 "Embedding A/B" (PRD §4, §14.5): a second, separate embedding space
+-- (DCLAP, 512-dim) alongside discogs-effnet's vec_embeddings above -- a distinct vec0
+-- table, not a wider column on the same one, since vec0's dimension is fixed per table
+-- and the two spaces are never compared to each other, only independently against a
+-- query of their own kind.
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings_dclap USING vec0(embedding float[512]);
+
 -- TASKS.md Phase 3 addition: a time-ranged counterpart to files.human, for the case a
 -- whole-file caption can't be honest about -- a single long, through-composed file (or a
 -- synced set of delivery stems sharing one files.group_id) whose character changes at a
@@ -172,6 +179,12 @@ int64_t Database::countAnalyzed() {
 
 int64_t Database::countEmbeddings() {
     SQLite::Statement q(db, "SELECT COUNT(*) FROM vec_embeddings");
+    q.executeStep();
+    return q.getColumn(0).getInt64();
+}
+
+int64_t Database::countDclapEmbeddings() {
+    SQLite::Statement q(db, "SELECT COUNT(*) FROM vec_embeddings_dclap");
     q.executeStep();
     return q.getColumn(0).getInt64();
 }
@@ -448,6 +461,52 @@ std::vector<Database::SimilarMatch> Database::findSimilar(const std::vector<floa
     int fetchK = excludeId ? topK + 1 : topK;
     SQLite::Statement q(db,
         "SELECT rowid, distance FROM vec_embeddings WHERE embedding MATCH ? AND k = ? ORDER BY distance");
+    q.bind(1, embedding.data(), static_cast<int>(embedding.size() * sizeof(float)));
+    q.bind(2, fetchK);
+
+    while (q.executeStep()) {
+        int64_t rowId = q.getColumn(0).getInt64();
+        if (excludeId && rowId == *excludeId) continue;
+        results.push_back({rowId, q.getColumn(1).getDouble()});
+        if (static_cast<int>(results.size()) >= topK) break;
+    }
+    return results;
+}
+
+void Database::upsertDclapEmbedding(int64_t fileId, const std::vector<float>& embedding) {
+    if (embedding.size() != 512) return; // caller's bug — DclapEmbedding.h's contract
+    SQLite::Statement del(db, "DELETE FROM vec_embeddings_dclap WHERE rowid = ?");
+    del.bind(1, fileId);
+    del.exec();
+
+    SQLite::Statement ins(db, "INSERT INTO vec_embeddings_dclap(rowid, embedding) VALUES (?, ?)");
+    ins.bind(1, fileId);
+    ins.bind(2, embedding.data(), static_cast<int>(embedding.size() * sizeof(float)));
+    ins.exec();
+}
+
+std::optional<std::vector<float>> Database::getDclapEmbeddingById(int64_t fileId) {
+    SQLite::Statement q(db, "SELECT embedding FROM vec_embeddings_dclap WHERE rowid = ?");
+    q.bind(1, fileId);
+    if (!q.executeStep()) return std::nullopt;
+
+    const void* blob = q.getColumn(0).getBlob();
+    int bytes = q.getColumn(0).getBytes();
+    if (bytes != 512 * static_cast<int>(sizeof(float))) return std::nullopt;
+
+    std::vector<float> embedding(512);
+    std::memcpy(embedding.data(), blob, bytes);
+    return embedding;
+}
+
+std::vector<Database::SimilarMatch> Database::findSimilarDclap(const std::vector<float>& embedding, int topK,
+                                                                 std::optional<int64_t> excludeId) {
+    std::vector<SimilarMatch> results;
+    if (embedding.size() != 512) return results;
+
+    int fetchK = excludeId ? topK + 1 : topK;
+    SQLite::Statement q(db,
+        "SELECT rowid, distance FROM vec_embeddings_dclap WHERE embedding MATCH ? AND k = ? ORDER BY distance");
     q.bind(1, embedding.data(), static_cast<int>(embedding.size() * sizeof(float)));
     q.bind(2, fetchK);
 
