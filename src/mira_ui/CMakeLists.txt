@@ -45,7 +45,15 @@ target_sources(mira_ui PRIVATE
   Source/Main.cpp
   Source/MiraLookAndFeel.cpp
   Source/FileTable.cpp
+  Source/NativeBlur.mm
 )
+
+# TASKS.md Phase 5 planning session's visual-direction decision: NSVisualEffectView
+# needs real Objective-C++ (NativeBlur.mm), which needs ARC set explicitly rather than
+# relying on any project-wide default — JUCE's own recommended config doesn't set this
+# for consuming targets, and NSViewComponent::setView's documented retain/release
+# contract assumes the caller isn't fighting it with manual memory management.
+set_source_files_properties(Source/NativeBlur.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_include_directories(mira_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 

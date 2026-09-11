@@ -44,6 +44,22 @@ public:
 
     juce::Font getLabelFont(juce::Label&) override;
 
+    // "Fake glass" — real NSVisualEffectView-backed blur was tried and reverted (TASKS.md
+    // Phase 5): JUCE's NSViewComponent attaches a native view via plain Cocoa
+    // `addSubview:` on the window's single shared peer view, so the native layer always
+    // renders in front of *everything* JUCE paints in that window, not behind it —
+    // there's no way to interleave real native content with JUCE's own rendering short
+    // of restructuring the window so the effect view IS the NSWindow's contentView and
+    // JUCE renders as a transparent subview on top of it (real native window surgery,
+    // parked for later — NativeBlur.h/.mm are kept, unused, as a starting point for that).
+    // This approximates the same visual language with pure JUCE painting instead: a
+    // vertical gradient between two close panel shades plus a soft off-center radial
+    // highlight (a fixed, page-relative light source, not tied to any one panel), and a
+    // 1px near-white top edge at low alpha — the mockup's own
+    // `0 2px 0 rgba(255,255,255,0.02) inset` box-shadow rule, ported directly.
+    static void paintGlassPanel(juce::Graphics&, juce::Rectangle<int> bounds, float cornerRadius,
+                                 juce::Colour base);
+
 private:
     juce::Typeface::Ptr sansRegularTypeface, sansMediumTypeface, sansSemiBoldTypeface;
     juce::Typeface::Ptr monoRegularTypeface, monoMediumTypeface;

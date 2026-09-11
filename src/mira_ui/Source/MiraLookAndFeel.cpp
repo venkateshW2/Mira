@@ -78,6 +78,34 @@ juce::Font MiraLookAndFeel::monoMedium(float height) const
     return juce::Font(juce::FontOptions(height).withTypeface(monoMediumTypeface));
 }
 
+void MiraLookAndFeel::paintGlassPanel(juce::Graphics& g, juce::Rectangle<int> bounds, float cornerRadius,
+                                       juce::Colour base)
+{
+    auto fb = bounds.toFloat();
+
+    juce::ColourGradient grad(base.brighter(0.015f), fb.getX(), fb.getY(), base.darker(0.05f), fb.getX(),
+                               fb.getBottom(), false);
+    g.setGradientFill(grad);
+    if (cornerRadius > 0.0f) g.fillRoundedRectangle(fb, cornerRadius);
+    else g.fillRect(fb);
+
+    // Fixed, page-relative light source (not per-panel — this is the "one shared glass
+    // sheet" illusion, so every panel's highlight agrees on where the light is coming
+    // from) — a soft radial glow, off-center toward the top-left, matching the mockup's
+    // own subtle top-left specular hint in its box-shadow inset.
+    juce::ColourGradient glow(juce::Colours::white.withAlpha(0.05f), fb.getX() + fb.getWidth() * 0.18f,
+                               fb.getY() + fb.getHeight() * 0.05f, juce::Colours::transparentWhite,
+                               fb.getX() + fb.getWidth() * 0.18f, fb.getY() + fb.getHeight() * 0.7f, true);
+    g.setGradientFill(glow);
+    if (cornerRadius > 0.0f) g.fillRoundedRectangle(fb, cornerRadius);
+    else g.fillRect(fb);
+
+    // Mockup's `0 2px 0 rgba(255,255,255,0.02) inset` — a hairline top edge, the one
+    // concrete "this is a lit glass surface, not a flat fill" cue.
+    g.setColour(juce::Colours::white.withAlpha(0.05f));
+    g.drawLine(fb.getX() + cornerRadius, fb.getY() + 0.5f, fb.getRight() - cornerRadius, fb.getY() + 0.5f, 1.0f);
+}
+
 juce::Font MiraLookAndFeel::getLabelFont(juce::Label&)
 {
     // JUCE only calls this for a Label that hasn't had setFont() called on it explicitly

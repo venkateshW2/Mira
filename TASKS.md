@@ -1112,6 +1112,28 @@ after scanning a real 15-file folder, matching exactly. Quit cleanly, no crash.
       Applied to every component step 1/4 already had (window background, labels, the
       table's header/rows/selection) — not yet to panels that don't exist yet (filter
       bar, waveform, detail grid — later build-order steps).
+
+      **Real `NSVisualEffectView` vibrancy tried and reverted — a real finding, not just
+      an attempt.** `NativeBlur.{h,mm}` wraps one in `juce::NSViewComponent`, and the
+      *material itself* is confirmed working (screenshotted: genuine blurred desktop
+      showing through the window). But `juce_NSViewComponent_mac.mm` attaches the native
+      view via plain Cocoa `[peerView addSubview: view]` onto the window's single shared
+      JUCE peer view — since every other JUCE component (labels, the table, everything)
+      is pixels painted into that *same* peer view, not a separate native layer, the
+      embedded native view has no JUCE z-order to interleave with: it always renders in
+      front of the *entire* window's JUCE content, not behind it. Confirmed by screenshot
+      — with it wired in, only the blur was visible, every other component vanished.
+      Getting real vibrancy showing *through* JUCE panels needs deeper native window
+      surgery (make the effect view the `NSWindow`'s actual `contentView`, render JUCE as
+      a transparent subview on top of it) — parked, not attempted. `NativeBlur.{h,mm}`
+      are kept, unused, as the starting point for that if it's worth doing later.
+
+      **Fallback in place now**: `MiraLookAndFeel::paintGlassPanel` — pure JUCE painting
+      (a vertical gradient between two close panel shades, a fixed page-relative radial
+      highlight so every panel agrees on where the light comes from, and the mockup's own
+      `0 2px 0 rgba(255,255,255,0.02) inset` hairline top edge, ported directly). No real
+      blur, but no native risk either, and visually in the same family. Applied to
+      `MainComponent`'s background; not yet to individual panels.
 - [ ] `AudioThumbnail` + `AudioThumbnailCache` waveform display (persistence already
       proven in Phase 0 spike)
 - [ ] Playback: `AudioDeviceManager` → `AudioSourcePlayer` → `AudioTransportSource` →

@@ -86,7 +86,10 @@ public:
         setSize(600, 520); // wide enough for FileTable's six columns without cramping
     }
 
-    void paint(juce::Graphics& g) override { g.fillAll(MiraLookAndFeel::surface); }
+    void paint(juce::Graphics& g) override
+    {
+        MiraLookAndFeel::paintGlassPanel(g, getLocalBounds(), 0.0f, MiraLookAndFeel::surface);
+    }
 
     void resized() override
     {
