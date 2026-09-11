@@ -1076,11 +1076,16 @@ illustration, not a spec.
       std::__1::system_error: recursive_mutex lock failed` — printed *after*
       "analyzed N files" and after all DB writes had already completed (confirmed via
       `mira stats` on the same DB immediately after: all 294 rows present, correct
-      counts). Did not reproduce on an immediate full rerun of the same 294-file library
-      (ran clean, exit 0). Looks like a load-dependent teardown race in one of the
-      vendored libraries' own static/thread-pool state (ONNX Runtime and Essentia both
-      keep process-global state — OrtEnv.h documents one such prior bug in this exact
-      area) rather than anything in the per-dimension-similarity code itself, which is
-      synchronous DSP math and plain SQL writes with no threads of its own. Flagged, not
-      chased further yet — no reproduction, no data-loss, but a crash at exit is still a
-      real bug worth a proper investigation before this ships anywhere unattended.
+      counts). Looks like a load-dependent teardown race in one of the vendored
+      libraries' own static/thread-pool state (ONNX Runtime and Essentia both keep
+      process-global state — OrtEnv.h documents one such prior bug in this exact area)
+      rather than anything in the per-dimension-similarity code itself, which is
+      synchronous DSP math and plain SQL writes with no threads of its own.
+
+      **Stress-tested, did not reproduce**: 5x `mira analyze --force` back-to-back on the
+      original 294-file Dark Pop library, then 5x more (1 plain + 4 `--force`) on a
+      different, larger 304-file library (`Black Octopus Sound - Futuretone Drum & Bass
+      Mayhem`) — 10 full analyze runs total, all exit code 0, no repeat. Given it won't
+      reproduce under repeated stress on two different libraries, not chasing further
+      without a real repro — flagged and left here for if it ever recurs with more
+      information (a specific file, a specific run condition) to go on.
