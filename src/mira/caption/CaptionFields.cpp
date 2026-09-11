@@ -129,6 +129,34 @@ void applyHumanOverrides(Database& db, const std::string& human, CaptionFields& 
     }
 }
 
+// TASKS.md Phase 4 "segment-level analysis replacing whole-track averaging". `segMachine`
+// is a (segment, file)-scoped machine JSON (main.cpp's buildSegmentMachineJson) -- a
+// *subset* of what whole-file analysis produces (DSP + both embeddings + genre/
+// instrument/moodtheme/voice_instrumental; no rhythm/key, a documented scope boundary),
+// so this only ever overrides those specific fields, never bpm/keyScale.
+//
+// Guarded on the segment's own content_gate.is_music, not on whether topScored/topGenre
+// came back non-empty -- those two situations look identical from the return value alone
+// (both are "no genre/mood/instrument in `f`"), but mean different things: "this segment
+// wasn't gated as music, so genre/etc were never computed for it at all" should leave the
+// whole-file's values in place, while "this segment is music but nothing cleared
+// threshold" is a real, more-specific answer that should replace them. Always reads
+// "$.instrument", never "$.stem_instrument" -- stem_instrument is not part of
+// segment-level analysis's scope, unlike extractCaptionFields' content-type branch above.
+void applySegmentMachine(Database& db, const std::string& segMachine, CaptionFields& f) {
+    auto isMusic = db.jsonExtractDouble(segMachine, "$.content_gate.is_music");
+    if (!isMusic || *isMusic == 0.0) return;
+
+    f.instruments = topScored(db, segMachine, kInstrumentClassNames, kInstrumentClassCount,
+                               "$.instrument", kCaptionInstrumentThreshold, kCaptionMaxInstruments);
+    f.genre = topGenre(db, segMachine);
+    f.moods = topScored(db, segMachine, kMoodThemeClassNames, kMoodThemeClassCount,
+                         "$.moodtheme", kCaptionMoodThreshold, kCaptionMaxMood);
+    if (auto voiceProb = db.jsonExtractDouble(segMachine, "$.voice_instrumental.voice_probability")) {
+        f.isInstrumental = (*voiceProb < kCaptionVoiceThreshold);
+    }
+}
+
 } // namespace
 
 CaptionFields extractCaptionFields(Database& db, const FileRecord& record) {
@@ -194,20 +222,25 @@ CaptionFields extractCaptionFields(Database& db, const FileRecord& record) {
 
 CaptionFields extractCaptionFieldsForSegment(Database& db, const FileRecord& record,
                                               const SegmentRecord& segment) {
-    // Starts from the whole-file document -- mira has no per-segment classification
-    // (Phase 4's "segment-level analysis replacing whole-track averaging" is still
-    // unbuilt; TASKS.md), so genre/instruments/moods/bpm/key here are the file's own
-    // whole-file measurements, not re-measured for this specific time range. Documented
-    // simplification, not hidden: a segment's BPM in particular inherits the file's
-    // single average tempo even though the whole reason this function exists is that a
-    // long file's *character* varies by section -- tempo can vary the same way (Mir.cpp's
-    // own tempo-stability finding). Revisit once Phase 4 lands.
+    // Starts from the whole-file document as the baseline/fallback -- genre/instruments/
+    // moods/voice_instrumental get overridden below when this (segment, file) pair has
+    // its own analysis (TASKS.md Phase 4 "segment-level analysis replacing whole-track
+    // averaging", `mira tag-segment` runs it immediately when a boundary is declared).
+    // bpm/key are a documented, deliberate exception: segment analysis doesn't rerun
+    // rhythm/key detection (Phase 4 scope decision -- beat_this needs a few seconds of
+    // audio to be reliable, and this was judged not worth the added per-segment runtime
+    // cost for v1), so those two always stay the file's whole-file values even when a
+    // segment's own machine JSON exists.
     CaptionFields f = extractCaptionFields(db, record);
 
     // The one thing that must change regardless: duration is the segment's own length,
     // not the whole file's -- this is what makes the exported clip fit SA3's per-clip
     // duration ceiling at all.
     f.durationSeconds = segment.endSeconds - segment.startSeconds;
+
+    if (auto segMachine = db.getSegmentMachine(segment.id, record.id)) {
+        applySegmentMachine(db, *segMachine, f);
+    }
 
     // A segment's own `human` (the time-ranged tags -- "funny" from 2:00-3:30) is layered
     // on top of the file-level document *last*, so a segment-specific tag always wins

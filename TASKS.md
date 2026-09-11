@@ -910,7 +910,48 @@ checked against the actual shipped model configs rather than assumed:
         domain-mismatch problem a threshold number can't solve — a real Phase 4 finding in
         its own right, feeding directly into the per-dimension-similarity item below
         (genre may simply not be a reliable *dimension* for loop-type content at all).
-- [ ] Segment-level analysis replacing whole-track averaging
+- [x] Segment-level analysis replacing whole-track averaging. Closes the gap
+      `extractCaptionFieldsForSegment` (Phase 3) documented in its own comment: segment
+      boundaries and human tags existed, but every machine-derived field (genre,
+      instruments, mood, voice) still came from the file's *whole-track* analysis, never
+      re-measured for the segment's own time range.
+
+      **Built:** `mira tag-segment` now analyzes immediately when a boundary is declared
+      (not deferred to `export-segments`) — slices the affected file's(s') audio to
+      `[start,end)` and reruns a *subset* of the whole-file pipeline on just that slice:
+      DSP descriptors, both embeddings (effnet/DCLAP), and — gated on the content gate's
+      `is_music`, identically to the whole-file loop — moodtheme/instrument/danceability/
+      genre/voice_instrumental (`buildSegmentMachineJson`, main.cpp). Stored in a new
+      `segment_analysis` table keyed by `(segment_id, file_id)`, not just `segment_id` —
+      required because a `group_id`-scoped segment (a synced stem set) is *one* row in
+      `segments` but covers *multiple* files, each with different audio in that range.
+      `extractCaptionFieldsForSegment` now reads this and overrides genre/instruments/
+      moods/voice_instrumental when present, falling back to the file's whole-file values
+      otherwise (guarded on the segment's own `is_music`, not on the override values
+      being non-empty — the two look identical from a returned-empty-list alone, but mean
+      different things: "never computed for this segment" should keep the whole-file
+      value, "computed and nothing cleared threshold" is a real, more-specific empty
+      answer).
+
+      **Explicitly out of scope, not an oversight:** rhythm/key/chords/transcription
+      never rerun per segment (`beat_this` needs a few seconds of audio to be reliable,
+      and the added per-segment runtime cost was judged not worth it for v1) — bpm/key
+      always stay the file's whole-file values, even when a segment has its own machine
+      JSON. `stem_instrument` also isn't rerun; `applySegmentMachine` only ever reads
+      back the plain `$.instrument` path regardless of content type.
+
+      **Verified on a real synced stem set** (a 5-stem songstarter group,
+      `DKP_80_songstarter_wet_dream_Amin`), both code paths:
+      - *Fallback path*: an 8s segment across all 5 stems came back `is_music=false` for
+        every stem (CED-small didn't gate short slices as music) — exported captions
+        correctly kept the whole-file genre ("Electronic: Experimental") and bpm/key,
+        confirming the guard doesn't silently wipe good whole-file data when segment
+        classification legitimately never ran.
+      - *Override path*: two different segments of the *same file* (0–6s vs the full
+        0–12s) came back `is_music=true` and produced genuinely different `instruments`
+        fields — `"electric guitar"` vs `"bass, synthesizer, drums, piano"` — proof the
+        override is really per-segment, not one fixed whole-file value leaking through
+        (that could not happen if the two segments were reading the same source).
 
 ---
 

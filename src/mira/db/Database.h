@@ -104,6 +104,16 @@ public:
     std::vector<SegmentRecord> findSegmentsForFile(int64_t fileId);
     std::vector<FileRecord> findFilesByGroupId(const std::string& groupId);
 
+    // TASKS.md Phase 4 "segment-level analysis replacing whole-track averaging" —
+    // per-(segment, file) machine JSON (Database.cpp's `segment_analysis` schema comment
+    // explains the composite key). Upsert replaces the row wholesale, same "machine is
+    // rewritten wholesale on re-analysis" convention as files.machine. nullopt from the
+    // getter means this (segment, file) pair was never analyzed — CaptionFields.cpp
+    // falls back to the file's own whole-file machine data in that case, not an error.
+    void upsertSegmentAnalysis(int64_t segmentId, int64_t fileId, const std::string& machineJson,
+                                int64_t analyzedAt);
+    std::optional<std::string> getSegmentMachine(int64_t segmentId, int64_t fileId);
+
     // Folder-level `human` defaults (TASKS.md Phase 3 addition; see Database.cpp's
     // `folder_defaults` schema comment). `setFolderDefaultField` merges one key into the
     // folder's `human` object (creating the row if it doesn't exist yet), same

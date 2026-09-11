@@ -1172,7 +1172,75 @@ int runTagFolder(const std::vector<std::string>& args) {
     return 0;
 }
 
-// TASKS.md Phase 3 addition: the write side of a time-ranged caption boundary (see
+// TASKS.md Phase 4 "segment-level analysis replacing whole-track averaging". Runs a
+// *subset* of the whole-file analyze loop's pipeline (above) against one already-sliced
+// segment buffer: DSP descriptors, both embeddings, and -- gated on the content gate's
+// is_music exactly like the whole-file loop -- moodtheme/instrument/danceability/genre/
+// voice_instrumental. Deliberately excludes: active-region extraction (the slice was
+// already hand-picked by whoever called `mira tag-segment`; re-restricting it to "active"
+// sub-spans would fight that choice, not honor it), rhythm/key/chords/transcription (a
+// scoped-out Phase 4 decision -- beat_this in particular needs a few seconds of audio to
+// be reliable, and per-segment reruns of the full MIR stack were judged not worth the
+// added cost for v1 -- CaptionFields.cpp's extractCaptionFieldsForSegment keeps bpm/key
+// at the file's whole-file values for exactly this reason), and stem_instrument (not
+// re-run per segment; CaptionFields.cpp's applySegmentMachine only ever reads the plain
+// "$.instrument" path back out, so this never writes "$.stem_instrument" either).
+std::string buildSegmentMachineJson(const std::vector<float>& mono, const std::vector<float>& left,
+                                     const std::vector<float>& right, int sampleRate,
+                                     mira::Taxonomy& instrumentTaxonomy, mira::Taxonomy& genreTaxonomy) {
+    std::ostringstream machine;
+    machine << "{\"duration_seconds\":" << (static_cast<double>(mono.size()) / sampleRate)
+            << ",\"sample_rate\":" << sampleRate;
+
+    auto dsp = mira::computeDspDescriptors(left, right, sampleRate);
+    machine << ",\"dsp\":" << mira::toJson(dsp);
+
+    auto embedding = mira::computeEmbedding(mono, sampleRate, MIRA_EFFNET_MODEL);
+    if (embedding.ok) machine << ",\"embedding\":" << mira::toJson(embedding);
+
+    auto dclapEmbedding = mira::computeDclapEmbedding(mono, sampleRate, MIRA_DCLAP_AUDIO_MODEL);
+    if (dclapEmbedding.ok) machine << ",\"dclap_embedding\":" << mira::toJson(dclapEmbedding);
+
+    auto contentGate = mira::runContentGate(mono, sampleRate, MIRA_CED_MODEL);
+    if (contentGate.ok) machine << ",\"content_gate\":" << mira::toJson(contentGate);
+
+    if (embedding.ok && contentGate.ok && contentGate.isMusic) {
+        auto moodTheme = mira::classifyMoodTheme(embedding.vector, MIRA_MOODTHEME_MODEL);
+        if (moodTheme.ok) machine << ",\"moodtheme\":" << mira::toJson(moodTheme);
+
+        auto instrument = mira::classifyInstrument(embedding.vector, MIRA_INSTRUMENT_MODEL);
+        if (instrument.ok) {
+            machine << ",\"instrument\":" << mira::toJson(instrument);
+            if (instrumentTaxonomy.ok()) {
+                std::vector<std::string> names(mira::kInstrumentClassNames,
+                                                mira::kInstrumentClassNames + mira::kInstrumentClassCount);
+                machine << ",\"instrument_normalized\":"
+                        << normalizedLabelsJson(names, instrument.scores, instrumentTaxonomy);
+            }
+        }
+
+        auto danceabilityHead = mira::classifyDanceability(embedding.vector, MIRA_DANCEABILITY_MODEL);
+        if (danceabilityHead.ok) machine << ",\"danceability_head\":" << mira::toJson(danceabilityHead);
+
+        auto genre = mira::classifyGenre(embedding.vector, MIRA_GENRE_MODEL);
+        if (genre.ok) {
+            machine << ",\"genre\":" << mira::toJson(genre);
+            if (genreTaxonomy.ok()) {
+                std::vector<std::string> names(mira::kGenreClassNames,
+                                                mira::kGenreClassNames + mira::kGenreClassCount);
+                machine << ",\"genre_normalized\":" << normalizedLabelsJson(names, genre.scores, genreTaxonomy);
+            }
+        }
+
+        auto voiceInstrumental = mira::classifyVoiceInstrumental(embedding.vector, MIRA_VOICE_INSTRUMENTAL_MODEL);
+        if (voiceInstrumental.ok) machine << ",\"voice_instrumental\":" << mira::toJson(voiceInstrumental);
+    }
+
+    machine << "}";
+    return machine.str();
+}
+
+// TASKS.md Phase 3/4: the write side of a time-ranged caption boundary (see
 // Database.cpp's `segments` table comment for the full rationale -- a long through-
 // composed file, or a synced set of delivery stems sharing one files.group_id, whose
 // character changes partway through can't get one honest whole-file caption). Target
@@ -1180,8 +1248,10 @@ int runTagFolder(const std::vector<std::string>& args) {
 // containing '|' is a group_id (main.cpp's own siblingKey format, `<parentDir>|
 // <durationSeconds>` -- never valid in a plain path or numeric id, so unambiguous),
 // meaning this boundary and its tags apply to every file in that stem group at the same
-// timestamps, keeping the set in sync. This only records the boundary; `mira
-// export-segments` is what actually cuts audio.
+// timestamps, keeping the set in sync. Since TASKS.md Phase 4, this also immediately
+// slices and analyzes the declared range for every affected file (buildSegmentMachineJson
+// above) -- the segment is fully described the moment it's created, not just bounded.
+// `mira export-segments` is still what actually cuts and writes the audio clips.
 int runTagSegment(const std::vector<std::string>& args) {
     std::string dbPath = defaultDbPath();
     std::vector<std::string> positional;
@@ -1225,10 +1295,12 @@ int runTagSegment(const std::vector<std::string>& args) {
 
     std::optional<std::string> groupId;
     std::optional<int64_t> fileId;
+    std::vector<mira::FileRecord> targetFiles; // every file this segment's analysis runs against
 
     if (target.find('|') != std::string::npos) {
         groupId = target;
-        if (db.findFilesByGroupId(target).empty()) {
+        targetFiles = db.findFilesByGroupId(target);
+        if (targetFiles.empty()) {
             std::cerr << "mira tag-segment: no files found for group_id '" << target << "'" << std::endl;
             return 1;
         }
@@ -1243,6 +1315,7 @@ int runTagSegment(const std::vector<std::string>& args) {
             return 1;
         }
         fileId = record->id;
+        targetFiles.push_back(*record);
     }
 
     std::ostringstream human;
@@ -1267,6 +1340,54 @@ int runTagSegment(const std::vector<std::string>& args) {
     if (groupId) std::cout << " for group " << *groupId;
     else std::cout << " for file id " << *fileId;
     std::cout << "\nhuman: " << human.str() << std::endl;
+
+    // TASKS.md Phase 4 "segment-level analysis" — analyze immediately, one file at a
+    // time (a group_id segment covers multiple sibling stems, each with its own audio in
+    // this time range — Database.cpp's `segment_analysis` schema comment). Loaded once
+    // here (not deferred to `mira export-segments`) because the whole point is that the
+    // segment is fully described the moment it's declared.
+    mira::EssentiaEngine engine; // essentia::init() for loadAudio + the analyzers below
+    mira::Taxonomy instrumentTaxonomy(MIRA_INSTRUMENT_TAXONOMY, "mtg_jamendo_instrument");
+    mira::Taxonomy genreTaxonomy(MIRA_GENRE_TAXONOMY, "genre_discogs400");
+
+    int analyzedCount = 0, skipCount = 0;
+    for (const auto& file : targetFiles) {
+        auto audio = mira::loadAudio(file.path);
+        if (!audio) {
+            std::cerr << "  skip (could not decode): " << file.path << std::endl;
+            ++skipCount;
+            continue;
+        }
+        if (*startSeconds >= audio->durationSeconds) {
+            std::cerr << "  skip (segment starts past end of file, " << audio->durationSeconds
+                       << "s): " << file.path << std::endl;
+            ++skipCount;
+            continue;
+        }
+
+        int64_t startSample = static_cast<int64_t>(*startSeconds * audio->sampleRate);
+        int64_t endSample = std::min<int64_t>(static_cast<int64_t>(*endSeconds * audio->sampleRate),
+                                               static_cast<int64_t>(audio->left.size()));
+        startSample = std::max<int64_t>(0, startSample);
+        if (endSample <= startSample) {
+            std::cerr << "  skip (empty slice after clamping to file length): " << file.path << std::endl;
+            ++skipCount;
+            continue;
+        }
+
+        std::vector<float> mono(audio->mono.begin() + startSample, audio->mono.begin() + endSample);
+        std::vector<float> left(audio->left.begin() + startSample, audio->left.begin() + endSample);
+        std::vector<float> right(audio->right.begin() + startSample, audio->right.begin() + endSample);
+
+        std::string machineJson = buildSegmentMachineJson(mono, left, right, audio->sampleRate,
+                                                            instrumentTaxonomy, genreTaxonomy);
+        db.upsertSegmentAnalysis(segId, file.id, machineJson, static_cast<int64_t>(std::time(nullptr)));
+        ++analyzedCount;
+    }
+    std::cout << "analyzed segment for " << analyzedCount << " file(s)";
+    if (skipCount > 0) std::cout << ", " << skipCount << " skipped";
+    std::cout << std::endl;
+
     return 0;
 }
 

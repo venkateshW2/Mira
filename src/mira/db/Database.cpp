@@ -81,6 +81,20 @@ CREATE TABLE IF NOT EXISTS folder_defaults (
     human         TEXT NOT NULL DEFAULT '{}',
     created_at    INTEGER NOT NULL
 );
+
+-- TASKS.md Phase 4 "segment-level analysis replacing whole-track averaging". Keyed by
+-- (segment_id, file_id), NOT just segment_id -- a group_id-scoped segment (the common
+-- case: a synced stem set) is *one* row in `segments` but covers *multiple* files, and
+-- each stem's own audio in that time range is different, so each needs its own machine
+-- JSON. Same shape as files.machine (a subset of it -- see main.cpp's
+-- buildSegmentMachineJson for exactly which analyzers rerun per segment and which don't).
+CREATE TABLE IF NOT EXISTS segment_analysis (
+    segment_id   INTEGER NOT NULL REFERENCES segments(id),
+    file_id      INTEGER NOT NULL REFERENCES files(id),
+    machine      TEXT NOT NULL DEFAULT '{}',
+    analyzed_at  INTEGER NOT NULL,
+    PRIMARY KEY (segment_id, file_id)
+);
 )SQL";
 
 FileRecord fromRow(SQLite::Statement& q) {
@@ -284,6 +298,27 @@ std::vector<FileRecord> Database::findFilesByGroupId(const std::string& groupId)
     q.bind(1, groupId);
     while (q.executeStep()) result.push_back(fromRow(q));
     return result;
+}
+
+void Database::upsertSegmentAnalysis(int64_t segmentId, int64_t fileId, const std::string& machineJson,
+                                      int64_t analyzedAt) {
+    SQLite::Statement upsert(db,
+        "INSERT INTO segment_analysis (segment_id, file_id, machine, analyzed_at) VALUES (?, ?, json(?), ?) "
+        "ON CONFLICT(segment_id, file_id) DO UPDATE SET machine = excluded.machine, "
+        "analyzed_at = excluded.analyzed_at");
+    upsert.bind(1, segmentId);
+    upsert.bind(2, fileId);
+    upsert.bind(3, machineJson);
+    upsert.bind(4, analyzedAt);
+    upsert.exec();
+}
+
+std::optional<std::string> Database::getSegmentMachine(int64_t segmentId, int64_t fileId) {
+    SQLite::Statement q(db, "SELECT machine FROM segment_analysis WHERE segment_id = ? AND file_id = ?");
+    q.bind(1, segmentId);
+    q.bind(2, fileId);
+    if (!q.executeStep()) return std::nullopt;
+    return q.getColumn(0).getString();
 }
 
 void Database::setFolderDefaultField(const std::string& folderPath, const std::string& jsonPath,
