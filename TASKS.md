@@ -839,7 +839,40 @@ checked against the actual shipped model configs rather than assumed:
       DCLAP, not assume effnet's genre-classifier space is the stronger prior.
 - [ ] Per-dimension similarity (timbre / rhythm / spectrum), not Sononym's fixed five
       (§12 Q5)
-- [ ] Per-head confidence calibration → sets the Phase 3 render-gate thresholds
+- [x] Per-head confidence calibration → sets the Phase 3 render-gate thresholds
+      (`CaptionFields.h`'s `kCaption*Threshold` constants). Ran all four gated heads
+      (genre, instrument, moodtheme, voice_instrumental) across the same real 294-file
+      library used for the embedding A/B and inspected the actual score distributions —
+      see `CaptionFields.h`'s updated comment for the full reasoning per head. Result:
+      **no threshold value changed**, but for a reason, not by default —
+
+      - `instrument` (0.10): confirmed well-calibrated. Across every (file, class) score
+        pair, 86% sit below 0.05 with a clear tail above 0.10 — a real noise/signal gap,
+        threshold sits right in it.
+      - `voice_instrumental` (0.5): confirmed against real ground truth (filenames
+        containing "vocal" vs not) — correctly separated 5/6 vocal-named files (scores
+        0.53–0.997) from all 49 non-vocal ones except a couple of ambiguous full
+        "songstarter" mixes that may genuinely contain a vocal layer despite an
+        instrument-only filename. The one real miss was a heavily processed vocal
+        *one-shot* scoring 0.39 (below threshold) — moving the threshold either direction
+        traded that miss for new ones on the other side, so left as-is.
+      - `moodtheme` (0.10): the head's own ceiling is low on loop content (max top-1 score
+        observed: 0.28) — MTG-Jamendo's moodtheme model is full-song-trained, and applying
+        it to short instrumental loops produces uniformly modest confidence, not a
+        threshold miscalibration. Raising the bar would have cut the field to almost
+        nothing (7 of 3080 raw scores clear 0.20); spot-checked labels at the current
+        threshold ("dark", "space", "deep" on a *Dark Pop* pack's bass/synth loops) look
+        plausible.
+      - `genre` (0.10): **flagged, not fixed.** Unlike instrument, genre's score
+        distribution has no clean noise/signal gap — it's continuous from ~0.04 to ~0.58 —
+        and at least one spot-checked top label ("Progressive Metal" on a soft electric
+        guitar loop) looked like a real miss. But there's no ground-truth genre label set
+        for isolated instrumental loops to test candidate thresholds against, so picking a
+        different number would be guessing dressed up as calibration. Documented as the
+        one head where genre_discogs400 (trained on full tracks) applied to loops is a
+        domain-mismatch problem a threshold number can't solve — a real Phase 4 finding in
+        its own right, feeding directly into the per-dimension-similarity item below
+        (genre may simply not be a reliable *dimension* for loop-type content at all).
 - [ ] Segment-level analysis replacing whole-track averaging
 
 ---

@@ -46,10 +46,25 @@ struct CaptionFields {
     std::optional<bool> isInstrumental;    // from voice_instrumental.voice_probability, thresholded
 };
 
-// Confidence-gate thresholds and top-k caps. First-pass, unmeasured against real
-// captions or LoRA training outcomes -- same caveat as every other first-pass threshold
-// elsewhere in this codebase (documented, not hidden; revisit once there's real material
-// to tune against).
+// Confidence-gate thresholds and top-k caps. Originally first-pass/unmeasured; TASKS.md
+// Phase 4 "per-head confidence calibration" ran all four heads across a real 294-file
+// library and checked the actual score distributions (and, for voice_instrumental,
+// real vocal-vs-instrumental ground truth from filenames) against these numbers. Result:
+// no number changed. instrument's raw scores split cleanly (86% of all label/file score
+// pairs sit below 0.05, a clear tail above 0.10) and voice_instrumental's 0.5 correctly
+// separated 5/6 vocal-named files from 49 non-vocal ones (the one miss was a heavily
+// processed vocal *one-shot* at 0.39 -- a genuine hard case, not a threshold problem, and
+// moving the threshold either direction traded that miss for new ones on the other side).
+// moodtheme's ceiling is inherently low on loop content (max top-1 score seen: 0.28,
+// against 0.10's threshold) -- it's a full-song-trained head applied to short
+// instrumental loops, a domain mismatch no threshold number fixes, and raising the bar
+// would have gutted the field almost entirely (only 7 of 3080 raw scores clear 0.20).
+// genre is the one head flagged, not fixed: its score distribution has no clear
+// noise/signal gap the way instrument's does, and at least one spot-checked label
+// ("Progressive Metal" on a soft electric guitar loop) looked like a real miss -- but
+// with no ground-truth genre labels for isolated loops to test against, picking a new
+// number here would be guessing, not calibrating. Left as-is and documented rather than
+// silently "fixed" with an unjustified value.
 constexpr double kCaptionGenreThreshold = 0.10;
 constexpr double kCaptionInstrumentThreshold = 0.10;
 constexpr double kCaptionMoodThreshold = 0.10;
