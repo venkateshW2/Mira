@@ -1190,22 +1190,6 @@ public:
         // "scanning is mira's job not the user's job" — a newly added root gets scanned
         // automatically, no manual Scan click required.
         folderTree->onFolderAdded = [this](const juce::File& f) { enqueueScan(f.getFullPathName()); };
-        fileList->onAddToCollection = [this](std::vector<int64_t> ids, int64_t collectionId) {
-            database->addFilesToCollection(collectionId, ids);
-            folderTree->refresh();
-        };
-        fileList->onAddToNewCollection = [this](std::vector<int64_t> ids) {
-            promptForNewCollectionName([this, ids](int64_t collectionId) {
-                database->addFilesToCollection(collectionId, ids);
-                folderTree->refresh();
-                fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
-            });
-        };
-        fileList->onRemoveFromCollection = [this](std::vector<int64_t> ids, int64_t collectionId) {
-            database->removeFilesFromCollection(collectionId, ids);
-            folderTree->refresh();
-            fileList->refresh(); // the rows being looked at are exactly what just changed
-        };
         folderTree->onCollectionSelected = [this](int64_t collectionId) {
             fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
         };
@@ -1283,6 +1267,22 @@ public:
             refreshDetailsSidebar(true);
         });
         fileList->getAnalyzeOptionsSuffix = [this] { return analyzeOptions.suffixForMenuLabel(); };
+        fileList->onAddToCollection = [this](std::vector<int64_t> ids, int64_t collectionId) {
+            database->addFilesToCollection(collectionId, ids);
+            folderTree->refresh();
+        };
+        fileList->onAddToNewCollection = [this](std::vector<int64_t> ids) {
+            promptForNewCollectionName([this, ids](int64_t collectionId) {
+                database->addFilesToCollection(collectionId, ids);
+                folderTree->refresh();
+                fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
+            });
+        };
+        fileList->onRemoveFromCollection = [this](std::vector<int64_t> ids, int64_t collectionId) {
+            database->removeFilesFromCollection(collectionId, ids);
+            folderTree->refresh();
+            fileList->refresh(); // the rows being looked at are exactly what just changed
+        };
         fileList->onRowCountsChanged = [this](int shown, int total) { filterBar->setCounts(shown, total); };
         fileList->onScopeSummaryChanged = [this](FileTableModel::ScopeSummary summary, bool loading)
         { updateFolderSummaryText(summary, loading); };
