@@ -3618,6 +3618,26 @@ private:
                 static_cast<juce::ModalComponentManager::Callback*>(nullptr));
             return;
         }
+        // Drop anything already running or already waiting. Without this, asking to
+        // analyze the same selection twice queues a second full copy of it -- and since
+        // every file in a *pending* batch renders as "queued", files the running batch
+        // had already finished and written results for went on showing "queued"
+        // indefinitely: "its shows qued but the results are already available".
+        //
+        // Only same-run duplicates are dropped, not re-analysis in general: once a batch
+        // drains, asking again re-analyzes exactly as before (the CLI's --paths-from
+        // always re-analyzes regardless of analyzed_at). Queueing work that is already
+        // queued is never what anyone means.
+        std::set<juce::String> alreadyPending(activeAnalyzeBatch.begin(), activeAnalyzeBatch.end());
+        for (const auto& batch : analyzeQueue)
+            alreadyPending.insert(batch.paths.begin(), batch.paths.end());
+        paths.erase(std::remove_if(paths.begin(), paths.end(),
+                                    [&alreadyPending](const juce::String& p) {
+                                        return alreadyPending.count(p) > 0;
+                                    }),
+                     paths.end());
+        if (paths.empty()) return; // every one of them is already on its way
+
         // Options are snapshotted here, not read at dequeue time: a batch runs with the
         // toggles that were on when it was requested, so ticking Chords while a long
         // queue is draining doesn't silently change what those already-queued batches do.

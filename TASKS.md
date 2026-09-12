@@ -2648,6 +2648,33 @@ need?) rather than an optimisation.
       Files... picker and the Add to Collection submenu all compile and are wired, but
       nobody has looked at them.
 
+- [x] *(found by reproducing it, fixed and verified 2026-09-12)* **"Shows queued but the
+      results are already available."** Reported against collections, but not
+      collection-specific at all — folders would do the same.
+
+      `enqueueAnalyze` did not deduplicate. Asking to analyze the same selection a second
+      time queued a **second full copy** of it, and since every file in a *pending* batch
+      renders as `queued`, files the running batch had already finished and written results
+      for went on showing `queued` indefinitely. All three of the user's files read
+      "queued" while two of them plainly had BPM, key, genre and mood on screen.
+
+      **Reproduced before fixing**, rather than reasoned about: a temporary trace on
+      `enqueueAnalyze`/`startNextAnalyzeIfIdle`/the progress handlers, driven by synthetic
+      right-clicks (`CGEvent`, since JUCE's popup menus are not reachable through the
+      accessibility API — `perform action "AXShowMenu"` succeeds and does nothing). Three
+      clicks gave `queue=2`, `queue=3`. After the fix the second and third enqueues are
+      dropped and the batch runs its full lifecycle: `started 0/0` (decode) → `started 1/1`
+      → `progress 1/1` → `finished success=1` → `queue=0`.
+
+      Only same-run duplicates are dropped, not re-analysis in general — once a batch
+      drains, asking again re-analyzes exactly as before, since `--paths-from` always
+      re-analyzes regardless of `analyzed_at`. Queueing work that is already queued is
+      never what anyone means.
+
+      **Worth recording for next time**: `std::cerr` from the `.app` bundle never reaches a
+      shell redirect, which is why an earlier attempt at tracing looked like "the code
+      never ran". Traces have to go to a file.
+
 ### Carried over from Phase 5 — captions and caption surfaces
 
 From Phase 5's original PRD §9/§13 checklist. These are the last three caption outputs and
