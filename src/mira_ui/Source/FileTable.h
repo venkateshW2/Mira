@@ -1,25 +1,61 @@
 #pragma once
 
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_gui_extra/juce_gui_extra.h>
+
+#include <set>
 
 #include "mira/db/Database.h"
 #include "MiraLookAndFeel.h"
 
-// TASKS.md Phase 5 build-order step 4: the real paintCell-only TableListBox file list,
-// replacing step 1's plain Viewport + stacked Components (fine for a 15-file test
-// library, not for drive scale — TableListBox only ever creates row components for what's
-// on screen, painting the rest via paintCell instead of one juce::Component per file).
-// Columns match the reference mockup's table (File/BPM/Key/Loudness/Active/Type); see
-// FileTable.cpp's buildRow() for exactly which machine JSON path backs each one and the
-// mockup's own "—" convention for values that were never measured, not measured-as-zero.
+// TASKS.md Phase 5 — file list, second design. First design queried the DB directly
+// (`database.queryFiles(...)`), which meant clicking a folder that had never been
+// scanned showed nothing at all — confirmed wrong in discussion: "clicking on the
+// folder should show all files of the folder or subfolder even if it's not analysed...
+// we show all the files... then we allow to analyse". This is a real filesystem
+// listing instead (mira::hasSupportedAudioExtension, mira_core/Scanner.h's own
+// audio-extension check, not a second list to keep in sync) merged with whatever DB
+// row exists for each path via Database::findByPath — a file with no DB row still
+// shows up, just with a "not scanned" Status and dashes everywhere else, exactly the
+// same "unmeasured, not zero" discipline the CLI's machine JSON already uses.
 enum FileTableColumnId
 {
     ColFile = 1,
+    ColStatus,
     ColBpm,
     ColKey,
+    ColDuration,
+    ColSampleRate,
     ColLoudness,
     ColActive,
     ColType,
+    ColGenre,
+    ColInstrument,
+    ColMood,
+};
+
+// The split filter bar's state (review round 2: "filters should have division, not one
+// box"). An empty string or nullopt means "any" for that field; every set field must
+// match (AND).
+struct FilterCriteria
+{
+    juce::String text; // free text over the name and every field, space-separated terms
+    juce::String key;
+    std::optional<double> bpmMin, bpmMax;
+    juce::String genre, instrument, mood;
+
+    bool isEmpty() const
+    {
+        return text.trim().isEmpty() && key.isEmpty() && !bpmMin && !bpmMax && genre.isEmpty()
+               && instrument.isEmpty() && mood.isEmpty();
+    }
+};
+
+// Distinct values actually present in the current scope, files and segments both --
+// what the filter bar's dropdowns offer (FilterBar::setFacetOptions).
+struct FacetOptions
+{
+    juce::StringArray keys, genres, instruments, moods;
 };
 
 class FileTableModel : public juce::TableListBoxModel
@@ -27,10 +63,25 @@ class FileTableModel : public juce::TableListBoxModel
 public:
     FileTableModel(mira::Database& databaseIn, const MiraLookAndFeel& lafIn);
 
-    // Reloads rows from the DB. Caller must also call the owning TableListBox's
-    // updateContent() afterwards — this class doesn't hold a reference to the table
-    // itself, matching TableListBoxModel's usual ownership direction (table owns model).
-    void rebuild();
+    // Empty path == nothing selected yet, list stays empty — no "Show All" mode
+    // ("show all is confusing and dont need it"). A non-empty path scopes to that one
+    // folder and its subfolders, recursively, walking the real filesystem, not the DB.
+    // Caller must also call the owning TableListBox's updateContent() afterwards,
+    // matching this class's existing rebuild() contract.
+    void setScope(const juce::String& folderPathOrEmpty);
+    void rebuild(); // re-runs the current scope (e.g. after a scan completes)
+    // Rebuilds just one file's row (e.g. one file of an analyze batch just finished).
+    // False when that path isn't in the current scope, so nothing on screen changed.
+    bool refreshPath(const juce::String& path);
+
+    // The filter bar's criteria (split into key / BPM range / genre / instrument / mood /
+    // free text in review round 2). Filtering is a view over the already-built rows, not
+    // a re-scan -- the expensive part of showing a folder is walking it and reading every
+    // file's header, and changing a filter must not repeat that. Same updateContent()
+    // contract as setScope.
+    void setFilterCriteria(const FilterCriteria& newCriteria);
+    FacetOptions getFacetOptions() const;
+    int getUnfilteredRowCount() const { return static_cast<int>(allRows.size()); }
 
     int getNumRows() override;
     void paintRowBackground(juce::Graphics&, int rowNumber, int width, int height, bool rowIsSelected) override;
@@ -42,17 +93,188 @@ public:
     // there's nothing to dynamic_cast the way step 1's plain DraggableFileRow allowed.
     juce::var getDragSourceDescription(const juce::SparseSet<int>& currentlySelectedRows) override;
 
+    // Drives the bottom combined waveform/detail panel's visibility (nil when nothing's
+    // selected — hand-sketched layout, TASKS.md Phase 5: the panel isn't a permanent
+    // fixed strip, it only takes up space once there's an actual file to show).
+    void selectedRowsChanged(int lastRowSelected) override;
+    std::function<void(const mira::FileRecord*)> onSelectionChanged;
+
+    // Every currently *selected* row's real filesystem path — what "Analyze" (single or
+    // multiple, FileTableComponent's toolbar) acts on.
+    std::vector<juce::String> getSelectedPaths(const juce::SparseSet<int>& selectedRows) const;
+
+    // Every row currently listed, selected or not — "Analyze" falls back to this (the
+    // whole current tab's folder) when nothing's selected, same fallback Scan used to have.
+    std::vector<juce::String> getAllPaths() const;
+
+    // "status column should have analyse button not a separate button" + "so if i
+    // analyse different files in a different folder then i dono which file is
+    // analysing" — analysis state is global (not per-tab/scope), driven by
+    // MainComponent's analyze queue, and consulted live by statusText/statusColour so
+    // any row for a path currently queued or being analyzed reads that way regardless of
+    // which folder/tab happens to be showing it right now. repaint() only (no rebuild) —
+    // the underlying row data (bpm/key/etc.) hasn't changed, just how Status paints.
+    void setAnalysisState(std::set<juce::String> analyzingPaths, std::set<juce::String> queuedPaths);
+
+    // Right-click on any row — FileTableComponent builds the actual context menu
+    // (Analyze Selected/Folder); the model only reports the click and preserves whatever
+    // multi-selection was already active (TableListBox's own default behaviour).
+    void cellClicked(int rowNumber, int columnId, const juce::MouseEvent& e) override;
+    std::function<void(const juce::MouseEvent&)> onRightClicked;
+
+    // "we could also do a clik on the file pop up dialog open which shows the details" —
+    // double-click opens FileDetailsWindow for that one row; only fires when the file
+    // actually has a DB id to look up (inDatabase) — a not-yet-scanned file has nothing
+    // to show or edit yet.
+    void cellDoubleClicked(int rowNumber, int columnId, const juce::MouseEvent& e) override;
+    std::function<void(int64_t)> onRowDoubleClicked;
+
+    // A segment child row was selected: the parent file's record plus the segment's time
+    // range, so the bottom panel can load the file and select exactly that range.
+    std::function<void(const mira::FileRecord&, int64_t segmentId, double, double)> onSegmentSelected;
+
+    // Expands or collapses one file row's segment children -- the File column's
+    // disclosure triangle, or the right-click menu. No-op on a row without segments.
+    void toggleExpanded(int displayRow);
+    bool isFileRowWithSegments(int displayRow) const;
+    bool isExpanded(int displayRow) const;
+    // Fired after the visible rows change without a rebuild (expand/collapse), with the
+    // display row to keep selected -- the owner calls updateContent(), since the model
+    // has no handle on its own TableListBox.
+    std::function<void(int)> onDisplayChanged;
+    // The table's header, so the triangle hit-test in cellClicked can find the File
+    // column's current x (columns are user-draggable, File isn't guaranteed first).
+    void setHeader(juce::TableHeaderComponent* h) { header = h; }
+
     static void setupColumns(juce::TableHeaderComponent& header);
 
 private:
+    // inDatabase is false for a file that exists on disk but hasn't been indexed yet
+    // (mira's automatic scan hasn't reached it) — still shown, just with dashes
+    // everywhere. Status only ever shows "analyzed" once record.analyzedAt is set; every
+    // other state (not yet indexed, or indexed but not yet analyzed) reads the same to
+    // the user — "scanned in list also not needed its should be analysed" — scanning
+    // itself is invisible plumbing now (FileTableModel::statusText/statusColour).
     struct Row
     {
         mira::FileRecord record;
+        bool inDatabase = false;
         juce::String bpmText, keyText, loudnessText, activeText;
+        juce::String genreText, instrumentText, moodText;
+        // Read straight off the file's own header via AudioFormatManager — no analysis,
+        // no scan needed, so these are populated the instant a folder's clicked, same as
+        // the filename-derived BPM/key guesses below. "we are not showing the time of
+        // the file? the sample rate of the file? we should show all the metadata fields."
+        juce::String formatText, durationText, sampleRateText;
+        // "so now files have key mentioned in it so lets use that also... this list even
+        // without scanning is sortable" — a filename-derived guess (e.g. "Break_140bpm_
+        // Fmin.wav"), shown only when there's no real analyzed value yet. Never conflated
+        // with real machine data — paintCell dims these, same source-honesty discipline
+        // CaptionFields.cpp's human/machine distinction already follows.
+        bool bpmFromFilename = false; // explicit "NNNbpm" token, in the file's own name or an ancestor folder's
+        bool bpmGuessLoose = false;   // bare leading number ("DKP_70_...") — plausible but unconfirmed, dimmed further
+        bool keyFromFilename = false;
+        // "once i edit the details page the edit should show in the list" — a human
+        // override (FileDetailsWindow's Save) beats the analyzed value; these flag which
+        // ones are, so paintCell can colour them distinctly from a plain analyzed value.
+        bool genreFromHuman = false;
+        bool instrumentFromHuman = false;
+        bool moodFromHuman = false;
+        // "still the same kick and drums as electric guitars" — a last-resort filename
+        // keyword override (FileTable.cpp's filenameSaysPercussion) when both instrument
+        // models missed an obvious percussion file; dimmed like the BPM/key filename
+        // guesses, never conflated with real model output.
+        bool instrumentFromFilename = false;
+
+        // Structured values the split filters match on (review round 2). These are
+        // not the display text above: that's top-1 only, "+N"-suffixed, and sometimes a
+        // dimmed guess. Filtering "Instrument: flute" has to find a stem where flute is
+        // a real second candidate, not only one where it won. See buildRow for exactly
+        // which values count.
+        std::optional<double> bpmValue;
+        juce::String keyValue;
+        juce::StringArray genres, instruments, moods, keywords;
+
+        // One per segment (auto or manual). Each has its own labels from its own
+        // segment_analysis plus its own human tags; BPM and key come from the file,
+        // since per-segment analysis doesn't re-run rhythm or key (main.cpp's
+        // buildSegmentMachineJson).
+        //
+        // Also everything a segment's own child row displays (review round 3: "the list
+        // should show parent file, child as segment details") -- computed once in
+        // buildRow alongside the filter facets, so painting a child row never touches
+        // the database.
+        struct SegmentFacets
+        {
+            juce::StringArray genres, instruments, moods, keywords;
+            int64_t id = 0;
+            double startSeconds = 0.0, endSeconds = 0.0;
+            bool autoCreated = false; // source = 'auto' (analysis) vs a person's segment
+            bool humanTagged = false; // has its own human tags -- shown in accent, like files
+            juce::String loudnessText, genreText, instrumentText, moodText;
+        };
+        std::vector<SegmentFacets> segments;
+        int matchedSegments = 0; // set by applyFilter; the File column shows it when > 0
+        // Which segments this row's children show when expanded: all of them normally,
+        // only the matching ones while a segment-specific filter is active. Set by applyFilter.
+        std::vector<int> visibleSegments;
     };
-    Row buildRow(const mira::FileRecord& record) const;
+
+public:
+    // Building a folder's rows happens off the UI thread (review round 3: cold folder
+    // opens blocked the UI 370-667 ms). RowBuildJob (Main.cpp) calls collectRows with its
+    // *own* Database connection and AudioFormatManager -- collectRows and buildRow read
+    // no model state at all, so that's safe while the UI keeps using the model -- then
+    // hands the list back on the message thread via setRows. Row stays private; only
+    // this list type travels.
+    using RowList = std::vector<Row>;
+    RowList collectRows(const juce::String& scope, mira::Database& db, juce::AudioFormatManager& fm,
+                        const std::function<bool()>& shouldAbort) const;
+    // Switches scope immediately with an empty list (the rows follow via setRows).
+    void setScopeDeferred(const juce::String& folderPathOrEmpty);
+    // Installs rows built for `scope`; ignored (false) if the scope has changed since.
+    bool setRows(const juce::String& scope, RowList newRows);
+
+private:
+    // Thread-agnostic: everything it reads comes in through db/fm (see collectRows).
+    Row buildRow(const juce::File& file, mira::Database& db, juce::AudioFormatManager& fm) const;
+    // The UI thread's own convenience form -- one row, the model's own connection
+    // (refreshPath uses this).
+    Row buildRow(const juce::File& file) const { return buildRow(file, database, formatManager); }
+    juce::String statusText(const Row& row) const;
+    juce::Colour statusColour(const Row& row) const;
+    void applyFilter();
+    // Whether one set of labels (the file's own, or one segment's) passes every set
+    // criterion. BPM and key always come from `row`, since a segment inherits both.
+    bool matchesCriteria(const Row& row, const juce::StringArray& terms, const juce::StringArray& genres,
+                         const juce::StringArray& instruments, const juce::StringArray& moods,
+                         const juce::StringArray& keywords) const;
 
     mira::Database& database;
     const MiraLookAndFeel& laf;
-    std::vector<Row> rows;
+    mutable juce::AudioFormatManager formatManager; // header-only reads for Format/Duration/Sample Rate columns (buildRow is const)
+    std::vector<Row> allRows; // everything in the current scope, before the filter bar
+    std::vector<Row> rows;    // what's actually listed -- allRows with the filter applied
+
+    // What the table actually shows: each listed file, then (when expanded) its segment
+    // children. Every row-number-taking method (getNumRows, paintCell, selection, drag,
+    // clicks) goes through this, never through `rows` directly -- a table row number is
+    // no longer a file index once children are interleaved.
+    struct DisplayRow
+    {
+        size_t rowIndex;  // into `rows`
+        int segmentIndex; // into that row's `segments`; -1 = the file row itself
+    };
+    std::vector<DisplayRow> display;
+    std::set<juce::String> expandedPaths; // keyed by path, so expansion survives rebuilds
+    juce::TableHeaderComponent* header = nullptr;
+    void paintSegmentCell(juce::Graphics& g, const Row& row, const Row::SegmentFacets& segment, int columnId,
+                          juce::Rectangle<int> bounds, bool rowIsSelected);
+    void rebuildDisplay();
+    const Row* fileRowAt(int displayRow) const;               // the file, for a file *or* segment row
+    const Row::SegmentFacets* segmentAt(int displayRow) const; // null on a file row
+    juce::String scopePath;
+    FilterCriteria criteria;
+    std::set<juce::String> analyzingPaths;
+    std::set<juce::String> queuedForAnalysisPaths;
 };

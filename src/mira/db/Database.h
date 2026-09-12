@@ -39,6 +39,10 @@ struct SegmentRecord {
     double endSeconds = 0.0;
     std::string human = "{}";
     int64_t createdAt = 0;
+    // "manual" (tag-segment, mira_ui's + Segment) or "auto" (created by `mira analyze`
+    // from active-region detection, review round 2). Re-analysis only ever replaces auto
+    // rows nobody has edited -- see deleteUntouchedAutoSegmentsForFile.
+    std::string source = "manual";
 };
 
 // Wraps the mira SQLite database: schema creation and the file-table operations the
@@ -99,10 +103,73 @@ public:
     // human). `findFilesByGroupId` is how a caller turns a group_id back into the actual
     // set of sibling stem files to cut.
     int64_t createSegment(std::optional<std::string> groupId, std::optional<int64_t> fileId,
-                           double startSeconds, double endSeconds, const std::string& humanJson);
+                           double startSeconds, double endSeconds, const std::string& humanJson,
+                           const std::string& source = "manual");
+    // Removes this file's auto-created segments that are still exactly as analysis left
+    // them (`human` still '{}'), plus their segment_analysis rows, so a re-analysis can
+    // regenerate them. A segment someone tagged, or created by hand, is never touched.
+    void deleteUntouchedAutoSegmentsForFile(int64_t fileId);
+    // The group-scoped counterpart, for cue detection (review round 6). Same "untouched"
+    // test and the same guarantee: re-detecting cues replaces only the proposals nobody
+    // has tagged, and a cue someone named ("action", "funny") is never overwritten. That
+    // matters more here than for file segments, because cue boundaries are expected to be
+    // corrected by hand -- a detector that discarded those corrections on its next run
+    // would make the editing pointless.
+    void deleteUntouchedAutoSegmentsForGroup(const std::string& groupId);
     std::vector<SegmentRecord> findSegmentsForGroup(const std::string& groupId);
     std::vector<SegmentRecord> findSegmentsForFile(int64_t fileId);
     std::vector<FileRecord> findFilesByGroupId(const std::string& groupId);
+
+    // Synced-stem-set grouping across analyze runs (TASKS.md Phase 5 timeline-lanes
+    // review: "EP6's 13 stems all run 36:56 but have an empty group_id ... check whether
+    // sibling grouping only runs across one analyze batch" -- it did). main.cpp's
+    // grouping only ever saw the files in its own run, so analyzing 1 of 13 stems found
+    // no sibling and assigned no group. This is the missing other half: already-analyzed
+    // rows in the same parent directory, with their stored duration, so a later run can
+    // join the set an earlier run established.
+    //
+    // `parentDir` is matched as a literal path prefix plus a separator, not LIKE (a
+    // folder name containing '%' or '_' would otherwise match far too much); duration
+    // comes from machine.$.duration_seconds, the only place it is stored, which is why
+    // rows that were never analyzed can't be considered here at all.
+    struct AnalyzedSibling {
+        int64_t id = 0;
+        std::string path;
+        double durationSeconds = 0.0;
+        std::optional<std::string> groupId;
+    };
+    std::vector<AnalyzedSibling> findAnalyzedSiblingsInDir(const std::string& parentDir);
+
+    // Backfill for the same fix: an existing analyzed row that predates its set being
+    // recognised gets the group_id the new run just established. Only ever called for a
+    // row whose duration already matched, never as a general-purpose setter.
+    void setGroupId(int64_t fileId, const std::string& groupId);
+
+    // Editing and removing an already-declared boundary. The CLI never needed these (a
+    // `tag-segment` run only ever declares one), but mira_ui's marker workflow is
+    // interactive: a boundary dragged in the wrong place has to be removable, and its
+    // tags editable, without dropping to SQL. `setSegmentHumanField` merges one key the
+    // same way `setHumanField` does for a file; `deleteSegment` also drops that
+    // segment's `segment_analysis` rows, since they are keyed on a segment that no
+    // longer exists.
+    void setSegmentHumanField(int64_t segmentId, const std::string& jsonPath,
+                               const std::string& jsonValueJson);
+    void deleteSegment(int64_t segmentId);
+    // Moving a declared boundary (review round 6's cue editing). Dragging one cue boundary
+    // writes twice -- the cue that starts there and the one that ends there -- because cues
+    // in a reel are a partition, not islands, and a boundary belongs to both neighbours.
+    // Editing a cue's bounds also makes it "touched", so it stops being a regeneration
+    // candidate; the caller is responsible for that (see markSegmentEdited).
+    void setSegmentBounds(int64_t segmentId, double startSeconds, double endSeconds);
+    // Flags a segment as human-touched without putting a tag on it, so a boundary someone
+    // dragged survives the next detect run. `human = '{}'` is the untouched test everywhere
+    // else, so this writes a marker key into it rather than inventing a second column.
+    void markSegmentEdited(int64_t segmentId);
+    // One segment by id, and the segment counterpart of clearHumanFields -- both for
+    // mira_ui's details panel, which edits the segment a child row selected (review
+    // round 4: "the details should change according to the segment").
+    std::optional<SegmentRecord> findSegmentById(int64_t segmentId);
+    void clearSegmentHumanFields(int64_t segmentId);
 
     // TASKS.md Phase 4 "segment-level analysis replacing whole-track averaging" —
     // per-(segment, file) machine JSON (Database.cpp's `segment_analysis` schema comment
@@ -131,6 +198,28 @@ public:
     // writes into files.active_spans -- same lean-on-SQLite's-own-json approach as
     // jsonExtractDouble/jsonArrayLength above, not a C++ JSON parser.
     std::vector<std::pair<double, double>> parseActiveSpans(const std::string& activeSpansJson);
+
+    // The other two time-stamped structures `machine` already carries, read back for
+    // mira_ui's timeline lanes (TASKS.md Phase 5, "data already exists, nothing draws
+    // it"): Chords.cpp's `$.chords` and BasicPitchNotes.cpp's `$.notes`. Both are one
+    // json_each statement over the whole array, not parseActiveSpans' two json_extract
+    // calls per element -- a 211-chord file would otherwise cost 422 statements to draw
+    // one lane. An absent or malformed array is an empty vector, never an error: most
+    // files have neither (32 of 108 analyzed rows have chords, 29 have notes), and a
+    // lane with no data simply doesn't render.
+    struct ChordChange {
+        double t = 0.0;        // seconds; the chord holds until the next change
+        std::string chord;     // "Dm", "F#:maj7", or "N" for no-chord
+    };
+    std::vector<ChordChange> parseChords(const std::string& machineJson);
+
+    struct NoteEvent {
+        double startSeconds = 0.0;
+        double endSeconds = 0.0;
+        int pitch = 0;          // MIDI note number
+        double amplitude = 0.0; // 0..1, drives the overlay's alpha
+    };
+    std::vector<NoteEvent> parseNotes(const std::string& machineJson);
 
     // Rows `mira analyze` should (re-)process: declared stems ARE included (they still
     // need active-region detection and everything after it — declaration only skips the
@@ -226,6 +315,89 @@ public:
     std::optional<std::string> jsonExtractString(const std::string& json, const std::string& path);
     std::optional<double> jsonExtractDouble(const std::string& json, const std::string& path);
     std::optional<int64_t> jsonArrayLength(const std::string& json, const std::string& path);
+
+    // mira_ui's sidebar (TASKS.md Phase 5): library roots the user has explicitly added
+    // via "Add Folder" — see Database.cpp's `ui_folder_roots` schema comment for why
+    // this isn't a live browse-anywhere filesystem tree. addFolderRoot is idempotent
+    // (INSERT OR IGNORE — adding the same path twice is a no-op, not an error).
+    void addFolderRoot(const std::string& path);
+    void removeFolderRoot(const std::string& path);
+    std::vector<std::string> listFolderRoots();
+
+    // Scan-completion tracking per root ("scanning is mira's job not the user's job" —
+    // TASKS.md Phase 5 discussion): set false the moment a scan starts, true only once it
+    // runs to completion, so an interrupted scan (app quit, error) is distinguishable
+    // from a finished one and mira_ui can resume it automatically at the next launch
+    // instead of leaving a silently half-indexed folder.
+    void setFolderRootScanComplete(const std::string& path, bool complete);
+    std::vector<std::string> listIncompleteFolderRoots();
+
+    // "can we group folders just inside mira and mira's database not the real hard
+    // disk" — a purely organizational layer over ui_folder_roots: mira-side virtual
+    // folders (ui_folder_groups) a real added root can be filed under, and a mira-side
+    // display name overriding how its own row shows in the sidebar. Neither touches the
+    // filesystem at all — a root's `path` (what Scan/the file list actually walk) never
+    // changes; groupId/displayName are purely how FolderTreeView renders that row.
+    struct FolderRootInfo {
+        std::string path;
+        std::optional<std::string> displayName;
+        std::optional<int64_t> groupId;
+    };
+    std::vector<FolderRootInfo> listFolderRootInfos();
+    void setFolderRootDisplayName(const std::string& path, const std::optional<std::string>& displayName);
+    void setFolderRootGroup(const std::string& path, const std::optional<int64_t>& groupId);
+
+    // category is one of the three built-in kinds mira_ui offers on Add Folder ("stems"
+    // | "samples" | "music") or nullopt for a user-created "New Group..." with no
+    // built-in meaning -- FolderTreeView picks a distinct icon per category
+    // (FolderGroupTreeItem::paintItem), unlike a plain custom group's generic one.
+    struct FolderGroup {
+        int64_t id = 0;
+        std::string name;
+        std::optional<std::string> category;
+    };
+    int64_t createFolderGroup(const std::string& name, const std::optional<std::string>& category = std::nullopt);
+    void renameFolderGroup(int64_t groupId, const std::string& name);
+    // Ungroups every member root (their real folders/files are untouched) before
+    // removing the group row itself -- a group is purely mira's own container, deleting
+    // it is not a "delete the folders in it" operation.
+    void deleteFolderGroup(int64_t groupId);
+    std::vector<FolderGroup> listFolderGroups();
+    // First existing group with this category, so "Add Folder -> Stems" reuses the one
+    // "Stems" group across every add rather than creating a new one each time.
+    std::optional<FolderGroup> findFolderGroupByCategory(const std::string& category);
+    // "i had already made groups so now this is doubling" -- before creating a new
+    // category group, Add Folder also checks for a pre-existing user-made group with a
+    // matching name (case-insensitive) and adopts it via setFolderGroupCategory instead
+    // of creating a redundant second one.
+    std::optional<FolderGroup> findFolderGroupByName(const std::string& name);
+    void setFolderGroupCategory(int64_t groupId, const std::string& category);
+
+    // mira_ui's file table (TASKS.md Phase 5): the highest-scoring key of a JSON object
+    // at `path` (e.g. "$.genre_normalized" -> the top genre label), regardless of
+    // threshold — a compact single-label column has no room for CaptionFields.cpp's
+    // multi-label, confidence-gated extraction, this is a display convenience only.
+    // nullopt when the object is empty/missing, not when a key exists with a low score.
+    std::optional<std::string> jsonObjectTopKey(const std::string& json, const std::string& path);
+
+    // "we need details of the analysis... instruments are not right" -- the file
+    // details dialog (mira_ui) needs the FULL ranked distribution, not just the single
+    // top label jsonObjectTopKey above collapses everything to. Sorted descending by
+    // score, capped at `limit`.
+    std::vector<std::pair<std::string, double>> jsonObjectEntries(const std::string& json, const std::string& path,
+                                                                    int limit);
+
+    // Every string element of a JSON array at `path` -- CaptionFields.cpp has its own
+    // private equivalent (readHumanStringArray) for the caption pipeline; this is the
+    // same read exposed publicly for mira_ui's file details dialog (reading `human`'s
+    // genre/instruments/moods arrays to prefill its editable fields).
+    std::vector<std::string> jsonStringArray(const std::string& json, const std::string& path);
+
+    // The numeric counterpart, for `$.rhythm.beat_this_beats` / `beat_this_downbeats` --
+    // mira_ui's bar ruler draws real detected downbeats rather than a synthetic grid laid
+    // out from the BPM scalar, which would drift away from the audio on anything that
+    // isn't metronomic.
+    std::vector<double> jsonDoubleArray(const std::string& json, const std::string& path);
 
 private:
     void migrate();

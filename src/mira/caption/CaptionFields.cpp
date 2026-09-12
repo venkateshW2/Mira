@@ -4,6 +4,7 @@
 #include <sstream>
 
 #include "../analyze/GenreLabels.h"
+#include "../scan/Scanner.h" // instrumentFromFilename -- a stem's name names its instrument
 #include "../analyze/InstrumentLabels.h"
 #include "../analyze/MoodThemeLabels.h"
 
@@ -79,6 +80,96 @@ std::vector<ScoredLabel> topStemInstrument(Database& db, const std::string& mach
     return scored;
 }
 
+// Every instrument the analysis actually found, not one label (review round 4: "the
+// instrument field needs all the details... anything and everything detected").
+//
+// Which models get a say depends on what the file is, and the reasoning is the same one
+// FileTable.cpp's own picker documents:
+//   - A full mix / track: mtg_jamendo_instrument, which was validated on full mixes. All
+//     of its labels above threshold, since a mix genuinely has many at once.
+//   - A stem: the IRMAS stem model, which Phase 2 found reliable on isolated audio -- plus
+//     any full-mix label at or above kStemFullMixFloor. That second part is not
+//     redundant: IRMAS has no drums or percussion class *at all*, so on a drum stem it
+//     can only ever answer with a wrong melodic instrument. The high bar keeps full-mix
+//     noise ("computer", "bass" on a vocal stem, both measured) out.
+// Either way, a confident voice head adds "voice". On the two files from the review, the
+// voice head read 85% and 98% while the instrument heads said "synthesizer" -- the head
+// that is specifically trained to answer this question was already right.
+std::vector<ScoredLabel> allInstruments(Database& db, const std::string& machine,
+                                         const std::string& contentType, const std::string& path) {
+    constexpr double kStemFullMixFloor = 0.30;
+    std::vector<ScoredLabel> scored;
+    // Both models can name the same instrument (and the voice head always can) -- keep
+    // the higher score rather than listing it twice.
+    auto add = [&scored](const ScoredLabel& candidate) {
+        for (auto& existing : scored) {
+            if (existing.label == candidate.label) {
+                existing.score = std::max(existing.score, candidate.score);
+                return;
+            }
+        }
+        scored.push_back(candidate);
+    };
+
+    // Full-mix labels first, because whether they say "drums" decides which model leads.
+    // Taxonomy-normalized names when analysis wrote them, raw class names otherwise --
+    // the same preference topGenre already applies. Without it a caption says
+    // "electricguitar" while the UI, which reads the normalized object, says "electric
+    // guitar" for the same file (seen in review round 4's own verification run).
+    std::vector<ScoredLabel> fullMix;
+    for (const auto& [label, score] :
+         db.jsonObjectEntries(machine, "$.instrument_normalized", kCaptionMaxInstruments * 4))
+        fullMix.push_back({label, score});
+    if (fullMix.empty())
+        fullMix = topScored(db, machine, kInstrumentClassNames, kInstrumentClassCount, "$.instrument", 0.0,
+                             kCaptionMaxInstruments * 4);
+
+    // The drums carve-out, same as FileTable.cpp's pickPrimaryInstrumentEntries: IRMAS
+    // has no drums or percussion class at all, so on a drum stem the stem-tuned model
+    // can only answer with a wrong melodic instrument. Measured on DRUMS_1.wav (id 566),
+    // whose segments scored "electric guitar 0.27" on the stem model against the
+    // full-mix model's "drums 0.37".
+    bool fullMixSaysPercussion = !fullMix.empty()
+                                  && (fullMix.front().label == "drums" || fullMix.front().label == "percussion")
+                                  && fullMix.front().score >= kStemFullMixFloor;
+    bool useStemModel = contentType == "stem" && !fullMixSaysPercussion;
+
+    bool isStem = contentType == "stem";
+
+    // On a stem the filename leads: whoever bounced "BRASS_1.wav" knew what was in it,
+    // and both models are unreliable on isolated audio (review round 5). Scored just
+    // under 1.0 so a human tag still outranks it.
+    if (isStem)
+        if (auto hint = instrumentFromFilename(path)) add({*hint, 0.99});
+
+    if (useStemModel)
+        for (const auto& label : topStemInstrument(db, machine)) add(label);
+
+    // The bar depends on what the file *is*, not on which model led. A mix genuinely has
+    // many instruments at once and should list them all; a stem should come out as
+    // essentially one, so full-mix labels need real confidence to join it -- without
+    // this, a drum stem captioned as "drums, bass, guitar, percussion, synthesizer,
+    // piano, electric guitar".
+    //
+    // And on a stem where the stem model leads, the full-mix model may only contribute
+    // drums/percussion -- the classes IRMAS structurally lacks, which is the entire
+    // reason to consult it there. Anything else it says about isolated audio is noise:
+    // it scored "synthesizer 0.44" on a vocal stem whose own model said "voice 0.73".
+    double floor = isStem ? kStemFullMixFloor : kCaptionInstrumentThreshold;
+    for (const auto& label : fullMix) {
+        if (label.score < floor) continue;
+        if (useStemModel && label.label != "drums" && label.label != "percussion") continue;
+        add(label);
+    }
+
+    if (auto voiceProb = db.jsonExtractDouble(machine, "$.voice_instrumental.voice_probability"))
+        if (*voiceProb >= kCaptionVoiceThreshold) add({"voice", *voiceProb});
+
+    std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+    if (static_cast<int>(scored.size()) > kCaptionMaxInstruments) scored.resize(kCaptionMaxInstruments);
+    return scored;
+}
+
 std::optional<std::vector<std::string>> readHumanStringArray(Database& db, const std::string& human,
                                                                const std::string& path) {
     auto len = db.jsonArrayLength(human, path);
@@ -143,12 +234,16 @@ void applyHumanOverrides(Database& db, const std::string& human, CaptionFields& 
 // threshold" is a real, more-specific answer that should replace them. Always reads
 // "$.instrument", never "$.stem_instrument" -- stem_instrument is not part of
 // segment-level analysis's scope, unlike extractCaptionFields' content-type branch above.
-void applySegmentMachine(Database& db, const std::string& segMachine, CaptionFields& f) {
+void applySegmentMachine(Database& db, const std::string& segMachine, CaptionFields& f,
+                          const std::string& contentType, const std::string& path) {
     auto isMusic = db.jsonExtractDouble(segMachine, "$.content_gate.is_music");
     if (!isMusic || *isMusic == 0.0) return;
 
-    f.instruments = topScored(db, segMachine, kInstrumentClassNames, kInstrumentClassCount,
-                               "$.instrument", kCaptionInstrumentThreshold, kCaptionMaxInstruments);
+    // Same rule as the file, and it reads the segment's own stem_instrument when there is
+    // one (main.cpp now runs that head per segment for stem parents) -- which is what
+    // stops a segment of a vocal stem reporting "synthesizer" under a file that says
+    // "voice", the disagreement that opened review round 4.
+    f.instruments = allInstruments(db, segMachine, contentType, path);
     f.genre = topGenre(db, segMachine);
     f.moods = topScored(db, segMachine, kMoodThemeClassNames, kMoodThemeClassCount,
                          "$.moodtheme", kCaptionMoodThreshold, kCaptionMaxMood);
@@ -169,12 +264,7 @@ CaptionFields extractCaptionFields(Database& db, const FileRecord& record) {
     // reliable on isolated stems; mtg_jamendo_instrument was validated on full mixes and
     // is unreliable on stems specifically (that finding is why stem_instrument exists as
     // a separate head at all).
-    if (record.contentType == "stem") {
-        f.instruments = topStemInstrument(db, record.machine);
-    } else {
-        f.instruments = topScored(db, record.machine, kInstrumentClassNames, kInstrumentClassCount,
-                                   "$.instrument", kCaptionInstrumentThreshold, kCaptionMaxInstruments);
-    }
+    f.instruments = allInstruments(db, record.machine, record.contentType, record.path);
     f.genre = topGenre(db, record.machine);
     f.moods = topScored(db, record.machine, kMoodThemeClassNames, kMoodThemeClassCount,
                          "$.moodtheme", kCaptionMoodThreshold, kCaptionMaxMood);
@@ -239,7 +329,7 @@ CaptionFields extractCaptionFieldsForSegment(Database& db, const FileRecord& rec
     f.durationSeconds = segment.endSeconds - segment.startSeconds;
 
     if (auto segMachine = db.getSegmentMachine(segment.id, record.id)) {
-        applySegmentMachine(db, *segMachine, f);
+        applySegmentMachine(db, *segMachine, f, record.contentType, record.path);
     }
 
     // A segment's own `human` (the time-ranged tags -- "funny" from 2:00-3:30) is layered

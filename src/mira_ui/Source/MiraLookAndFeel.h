@@ -44,6 +44,36 @@ public:
 
     juce::Font getLabelFont(juce::Label&) override;
 
+    // Replaces the native macOS title bar's OS-gray chrome — it doesn't take
+    // MiraLookAndFeel's colours at all, and sat visibly disconnected from the rest of
+    // the window in the first skeleton screenshot. --surface-2 background + --border
+    // bottom edge, matching the mockup's .titlebar rule exactly. MainWindow (Main.cpp)
+    // pairs this with setUsingNativeTitleBar(false) — this override does nothing while
+    // the native title bar is in use, JUCE never calls it in that mode.
+    // Both deliberately paint nothing (review round 2). With the main window's corners
+    // rounded by a layer mask (NativeWindowChrome::applyRoundedCorners), V4's square
+    // border outline and corner grip get clipped at the curve into a hard black edge.
+    // AppKit's own window shadow now draws the edge, following the real rounded shape.
+    // The grip stays fully functional, it just isn't drawn.
+    void drawResizableWindowBorder(juce::Graphics&, int w, int h, const juce::BorderSize<int>& border,
+                                   juce::ResizableWindow&) override;
+    void drawCornerResizer(juce::Graphics&, int w, int h, bool isMouseOver, bool isMouseDragging) override;
+
+    void drawDocumentWindowTitleBar(juce::DocumentWindow&, juce::Graphics&, int w, int h, int titleSpaceX,
+                                     int titleSpaceW, const juce::Image* icon, bool drawTitleTextOnLeft) override;
+
+    juce::Font getTextButtonFont(juce::TextButton&, int buttonHeight) override;
+    void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour& backgroundColour,
+                               bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+
+    // JUCE's stock close/minimise/maximise glyphs are a saturated red/yellow/green X,
+    // dash and fullscreen-cross — flagged as looking wrong against everything else here.
+    // Replaced with the mockup's own muted .dot.r/.y/.g colours (#4a2f30/#4a4330/
+    // #2f4a33), a plain filled circle, brightening slightly on hover for affordance
+    // rather than any glyph at rest — same restrained language macOS's own traffic
+    // lights use before you mouse over them.
+    juce::Button* createDocumentWindowButton(int buttonType) override;
+
     // "Fake glass" — real NSVisualEffectView-backed blur was tried and reverted (TASKS.md
     // Phase 5): JUCE's NSViewComponent attaches a native view via plain Cocoa
     // `addSubview:` on the window's single shared peer view, so the native layer always
@@ -57,8 +87,21 @@ public:
     // highlight (a fixed, page-relative light source, not tied to any one panel), and a
     // 1px near-white top edge at low alpha — the mockup's own
     // `0 2px 0 rgba(255,255,255,0.02) inset` box-shadow rule, ported directly.
-    static void paintGlassPanel(juce::Graphics&, juce::Rectangle<int> bounds, float cornerRadius,
-                                 juce::Colour base);
+    // curveTopLeft/etc let a caller round only some corners (MainComponent's outer
+    // paint rounds just its bottom two, since the top two are the title bar's job) --
+    // default true/true/true/true for every other call site, which keeps their existing
+    // "either square or uniformly rounded" behaviour unchanged.
+    static void paintGlassPanel(juce::Graphics&, juce::Rectangle<int> bounds, float cornerRadius, juce::Colour base,
+                                 bool curveTopLeft = true, bool curveTopRight = true, bool curveBottomLeft = true,
+                                 bool curveBottomRight = true);
+
+    // "the whole of mira window is very straight edges cant we do curves" — buttons
+    // already round (drawButtonBackground above), tab chips already round
+    // (TabChip::paint, Main.cpp); text fields were the one un-rounded surface left
+    // (default LookAndFeel_V4 draws a plain rectangle), used throughout the rename/new-
+    // group prompts and every editable field in FileDetailsWindow.
+    void fillTextEditorBackground(juce::Graphics&, int width, int height, juce::TextEditor&) override;
+    void drawTextEditorOutline(juce::Graphics&, int width, int height, juce::TextEditor&) override;
 
 private:
     juce::Typeface::Ptr sansRegularTypeface, sansMediumTypeface, sansSemiBoldTypeface;

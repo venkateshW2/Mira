@@ -17,7 +17,7 @@ endif()
 
 juce_add_gui_app(mira_ui
   VERSION 0.1.0
-  PRODUCT_NAME "mira"
+  PRODUCT_NAME "MIRA" # menu-bar app name (review round 2); also the bundle name, MIRA.app
   COMPANY_NAME "mira"
   BUNDLE_ID "app.mira.ui"
 )
@@ -45,7 +45,13 @@ target_sources(mira_ui PRIVATE
   Source/Main.cpp
   Source/MiraLookAndFeel.cpp
   Source/FileTable.cpp
+  Source/FolderTreeView.cpp
+  Source/WaveformView.cpp
+  Source/GroupActivityView.cpp
+  Source/ThumbnailStore.cpp
+  Source/FileDetailsWindow.cpp
   Source/NativeBlur.mm
+  Source/NativeWindowChrome.mm
 )
 
 # TASKS.md Phase 5 planning session's visual-direction decision: NSVisualEffectView
@@ -53,7 +59,7 @@ target_sources(mira_ui PRIVATE
 # relying on any project-wide default — JUCE's own recommended config doesn't set this
 # for consuming targets, and NSViewComponent::setView's documented retain/release
 # contract assumes the caller isn't fighting it with manual memory management.
-set_source_files_properties(Source/NativeBlur.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+set_source_files_properties(Source/NativeBlur.mm Source/NativeWindowChrome.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_include_directories(mira_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 

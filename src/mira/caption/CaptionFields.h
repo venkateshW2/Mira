@@ -70,7 +70,11 @@ constexpr double kCaptionInstrumentThreshold = 0.10;
 constexpr double kCaptionMoodThreshold = 0.10;
 constexpr double kCaptionVoiceThreshold = 0.5;
 constexpr int kCaptionMaxGenre = 3;
-constexpr int kCaptionMaxInstruments = 4;
+// Raised from 4 in review round 4: "the caption should take all the instruments,
+// anything and everything detected". A full mix genuinely has many instruments at once,
+// and the old cap is what made a whole arrangement caption as just "voice stem". Still a
+// cap rather than unbounded -- Sa3Renderer's 45-word budget has to fit a sentence too.
+constexpr int kCaptionMaxInstruments = 8;
 constexpr int kCaptionMaxMood = 3;
 constexpr int kCaptionMaxKeywords = 8; // safety cap on human.keywords -- see CaptionFields.cpp
 

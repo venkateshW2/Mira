@@ -155,13 +155,36 @@ set(SQLITECPP_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(${SQLITECPP_ROOT} sqlitecpp_build)
 
 # mira_core (TASKS.md Phase 5, build-order step 1: "wired to mira's actual SQLite DB, not
-# the spike's toy fixture") — just Database.{h,cpp} and its own dependencies (SQLiteCpp,
+# the spike's toy fixture") — Database.{h,cpp} and its own dependencies (SQLiteCpp,
 # sqlite-vec), split out as its own static library so the JUCE UI target below can read
 # the real library without linking the whole CLI's Essentia/ONNX/beat_this/etc dependency
 # graph, which it has no use for. The `mira` executable target further down links this
 # too, replacing what used to be a directly-compiled source — one Database implementation,
 # not two.
-add_library(mira_core STATIC mira/db/Database.cpp)
+#
+# Scanner.cpp joined it here (TASKS.md Phase 5, "real filesystem-based file list + real
+# Scan" pass): it turns out to have no ML dependency at all — just filesystem walking,
+# CommonCrypto (a macOS system framework, no extra linking needed) and Database — so it
+# was never actually coupled to the CLI's heavy pipeline, just historically compiled
+# alongside it. mira_ui now scans for real, not just browses.
+#
+# caption/ joined for the same reason (TASKS.md Phase 5 leftovers, "SA3 caption view in
+# File Details"): CaptionFields.cpp reads only Database JSON plus the three header-only
+# label tables (GenreLabels.h / InstrumentLabels.h / MoodThemeLabels.h are `constexpr
+# const char*` arrays, no ONNX, no Essentia), and Sa3Renderer.cpp is pure string
+# assembly over CaptionFields. So the UI can show the *actual rendered caption* — the
+# one thing the whole analysis pipeline exists to produce — without a subprocess hop,
+# and without a second copy of the gating thresholds drifting out of sync with the CLI's.
+add_library(mira_core STATIC
+  mira/db/Database.cpp
+  mira/scan/Scanner.cpp
+  # Cue detection is pure arithmetic over files.active_spans -- no audio, no models -- so
+  # it belongs here rather than in the heavy `mira` target: mira_ui can run it directly in
+  # milliseconds instead of shelling out to a child process.
+  mira/analyze/CueDetection.cpp
+  mira/caption/CaptionFields.cpp
+  mira/caption/Sa3Renderer.cpp
+)
 target_include_directories(mira_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_BINARY_DIR}/sqlite_vec_include
@@ -244,7 +267,6 @@ target_include_directories(kaldi_native_fbank PRIVATE ${KISSFFT_ROOT})
 
 add_executable(mira
   mira/main.cpp
-  mira/scan/Scanner.cpp
   mira/analyze/EssentiaEngine.cpp
   mira/analyze/AudioLoader.cpp
   mira/analyze/Router.cpp
@@ -268,8 +290,8 @@ add_executable(mira
   mira/analyze/Genre.cpp
   mira/analyze/VoiceInstrumental.cpp
   mira/taxonomy/Taxonomy.cpp
-  mira/caption/CaptionFields.cpp
-  mira/caption/Sa3Renderer.cpp
+  # caption/ moved into mira_core (above) so mira_ui can render captions too — the CLI
+  # gets the same objects by linking mira_core, not by compiling a second copy here.
   mira/export/AudioWriter.cpp
 )
 

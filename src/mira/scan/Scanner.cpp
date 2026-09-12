@@ -99,6 +99,12 @@ ScanStats scan(Database& db, const ScanOptions& options) {
             }
 
             stats.filesSeen++;
+            // Every file, not throttled by count here — a folder of a few dozen huge
+            // stem files (each taking real time to SHA-256) could otherwise sit at
+            // "0 files" for ages between updates, reading as hung rather than working.
+            // A caller that needs to bound UI update frequency for a very large library
+            // (mira_ui's ScanJob) throttles by wall-clock time on its own end instead.
+            if (options.onProgress) options.onProgress(stats, path);
 
             auto mtime = fs::last_write_time(entry.path(), ec).time_since_epoch().count();
             auto sizeBytes = static_cast<int64_t>(entry.file_size(ec));
@@ -108,7 +114,8 @@ ScanStats scan(Database& db, const ScanOptions& options) {
             if (auto existing = db.findByPath(path);
                 existing && existing->mtime == static_cast<int64_t>(mtime)) {
                 stats.filesUnchanged++;
-                if (options.declareAsStem && existing->contentTypeSource != "declared")
+                if (options.declareAsStem && existing->contentTypeSource != "declared"
+                    && !filenameSuggestsFullMix(path))
                     db.declareStem(path);
                 continue;
             }
@@ -124,11 +131,75 @@ ScanStats scan(Database& db, const ScanOptions& options) {
             if (isNew) stats.filesNew++;
             else stats.filesUpdated++;
 
-            if (options.declareAsStem) db.declareStem(path);
+            // A mix sitting in a stem folder is not a stem (review round 4). Declaring it
+            // one would hand it the isolated-audio instrument model, which is exactly
+            // wrong for a full mix -- measured on Bhabi-BGM-StemMix.wav, where the
+            // stem-tuned model answered "voice 54%" for a whole arrangement.
+            if (options.declareAsStem && !filenameSuggestsFullMix(path)) db.declareStem(path);
         }
     }
 
+    if (options.onProgress) options.onProgress(stats, "");
+
     return stats;
+}
+
+std::optional<std::string> instrumentFromFilename(const std::string& path) {
+    auto slash = path.find_last_of('/');
+    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    for (auto& c : name)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+
+    // Ordered: the first match wins, so more specific spellings come before the looser
+    // ones they contain. Labels are taxonomy vocabulary, so they merge with model output
+    // rather than sitting beside a differently-spelled duplicate.
+    static const std::pair<const char*, const char*> kHints[] = {
+        {"vox", "voice"},          {"vocal", "voice"},    {"voice", "voice"},
+        {"choir", "voice"},        {"kick", "drums"},     {"snare", "drums"},
+        {"hihat", "drums"},        {"hi-hat", "drums"},   {"drum", "drums"},
+        {"perc", "percussion"},    {"shaker", "percussion"}, {"tabla", "percussion"},
+        {"bass", "bass"},          {"gtr", "electric guitar"}, {"guitar", "electric guitar"},
+        // After the guitar entries on purpose: "RHYTHM GTR"/"RHYTHM GUITAR" is a common
+        // delivery name and is a guitar, not a drum kit, so the named instrument has to
+        // win. "rhtm" is the spelling this library's score deliveries actually use
+        // (RHTM 1_1.wav, RHTM-2_1.wav); both were reading as "organ" before this, because
+        // IRMAS has no drums class and can only answer with a wrong melodic instrument.
+        {"rhtm", "drums"},         {"rhythm", "drums"},
+        {"string", "strings"},     {"brass", "brass"},    {"horn", "brass"},
+        {"trumpet", "trumpet"},    {"trombone", "brass"}, {"sax", "saxophone"},
+        {"flute", "flute"},        {"cello", "cello"},    {"violin", "violin"},
+        {"harp", "harp"},          {"organ", "organ"},    {"piano", "piano"},
+        {"rhodes", "electric piano"}, {"keys", "keyboard"}, {"synth", "synthesizer"},
+        {"pad", "synthesizer"},
+    };
+    for (const auto& [word, label] : kHints)
+        if (name.find(word) != std::string::npos) return std::string(label);
+    return std::nullopt;
+}
+
+bool filenameSuggestsFullMix(const std::string& path) {
+    auto slash = path.find_last_of('/');
+    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    for (auto& c : name)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+
+    // "mix" also catches "stemmix"/"mixdown"; "master"/"bounce" are the other two names a
+    // delivered full mix usually carries.
+    static const char* const kMixWords[] = {"mix", "master", "bounce"};
+    bool hasMixWord = false;
+    for (const auto* word : kMixWords)
+        if (name.find(word) != std::string::npos) { hasMixWord = true; break; }
+    if (!hasMixWord) return false;
+
+    // ...but a mix word with a SECTION in front of it is a bus, not the full mix:
+    // "FX MASTER.wav" is a real file in this library (EP9), and it is an effects stem with
+    // an active ratio of 0.004 -- calling it the mix made cue detection take a
+    // near-silent file as its map of where the music is and return nothing at all.
+    // Same reasoning as the path/filename split above, one level finer: "MASTER" on its
+    // own is the mix, "<something> MASTER" is that something's bus.
+    if (name.find("fx") != std::string::npos) return false;
+    if (instrumentFromFilename(name)) return false;
+    return true;
 }
 
 } // namespace mira

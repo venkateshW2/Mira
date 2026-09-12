@@ -95,6 +95,29 @@ CREATE TABLE IF NOT EXISTS segment_analysis (
     analyzed_at  INTEGER NOT NULL,
     PRIMARY KEY (segment_id, file_id)
 );
+
+-- TASKS.md Phase 5 (mira_ui folder tree): library roots the user has explicitly added
+-- via "Add Folder" -- NOT a live browse-anywhere filesystem tree (tried, rejected in
+-- the planning discussion: unrestricted system browsing is "a bit pointless", Soundly's
+-- own model is a curated set of added roots, each independently browsable). The
+-- sidebar's tree is built from this table, one FileTreeComponent per row, not from any
+-- single fixed starting directory.
+CREATE TABLE IF NOT EXISTS ui_folder_roots (
+    id         INTEGER PRIMARY KEY,
+    path       TEXT UNIQUE NOT NULL,
+    added_at   INTEGER NOT NULL
+);
+
+-- "can we group folders just inside mira and mira's database not the real hard disk" --
+-- purely organizational containers a ui_folder_roots row can be filed under
+-- (ui_folder_roots.group_id, added via migration below since this table postdates it).
+-- Deleting a group here never touches the filesystem or the roots inside it; it only
+-- ungroups them (see Database::deleteFolderGroup).
+CREATE TABLE IF NOT EXISTS ui_folder_groups (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    added_at   INTEGER NOT NULL
+);
 )SQL";
 
 FileRecord fromRow(SQLite::Statement& q) {
@@ -130,6 +153,54 @@ Database::Database(const std::string& path)
 
 void Database::migrate() {
     db.exec(kSchema);
+
+    // Added after ui_folder_roots already shipped, so CREATE TABLE IF NOT EXISTS above
+    // won't retrofit it onto an existing library.db -- "scanning is miras job not the
+    // user job": tracks whether a root's most recent scan ran to completion, so mira can
+    // tell a fully-indexed root apart from one interrupted mid-scan (app quit, error) and
+    // knows to resume it automatically next launch rather than silently leaving it half
+    // done. try/catch is the migration guard itself: SQLite has no "ADD COLUMN IF NOT
+    // EXISTS", and re-running this on an already-migrated database throws "duplicate
+    // column name", which is exactly the signal that this migration already happened.
+    try {
+        db.exec("ALTER TABLE ui_folder_roots ADD COLUMN scan_complete INTEGER NOT NULL DEFAULT 0");
+    } catch (const SQLite::Exception&) {
+        // already migrated
+    }
+
+    // display_name/group_id: mira-side-only sidebar organization (see ui_folder_groups'
+    // schema comment above) -- "so can we rename the folder or can we group folders...
+    // not the real hard disk". Both nullable: no override / no group is the default,
+    // same "unmeasured, not zero" discipline the rest of Database.cpp already follows.
+    try {
+        db.exec("ALTER TABLE ui_folder_roots ADD COLUMN display_name TEXT");
+    } catch (const SQLite::Exception&) {
+        // already migrated
+    }
+    try {
+        db.exec("ALTER TABLE ui_folder_roots ADD COLUMN group_id INTEGER REFERENCES ui_folder_groups(id)");
+    } catch (const SQLite::Exception&) {
+        // already migrated
+    }
+
+    // "when we import we know a dialog to choose from -- stems or sample or music"
+    // (TASKS.md Phase 5) -- built-in group categories, so Add Folder can find-or-create
+    // the one "Stems"/"Samples"/"Music" group instead of the user having to file each
+    // new root into a group by hand every time.
+    try {
+        db.exec("ALTER TABLE ui_folder_groups ADD COLUMN category TEXT");
+    } catch (const SQLite::Exception&) {
+        // already migrated
+    }
+
+    // segments.source (review round 2, auto-segments): which rows `mira analyze` made
+    // from active-region detection versus ones a person declared. Existing rows all came
+    // from tag-segment, so 'manual' is the correct backfill, not just a convenient one.
+    try {
+        db.exec("ALTER TABLE segments ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
+    } catch (const SQLite::Exception&) {
+        // already migrated
+    }
 }
 
 bool Database::upsertScannedFile(const std::string& path, const std::string& sha256,
@@ -248,10 +319,12 @@ void Database::clearHumanFields(int64_t fileId) {
 }
 
 int64_t Database::createSegment(std::optional<std::string> groupId, std::optional<int64_t> fileId,
-                                 double startSeconds, double endSeconds, const std::string& humanJson) {
+                                 double startSeconds, double endSeconds, const std::string& humanJson,
+                                 const std::string& source) {
     SQLite::Statement insert(db,
-        "INSERT INTO segments (group_id, file_id, start_seconds, end_seconds, human, created_at) "
-        "VALUES (?, ?, ?, ?, json(?), ?)");
+        "INSERT INTO segments (group_id, file_id, start_seconds, end_seconds, human, created_at, source) "
+        "VALUES (?, ?, ?, ?, json(?), ?, ?)");
+    insert.bind(7, source);
     if (groupId) insert.bind(1, *groupId); else insert.bind(1);
     if (fileId) insert.bind(2, *fileId); else insert.bind(2);
     insert.bind(3, startSeconds);
@@ -272,9 +345,23 @@ SegmentRecord segmentFromRow(SQLite::Statement& q) {
     s.endSeconds = q.getColumn("end_seconds").getDouble();
     s.human = q.getColumn("human").getString();
     s.createdAt = q.getColumn("created_at").getInt64();
+    s.source = q.getColumn("source").getString();
     return s;
 }
 } // namespace
+
+void Database::deleteUntouchedAutoSegmentsForGroup(const std::string& groupId) {
+    // Mirrors deleteUntouchedAutoSegmentsForFile; see its comment for why `human = '{}'`
+    // is a reliable "nobody has edited this" test.
+    SQLite::Statement dropAnalysis(db,
+        "DELETE FROM segment_analysis WHERE segment_id IN "
+        "(SELECT id FROM segments WHERE group_id = ? AND source = 'auto' AND human = '{}')");
+    dropAnalysis.bind(1, groupId);
+    dropAnalysis.exec();
+    SQLite::Statement drop(db, "DELETE FROM segments WHERE group_id = ? AND source = 'auto' AND human = '{}'");
+    drop.bind(1, groupId);
+    drop.exec();
+}
 
 std::vector<SegmentRecord> Database::findSegmentsForGroup(const std::string& groupId) {
     std::vector<SegmentRecord> result;
@@ -290,6 +377,70 @@ std::vector<SegmentRecord> Database::findSegmentsForFile(int64_t fileId) {
     q.bind(1, fileId);
     while (q.executeStep()) result.push_back(segmentFromRow(q));
     return result;
+}
+
+void Database::setSegmentHumanField(int64_t segmentId, const std::string& jsonPath,
+                                     const std::string& jsonValueJson) {
+    SQLite::Statement update(db, "UPDATE segments SET human = json_set(human, ?, json(?)) WHERE id = ?");
+    update.bind(1, jsonPath);
+    update.bind(2, jsonValueJson);
+    update.bind(3, segmentId);
+    update.exec();
+}
+
+void Database::setSegmentBounds(int64_t segmentId, double startSeconds, double endSeconds) {
+    SQLite::Statement stmt(db, "UPDATE segments SET start_seconds = ?, end_seconds = ? WHERE id = ?");
+    stmt.bind(1, startSeconds);
+    stmt.bind(2, endSeconds);
+    stmt.bind(3, segmentId);
+    stmt.exec();
+}
+
+void Database::markSegmentEdited(int64_t segmentId) {
+    SQLite::Statement stmt(db,
+        "UPDATE segments SET human = json_set(json(human), '$.edited', json('true')) WHERE id = ?");
+    stmt.bind(1, segmentId);
+    stmt.exec();
+}
+
+void Database::deleteSegment(int64_t segmentId) {
+    // segment_analysis rows are keyed on (segment_id, file_id) with no ON DELETE CASCADE
+    // declared, so they'd outlive the segment and be unreachable -- dropped explicitly
+    // here rather than left as orphans.
+    SQLite::Statement dropAnalysis(db, "DELETE FROM segment_analysis WHERE segment_id = ?");
+    dropAnalysis.bind(1, segmentId);
+    dropAnalysis.exec();
+    SQLite::Statement drop(db, "DELETE FROM segments WHERE id = ?");
+    drop.bind(1, segmentId);
+    drop.exec();
+}
+
+void Database::deleteUntouchedAutoSegmentsForFile(int64_t fileId) {
+    // `human = '{}'` is the "untouched" test: createSegment stores human through json(),
+    // which normalises an empty object to exactly '{}', and any Edit Tags save (even one
+    // that clears every field) writes keys into it -- so an edited auto segment reliably
+    // stops matching and survives re-analysis.
+    SQLite::Statement dropAnalysis(db,
+        "DELETE FROM segment_analysis WHERE segment_id IN "
+        "(SELECT id FROM segments WHERE file_id = ? AND source = 'auto' AND human = '{}')");
+    dropAnalysis.bind(1, fileId);
+    dropAnalysis.exec();
+    SQLite::Statement drop(db, "DELETE FROM segments WHERE file_id = ? AND source = 'auto' AND human = '{}'");
+    drop.bind(1, fileId);
+    drop.exec();
+}
+
+std::optional<SegmentRecord> Database::findSegmentById(int64_t segmentId) {
+    SQLite::Statement q(db, "SELECT * FROM segments WHERE id = ?");
+    q.bind(1, segmentId);
+    if (!q.executeStep()) return std::nullopt;
+    return segmentFromRow(q);
+}
+
+void Database::clearSegmentHumanFields(int64_t segmentId) {
+    SQLite::Statement update(db, "UPDATE segments SET human = '{}' WHERE id = ?");
+    update.bind(1, segmentId);
+    update.exec();
 }
 
 std::vector<FileRecord> Database::findFilesByGroupId(const std::string& groupId) {
@@ -381,6 +532,69 @@ std::vector<std::pair<double, double>> Database::parseActiveSpans(const std::str
     return spans;
 }
 
+std::vector<Database::ChordChange> Database::parseChords(const std::string& machineJson) {
+    std::vector<ChordChange> chords;
+    SQLite::Statement q(db,
+        "SELECT json_extract(je.value, '$.t'), json_extract(je.value, '$.chord') "
+        "FROM json_each(?, '$.chords') je");
+    q.bind(1, machineJson);
+    while (q.executeStep()) {
+        if (q.getColumn(0).isNull() || q.getColumn(1).isNull()) continue;
+        chords.push_back({ q.getColumn(0).getDouble(), q.getColumn(1).getString() });
+    }
+    return chords;
+}
+
+std::vector<Database::NoteEvent> Database::parseNotes(const std::string& machineJson) {
+    std::vector<NoteEvent> notes;
+    SQLite::Statement q(db,
+        "SELECT json_extract(je.value, '$.start'), json_extract(je.value, '$.end'), "
+        "       json_extract(je.value, '$.pitch'), json_extract(je.value, '$.amplitude') "
+        "FROM json_each(?, '$.notes') je");
+    q.bind(1, machineJson);
+    while (q.executeStep()) {
+        if (q.getColumn(0).isNull() || q.getColumn(1).isNull() || q.getColumn(2).isNull()) continue;
+        notes.push_back({ q.getColumn(0).getDouble(), q.getColumn(1).getDouble(),
+                           q.getColumn(2).getInt(),
+                           q.getColumn(3).isNull() ? 1.0 : q.getColumn(3).getDouble() });
+    }
+    return notes;
+}
+
+std::vector<Database::AnalyzedSibling> Database::findAnalyzedSiblingsInDir(const std::string& parentDir) {
+    // substr(path, 1, n) = dir || '/' is an exact prefix test that survives folder names
+    // containing LIKE metacharacters, and deliberately excludes deeper subdirectories:
+    // siblingKey is parent-directory-scoped, so a nested folder is a different set.
+    std::vector<AnalyzedSibling> siblings;
+    SQLite::Statement q(db,
+        "SELECT id, path, group_id, json_extract(machine, '$.duration_seconds') "
+        "FROM files "
+        "WHERE analyzed_at IS NOT NULL "
+        "  AND substr(path, 1, ?) = ? "
+        "  AND instr(substr(path, ? + 1), '/') = 0");
+    auto prefix = parentDir + "/";
+    q.bind(1, static_cast<int64_t>(prefix.size()));
+    q.bind(2, prefix);
+    q.bind(3, static_cast<int64_t>(prefix.size()));
+    while (q.executeStep()) {
+        if (q.getColumn(3).isNull()) continue; // analyzed before duration was stored
+        AnalyzedSibling s;
+        s.id = q.getColumn(0).getInt64();
+        s.path = q.getColumn(1).getString();
+        if (!q.getColumn(2).isNull()) s.groupId = q.getColumn(2).getString();
+        s.durationSeconds = q.getColumn(3).getDouble();
+        siblings.push_back(std::move(s));
+    }
+    return siblings;
+}
+
+void Database::setGroupId(int64_t fileId, const std::string& groupId) {
+    SQLite::Statement stmt(db, "UPDATE files SET group_id = ? WHERE id = ?");
+    stmt.bind(1, groupId);
+    stmt.bind(2, fileId);
+    stmt.exec();
+}
+
 std::vector<FileRecord> Database::findFilesForAnalysis(bool force,
                                                          std::optional<std::string> contentTypeFilter,
                                                          std::optional<int> limit) {
@@ -430,6 +644,176 @@ std::optional<int64_t> Database::jsonArrayLength(const std::string& json,
     q.bind(2, path);
     if (!q.executeStep() || q.getColumn(0).isNull()) return std::nullopt;
     return q.getColumn(0).getInt64();
+}
+
+void Database::addFolderRoot(const std::string& path) {
+    SQLite::Statement ins(db, "INSERT OR IGNORE INTO ui_folder_roots (path, added_at) VALUES (?, ?)");
+    ins.bind(1, path);
+    ins.bind(2, static_cast<int64_t>(std::time(nullptr)));
+    ins.exec();
+}
+
+void Database::removeFolderRoot(const std::string& path) {
+    SQLite::Statement del(db, "DELETE FROM ui_folder_roots WHERE path = ?");
+    del.bind(1, path);
+    del.exec();
+}
+
+std::vector<std::string> Database::listFolderRoots() {
+    std::vector<std::string> result;
+    SQLite::Statement q(db, "SELECT path FROM ui_folder_roots ORDER BY added_at");
+    while (q.executeStep()) result.push_back(q.getColumn(0).getString());
+    return result;
+}
+
+void Database::setFolderRootScanComplete(const std::string& path, bool complete) {
+    SQLite::Statement upd(db, "UPDATE ui_folder_roots SET scan_complete = ? WHERE path = ?");
+    upd.bind(1, complete ? 1 : 0);
+    upd.bind(2, path);
+    upd.exec();
+}
+
+// Roots whose most recent scan never finished (app quit mid-scan, an error, or a root
+// that's simply never been scanned at all since being added) — mira_ui resumes these
+// automatically at startup, since "scanning is mira's job not the user's job".
+std::vector<std::string> Database::listIncompleteFolderRoots() {
+    std::vector<std::string> result;
+    SQLite::Statement q(db, "SELECT path FROM ui_folder_roots WHERE scan_complete = 0 ORDER BY added_at");
+    while (q.executeStep()) result.push_back(q.getColumn(0).getString());
+    return result;
+}
+
+std::vector<Database::FolderRootInfo> Database::listFolderRootInfos() {
+    std::vector<FolderRootInfo> result;
+    SQLite::Statement q(db, "SELECT path, display_name, group_id FROM ui_folder_roots ORDER BY added_at");
+    while (q.executeStep()) {
+        FolderRootInfo info;
+        info.path = q.getColumn(0).getString();
+        if (!q.getColumn(1).isNull()) info.displayName = q.getColumn(1).getString();
+        if (!q.getColumn(2).isNull()) info.groupId = q.getColumn(2).getInt64();
+        result.push_back(std::move(info));
+    }
+    return result;
+}
+
+void Database::setFolderRootDisplayName(const std::string& path, const std::optional<std::string>& displayName) {
+    SQLite::Statement upd(db, "UPDATE ui_folder_roots SET display_name = ? WHERE path = ?");
+    if (displayName) upd.bind(1, *displayName); else upd.bind(1);
+    upd.bind(2, path);
+    upd.exec();
+}
+
+void Database::setFolderRootGroup(const std::string& path, const std::optional<int64_t>& groupId) {
+    SQLite::Statement upd(db, "UPDATE ui_folder_roots SET group_id = ? WHERE path = ?");
+    if (groupId) upd.bind(1, *groupId); else upd.bind(1);
+    upd.bind(2, path);
+    upd.exec();
+}
+
+int64_t Database::createFolderGroup(const std::string& name, const std::optional<std::string>& category) {
+    SQLite::Statement ins(db, "INSERT INTO ui_folder_groups (name, added_at, category) VALUES (?, ?, ?)");
+    ins.bind(1, name);
+    ins.bind(2, static_cast<int64_t>(std::time(nullptr)));
+    if (category) ins.bind(3, *category); else ins.bind(3);
+    ins.exec();
+    return db.getLastInsertRowid();
+}
+
+void Database::renameFolderGroup(int64_t groupId, const std::string& name) {
+    SQLite::Statement upd(db, "UPDATE ui_folder_groups SET name = ? WHERE id = ?");
+    upd.bind(1, name);
+    upd.bind(2, groupId);
+    upd.exec();
+}
+
+void Database::deleteFolderGroup(int64_t groupId) {
+    SQLite::Statement ungroup(db, "UPDATE ui_folder_roots SET group_id = NULL WHERE group_id = ?");
+    ungroup.bind(1, groupId);
+    ungroup.exec();
+    SQLite::Statement del(db, "DELETE FROM ui_folder_groups WHERE id = ?");
+    del.bind(1, groupId);
+    del.exec();
+}
+
+std::vector<Database::FolderGroup> Database::listFolderGroups() {
+    std::vector<FolderGroup> result;
+    SQLite::Statement q(db, "SELECT id, name, category FROM ui_folder_groups ORDER BY added_at");
+    while (q.executeStep()) {
+        FolderGroup g;
+        g.id = q.getColumn(0).getInt64();
+        g.name = q.getColumn(1).getString();
+        if (!q.getColumn(2).isNull()) g.category = q.getColumn(2).getString();
+        result.push_back(std::move(g));
+    }
+    return result;
+}
+
+std::optional<Database::FolderGroup> Database::findFolderGroupByCategory(const std::string& category) {
+    SQLite::Statement q(db, "SELECT id, name, category FROM ui_folder_groups WHERE category = ? ORDER BY added_at LIMIT 1");
+    q.bind(1, category);
+    if (!q.executeStep()) return std::nullopt;
+    FolderGroup g;
+    g.id = q.getColumn(0).getInt64();
+    g.name = q.getColumn(1).getString();
+    g.category = q.getColumn(2).getString();
+    return g;
+}
+
+std::optional<Database::FolderGroup> Database::findFolderGroupByName(const std::string& name) {
+    SQLite::Statement q(db, "SELECT id, name, category FROM ui_folder_groups WHERE name = ? COLLATE NOCASE "
+                            "ORDER BY added_at LIMIT 1");
+    q.bind(1, name);
+    if (!q.executeStep()) return std::nullopt;
+    FolderGroup g;
+    g.id = q.getColumn(0).getInt64();
+    g.name = q.getColumn(1).getString();
+    if (!q.getColumn(2).isNull()) g.category = q.getColumn(2).getString();
+    return g;
+}
+
+void Database::setFolderGroupCategory(int64_t groupId, const std::string& category) {
+    SQLite::Statement upd(db, "UPDATE ui_folder_groups SET category = ? WHERE id = ?");
+    upd.bind(1, category);
+    upd.bind(2, groupId);
+    upd.exec();
+}
+
+std::optional<std::string> Database::jsonObjectTopKey(const std::string& json, const std::string& path) {
+    SQLite::Statement q(db,
+        "SELECT je.key FROM json_each(?, ?) je ORDER BY je.value DESC LIMIT 1");
+    q.bind(1, json);
+    q.bind(2, path);
+    if (!q.executeStep() || q.getColumn(0).isNull()) return std::nullopt;
+    return q.getColumn(0).getString();
+}
+
+std::vector<std::pair<std::string, double>> Database::jsonObjectEntries(const std::string& json,
+                                                                          const std::string& path, int limit) {
+    SQLite::Statement q(db, "SELECT je.key, je.value FROM json_each(?, ?) je ORDER BY je.value DESC LIMIT ?");
+    q.bind(1, json);
+    q.bind(2, path);
+    q.bind(3, limit);
+    std::vector<std::pair<std::string, double>> result;
+    while (q.executeStep()) result.emplace_back(q.getColumn(0).getString(), q.getColumn(1).getDouble());
+    return result;
+}
+
+std::vector<std::string> Database::jsonStringArray(const std::string& json, const std::string& path) {
+    SQLite::Statement q(db, "SELECT je.value FROM json_each(?, ?) je");
+    q.bind(1, json);
+    q.bind(2, path);
+    std::vector<std::string> result;
+    while (q.executeStep()) result.push_back(q.getColumn(0).getString());
+    return result;
+}
+
+std::vector<double> Database::jsonDoubleArray(const std::string& json, const std::string& path) {
+    SQLite::Statement q(db, "SELECT je.value FROM json_each(?, ?) je");
+    q.bind(1, json);
+    q.bind(2, path);
+    std::vector<double> result;
+    while (q.executeStep()) result.push_back(q.getColumn(0).getDouble());
+    return result;
 }
 
 void Database::applyAnalysis(const AnalysisUpdate& update) {

@@ -1,4 +1,5 @@
 #include "analyze/ActiveRegions.h"
+#include "analyze/ActiveSpanMap.h"
 #include "analyze/AudioLoader.h"
 #include "analyze/Descriptors.h"
 #include "analyze/Chords.h"
@@ -40,6 +41,7 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -90,7 +92,11 @@ void printUsage() {
         "  mira scan <dir>... [--db <path>] [--follow-symlinks] [--as stem]\n"
         "        index files, no analysis; --as stem declares them delivery stems (§12.3)\n"
         "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
-        "               [--chords] [--transcribe] [--recheck-tempo] [--verbose]\n"
+        "               [--paths-from <file>] [--chords] [--transcribe] [--recheck-tempo]\n"
+        "               [--verbose] [--progress-stages]\n"
+        "        --paths-from <file>: analyze exactly the files listed (one path per\n"
+        "        line), always re-analyzing regardless of analyzed_at, ignoring --force/\n"
+        "        --content-type/--limit; a path not already scanned is skipped\n"
         "        content-type router (one_shot/loop/track/stem) + DSP + embedding +\n"
         "        content gate + moodtheme/instrument/danceability/genre/voice-instrumental\n"
         "        heads (Phase 2, PRD §2c) + rhythm + key by default; classification heads\n"
@@ -101,7 +107,10 @@ void printUsage() {
         "        more accurate of the two tempo estimators); --recheck-tempo also runs\n"
         "        Essentia's RhythmExtractor2013 for comparison (bpm_ratio); --chords and\n"
         "        --transcribe are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone\n"
-        "        — see TASKS.md); --content-type requires --force; --verbose prints\n"
+        "        — see TASKS.md); --content-type requires --force; --progress-stages\n"
+        "        prints machine-readable `starting:`/`stage:` lines to stdout (what\n"
+        "        mira_ui's progress readout reads, so a multi-minute file isn't silent\n"
+        "        between its start and its completion); --verbose prints\n"
         "        per-stage timing to stderr, per file\n"
         "  mira inspect <file|id> [--db <path>]\n"
         "        human-readable report; flags low-confidence tempo/key, active_ratio\n"
@@ -248,10 +257,19 @@ std::string spansToJson(const std::vector<mira::ActiveSpan>& spans) {
 
 // Stage timer for --verbose: prints wall-clock time for each analysis stage to stderr,
 // per file, so a slow run can be attributed to a specific stage instead of guessed at.
+//
+// It also drives --progress-stages, which prints the same stage boundaries to *stdout* in
+// a fixed `stage: <name>` form for mira_ui to read. The two are deliberately separate:
+// --verbose is a human-readable diagnostic with timings on stderr, this is a machine
+// readout with no numbers in it. It exists because a 41-minute score stem spends many
+// minutes inside one `mira analyze` invocation that otherwise says nothing at all until
+// the file is finished -- which is indistinguishable from being hung.
 class StageTimer {
 public:
-    explicit StageTimer(bool enabled) : enabled_(enabled) {}
+    explicit StageTimer(bool enabled, bool emitProgress = false)
+        : enabled_(enabled), emitProgress_(emitProgress) {}
     void mark(const std::string& stageName) {
+        if (emitProgress_) std::cout << "stage: " << stageName << std::endl;
         if (!enabled_) return;
         auto now = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(now - last_).count();
@@ -261,8 +279,106 @@ public:
 
 private:
     bool enabled_;
+    bool emitProgress_;
     std::chrono::steady_clock::time_point last_ = std::chrono::steady_clock::now();
 };
+
+// Defined further down, next to tag-segment, which it was written for.
+std::string buildSegmentMachineJson(const std::vector<float>& mono, const std::vector<float>& left,
+                                     const std::vector<float>& right, int sampleRate,
+                                     mira::Taxonomy& instrumentTaxonomy, mira::Taxonomy& genreTaxonomy,
+                                     mira::Taxonomy& stemInstrumentTaxonomy, bool stemParent);
+
+// Auto-segments (review round 2, "option A"): a stem's active spans become real segment
+// rows, each with its own segment_analysis, the moment the stem is analyzed -- so a
+// 37-minute score stem arrives as N tagged, searchable pieces instead of one averaged
+// label (the brass stem that averaged out to "acoustic guitar"). Agreed framing: these
+// are *samples of the stem*, not cues -- cue detection is its own later project.
+//
+// Raw spans aren't used as-is. Detection bridges only 300ms gaps (ActiveRegions.h), so a
+// phrase with a breath in it arrives as several spans, and some spans are slivers (the
+// EP6 brass stem's first is 85ms) far too short for effnet or the heads to say anything.
+// Spans closer than kAutoSegmentMergeGapSeconds merge; anything still shorter than
+// kAutoSegmentMinSeconds is dropped. Both are first-pass numbers picked from that one
+// stem, not measured across a library -- same caveat ActiveRegions.h gives its own.
+constexpr double kAutoSegmentMergeGapSeconds = 1.5;
+constexpr double kAutoSegmentMinSeconds = 2.0;
+
+int createAutoSegments(mira::Database& db, int64_t fileId, const std::vector<mira::ActiveSpan>& spans,
+                       const std::vector<float>& mono, const std::vector<float>& left,
+                       const std::vector<float>& right, int sampleRate,
+                       mira::Taxonomy& instrumentTaxonomy, mira::Taxonomy& genreTaxonomy,
+                       mira::Taxonomy& stemInstrumentTaxonomy, bool stemParent) {
+    std::vector<mira::ActiveSpan> merged;
+    for (const auto& span : spans) {
+        if (!merged.empty() && span.startSeconds - merged.back().endSeconds < kAutoSegmentMergeGapSeconds)
+            merged.back().endSeconds = std::max(merged.back().endSeconds, span.endSeconds);
+        else
+            merged.push_back(span);
+    }
+
+    // Regenerate only what nobody has touched; anything kept (hand-made, or an auto one
+    // someone tagged) wins over a new span that overlaps it, so re-analysis never
+    // stacks a fresh duplicate on top of a segment a person has already worked on.
+    // Drop the too-short ones up front: how many segments a file really has decides
+    // whether any of them needs its own analysis (below).
+    std::vector<mira::ActiveSpan> usable;
+    for (const auto& span : merged)
+        if (span.endSeconds - span.startSeconds >= kAutoSegmentMinSeconds) usable.push_back(span);
+
+    const auto totalSamples = static_cast<int64_t>(std::min({mono.size(), left.size(), right.size()}));
+    const double durationSeconds = sampleRate > 0 ? static_cast<double>(totalSamples) / sampleRate : 0.0;
+
+    // One segment means the file doesn't actually change character partway through, and a
+    // segment is only worth having when it says something the file doesn't (review round
+    // 4: "why does the track and segment get analysed?"). Whole-file analysis already runs
+    // on active audio only -- silence is spliced out before any model sees it -- so a
+    // lone segment covers the same audio the file pass already measured, and re-running
+    // the models on it costs ~1.4s per file to produce the same labels. Measured: 26 of
+    // this library's 34 segmented files have exactly one segment.
+    //
+    //   - covers essentially the whole file: no segment at all, it would add a row that
+    //     says nothing (the mix's own "0:00 - 1:04" row in the screenshots);
+    //   - covers less: keep the row, since `mira export-segments` uses it to trim the
+    //     silence away, but skip its analysis -- CaptionFields already falls back to the
+    //     file's own document for a segment that has none.
+    constexpr double kWholeFileCoverage = 0.95;
+    if (usable.size() == 1 && durationSeconds > 0.0
+        && (usable.front().endSeconds - usable.front().startSeconds) >= kWholeFileCoverage * durationSeconds) {
+        db.deleteUntouchedAutoSegmentsForFile(fileId);
+        return 0;
+    }
+    const bool analyzeSegments = usable.size() >= 2;
+
+    db.deleteUntouchedAutoSegmentsForFile(fileId);
+    auto kept = db.findSegmentsForFile(fileId);
+
+    int created = 0;
+    for (const auto& span : usable) {
+        bool overlapsKept = std::any_of(kept.begin(), kept.end(), [&](const mira::SegmentRecord& k) {
+            return span.startSeconds < k.endSeconds && span.endSeconds > k.startSeconds;
+        });
+        if (overlapsKept) continue;
+
+        auto startSample = std::clamp<int64_t>(static_cast<int64_t>(span.startSeconds * sampleRate), 0, totalSamples);
+        auto endSample = std::clamp<int64_t>(static_cast<int64_t>(span.endSeconds * sampleRate), 0, totalSamples);
+        if (endSample <= startSample) continue;
+
+        int64_t segId = db.createSegment(std::nullopt, fileId, span.startSeconds, span.endSeconds, "{}", "auto");
+        if (analyzeSegments) {
+            std::vector<float> segMono(mono.begin() + startSample, mono.begin() + endSample);
+            std::vector<float> segLeft(left.begin() + startSample, left.begin() + endSample);
+            std::vector<float> segRight(right.begin() + startSample, right.begin() + endSample);
+            db.upsertSegmentAnalysis(segId, fileId,
+                                      buildSegmentMachineJson(segMono, segLeft, segRight, sampleRate,
+                                                              instrumentTaxonomy, genreTaxonomy,
+                                                              stemInstrumentTaxonomy, stemParent),
+                                      static_cast<int64_t>(std::time(nullptr)));
+        }
+        ++created;
+    }
+    return created;
+}
 
 int runAnalyze(const std::vector<std::string>& args) {
     std::string dbPath = defaultDbPath();
@@ -280,9 +396,17 @@ int runAnalyze(const std::vector<std::string>& args) {
     // default-on second opinion.
     bool runChords = false;
     bool runTranscription = false;
+    bool progressStages = false;
     bool runRecheckTempo = false;
     std::optional<std::string> contentTypeFilter;
     std::optional<int> limit;
+    // mira_ui's Analyze button (TASKS.md Phase 5): "for selected files or the folder" —
+    // a newline-delimited file of exact paths, written by the UI to a temp file rather
+    // than passed as N argv entries (an arbitrarily large selection could exceed a
+    // sensible command-line length). A small, surgical addition (not a refactor of
+    // runAnalyze's own file-list-driven pipeline below) -- it just replaces how
+    // candidateRecords gets populated a few lines down.
+    std::optional<std::string> pathsFromFile;
 
     for (size_t i = 0; i < args.size(); ++i) {
         const std::string& arg = args[i];
@@ -292,6 +416,8 @@ int runAnalyze(const std::vector<std::string>& args) {
             force = true;
         } else if (arg == "--verbose") {
             verbose = true;
+        } else if (arg == "--progress-stages") {
+            progressStages = true;
         } else if (arg == "--chords") {
             runChords = true;
         } else if (arg == "--transcribe") {
@@ -302,6 +428,8 @@ int runAnalyze(const std::vector<std::string>& args) {
             contentTypeFilter = args[++i];
         } else if (arg == "--limit" && i + 1 < args.size()) {
             limit = std::stoi(args[++i]);
+        } else if (arg == "--paths-from" && i + 1 < args.size()) {
+            pathsFromFile = args[++i];
         } else {
             std::cerr << "mira analyze: unknown argument " << arg << std::endl;
             return 1;
@@ -318,7 +446,26 @@ int runAnalyze(const std::vector<std::string>& args) {
     std::cout << "database: " << dbPath << std::endl;
     mira::Database db(dbPath);
 
-    auto candidateRecords = db.findFilesForAnalysis(force, contentTypeFilter, limit);
+    std::vector<mira::FileRecord> candidateRecords;
+    if (pathsFromFile) {
+        // Explicit selection -- always (re-)analyzed regardless of analyzed_at, the same
+        // way clicking "Analyze" on an already-analyzed file in the UI means "do it
+        // again", not "skip it silently". A path not yet in the files table (never
+        // scanned) is just skipped -- Scan always runs before Analyze in mira_ui's own
+        // flow, so this is a defensive skip, not the expected case.
+        std::ifstream pathsFile(*pathsFromFile);
+        if (!pathsFile) {
+            std::cerr << "mira analyze: could not read --paths-from file " << *pathsFromFile << std::endl;
+            return 1;
+        }
+        std::string line;
+        while (std::getline(pathsFile, line)) {
+            if (line.empty()) continue;
+            if (auto record = db.findByPath(line)) candidateRecords.push_back(*record);
+        }
+    } else {
+        candidateRecords = db.findFilesForAnalysis(force, contentTypeFilter, limit);
+    }
     if (candidateRecords.empty()) {
         std::cout << "nothing to analyze (use --force to re-analyze)" << std::endl;
         return 0;
@@ -329,7 +476,8 @@ int runAnalyze(const std::vector<std::string>& args) {
     std::vector<Candidate> candidates;
     int failed = 0;
     for (auto& record : candidateRecords) {
-        StageTimer decodeTimer(verbose);
+        StageTimer decodeTimer(verbose, progressStages);
+        if (progressStages) std::cout << "decoding: " << record.path << std::endl;
         if (verbose) std::cerr << record.path << " (decode+route):" << std::endl;
 
         auto audio = mira::loadAudio(record.path);
@@ -346,13 +494,24 @@ int runAnalyze(const std::vector<std::string>& args) {
         c.parentDir = std::filesystem::path(record.path).parent_path().string();
 
         if (c.isDeclared) {
-            c.contentType = "stem";
+            // A declaration comes from the folder's category ("everything here is a
+            // stem"). The filename is more specific evidence, and a mix delivered
+            // alongside its stems is not a stem (review round 4) -- routing it as one
+            // hands it the isolated-audio instrument model, measured answering
+            // "voice 54%" for a whole arrangement.
+            c.contentType = mira::filenameSuggestsFullMix(record.path) ? "track" : "stem";
         } else {
             c.routing = mira::routeContentType(audio->mono, audio->sampleRate);
             // Route 1 (filename/folder pattern) overrides the duration-based classification
             // but stays content_type_source='router', not 'declared' — only an explicit
             // `--as stem` is a real declaration (PRD §12.3).
-            c.contentType = looksLikeStemPath(record.path) ? "stem" : c.routing.contentType;
+            // ...and a mix inside a stems folder is still not a stem (review round 4).
+            // looksLikeStemPath matches "stem" anywhere in the *path*, so every file in a
+            // "..._Stems/" folder hits it, mix included; the filename describes this file
+            // rather than its folder, so it wins.
+            c.contentType = (looksLikeStemPath(record.path) && !mira::filenameSuggestsFullMix(record.path))
+                                ? "stem"
+                                : c.routing.contentType;
         }
         decodeTimer.mark("router (duration/onset)");
         c.audio = std::move(*audio);
@@ -367,8 +526,35 @@ int runAnalyze(const std::vector<std::string>& args) {
             .push_back(i);
     }
 
+    // ...and the other half of that detection: siblings already analyzed by an EARLIER
+    // run (TASKS.md Phase 5 timeline-lanes review -- EP6's 13 identical-length stems all
+    // had an empty group_id because only one of them had ever been analyzed). Grouping
+    // used to see only the current run's candidates, so "analyze this one file" could
+    // never find a set, and a set established by a full-folder run was invisible to
+    // every later single-file re-analysis.
+    //
+    // Two things come out of this map, keyed the same way siblingGroups is:
+    //   - extraMembers: analyzed rows that make a lone candidate part of a real set.
+    //   - existingGroupId: the group this set already goes by, so a later run JOINS it
+    //     rather than minting a second id for the same folder+duration.
+    // Rows whose path matches a candidate are skipped -- a --force re-analysis has its
+    // own row in the DB and must not count as its own sibling.
+    std::map<std::string, std::vector<mira::Database::AnalyzedSibling>> priorSiblings;
+    {
+        std::set<std::string> candidatePaths, dirsSeen;
+        for (const auto& c : candidates) candidatePaths.insert(c.record.path);
+        for (const auto& c : candidates) {
+            if (!dirsSeen.insert(c.parentDir).second) continue;
+            for (auto& sib : db.findAnalyzedSiblingsInDir(c.parentDir)) {
+                if (candidatePaths.count(sib.path)) continue;
+                priorSiblings[siblingKey(c.parentDir, sib.durationSeconds)].push_back(std::move(sib));
+            }
+        }
+    }
+
     int64_t analyzedAt = nowUnix();
     std::map<std::string, int> counts;
+    int completedCount = 0; // mira_ui's AnalyzeJob parses the "progress: " line below for its own progress readout
 
     // PRD §6: "provenance — mira version, Essentia version, model names/versions,
     // analysis timestamp. Lets a later model upgrade identify exactly which files need
@@ -397,22 +583,60 @@ int runAnalyze(const std::vector<std::string>& args) {
     mira::Taxonomy genreTaxonomy(MIRA_GENRE_TAXONOMY, "genre_discogs400");
 
     for (auto& [key, indices] : siblingGroups) {
-        bool isSiblingSet = indices.size() >= 2;
+        auto priorIt = priorSiblings.find(key);
+        const std::vector<mira::Database::AnalyzedSibling> noPriors;
+        const auto& priors = priorIt != priorSiblings.end() ? priorIt->second : noPriors;
+
+        // A set of two is still a set whether both halves are in this run or one of them
+        // was analyzed last week.
+        bool isSiblingSet = indices.size() + priors.size() >= 2;
         std::optional<std::string> groupId;
-        if (isSiblingSet) groupId = key;
+        if (isSiblingSet) {
+            groupId = key;
+            for (const auto& sib : priors)
+                if (sib.groupId) { groupId = *sib.groupId; break; } // adopt, don't mint a second id
+
+            // Backfill the ones that predate the set being recognised. Without this, the
+            // file that was analyzed alone first would keep its empty group_id forever
+            // while everything analyzed after it got the group -- exactly the half-grouped
+            // state the EP6 folder was found in.
+            for (const auto& sib : priors)
+                if (sib.groupId != groupId) db.setGroupId(sib.id, *groupId);
+        }
 
         for (size_t idx : indices) {
             auto& c = candidates[idx];
-            std::string finalContentType = (isSiblingSet || c.isDeclared) ? "stem" : c.contentType;
+            // A mix delivered alongside its stems is not a stem, and that has to win over
+            // the folder's blanket declaration -- otherwise the guard below writes "stem"
+            // back over the very row it says it is correcting, which is what happened to
+            // Paintball-BGM-StemMix.wav (stored content_type='stem', indistinguishable
+            // from its 9 siblings). Identifying the mix inside a synced set is also what
+            // cue detection needs: the mix is the one file that plays wherever any cue
+            // plays (measured active_ratio 0.902 against 0.129-0.782 for its stems).
+            std::string finalContentType = mira::filenameSuggestsFullMix(c.record.path)
+                                                ? "track"
+                                                : ((isSiblingSet || c.isDeclared) ? "stem" : c.contentType);
             counts[finalContentType]++;
 
+            // Announced BEFORE the work, unlike `progress:` below which is printed
+            // after the database write. On a 41-minute stem the gap between the two is
+            // minutes long, and without this the UI has nothing to show for it -- which
+            // is exactly the "is it hung?" that made this necessary.
+            std::cout << "starting: " << (completedCount + 1) << "/" << candidates.size() << " "
+                      << c.record.path << std::endl;
             if (verbose) std::cerr << c.record.path << ":" << std::endl;
-            StageTimer timer(verbose);
+            StageTimer timer(verbose, progressStages);
 
             double duration = c.audio.durationSeconds;
 
             std::ostringstream machine;
-            machine << "{\"duration_seconds\":" << duration
+            // Everything time-stamped in `machine` is a position in the ORIGINAL file,
+            // not in the spliced active audio the analyzers actually ran on. That was not
+            // true before 2026-09-12 (see the remapping below and ActiveSpanMap.h), so the
+            // marker is what lets a reader tell a converted row from a legacy one instead
+            // of guessing from provenance.mira_git_hash.
+            machine << "{\"timebase\":\"file\""
+                    << ",\"duration_seconds\":" << duration
                     << ",\"sample_rate\":" << c.audio.sampleRate
                     << ",\"num_channels\":" << c.audio.numChannels;
             if (!c.isDeclared) {
@@ -423,7 +647,11 @@ int runAnalyze(const std::vector<std::string>& args) {
             mira::Database::AnalysisUpdate update;
             update.id = c.record.id;
             update.provenanceJson = provenanceJson;
-            if (!c.isDeclared) update.contentType = finalContentType; // never touch a declared row
+            // A declared row keeps its declaration, with one exception: a mix was
+            // declared a stem by its folder's category, and the row itself has to be
+            // corrected or every later read still calls it a stem.
+            if (!c.isDeclared || mira::filenameSuggestsFullMix(c.record.path))
+                update.contentType = finalContentType;
             if (groupId) update.groupId = groupId;
 
             // PRD §5: "descriptors, MIR and the embedding then see only those spans" —
@@ -439,9 +667,11 @@ int runAnalyze(const std::vector<std::string>& args) {
             const auto* left = &c.audio.left;
             const auto* right = &c.audio.right;
             std::vector<float> activeMono, activeLeft, activeRight;
+            std::vector<mira::ActiveSpan> activeSpans; // kept past this block for createAutoSegments
 
             if (mira::shouldRunActiveRegionDetection(finalContentType, duration)) {
                 auto activeRegions = mira::detectActiveRegions(c.audio.mono, c.audio.sampleRate);
+                activeSpans = activeRegions.spans;
                 update.activeRatio = activeRegions.activeRatio;
                 update.activeSpansJson = spansToJson(activeRegions.spans);
                 machine << ",\"active_ratio\":" << activeRegions.activeRatio;
@@ -454,6 +684,16 @@ int runAnalyze(const std::vector<std::string>& args) {
                 right = &activeRight;
             }
             timer.mark("active-region detection");
+
+            // Everything from here down runs on `*mono`, which is the SPLICED active
+            // audio whenever detection ran above -- so every timestamp those analyzers
+            // produce needs mapping back through these spans before it is stored
+            // (ActiveSpanMap.h). Empty when detection didn't run, which makes every
+            // mapping below an identity rather than a special case to remember.
+            std::vector<std::pair<double, double>> fileTimeSpans;
+            fileTimeSpans.reserve(activeSpans.size());
+            for (const auto& span : activeSpans)
+                fileTimeSpans.emplace_back(span.startSeconds, span.endSeconds);
 
             // DSP descriptors (PRD §5A) — all content types.
             auto dsp = mira::computeDspDescriptors(*left, *right, c.audio.sampleRate);
@@ -553,6 +793,17 @@ int runAnalyze(const std::vector<std::string>& args) {
             if (finalContentType != "one_shot") {
                 auto rhythm = mira::analyzeRhythm(*mono, c.audio.sampleRate, MIRA_BEAT_THIS_MODEL,
                                                    runRecheckTempo);
+                // Beats and downbeats are positions too, and mira_ui draws a bar ruler
+                // from them -- a downbeat left in spliced time would put the bar lines
+                // somewhere the audio isn't. BPM itself needs no conversion: it comes
+                // from the mean interval between beats within the spliced audio, and
+                // splicing out silence doesn't change the tempo of what remains.
+                for (auto& beat : rhythm.beatThisBeats)
+                    beat = mira::activeTimeToFileTime(fileTimeSpans, beat);
+                for (auto& downbeat : rhythm.beatThisDownbeats)
+                    downbeat = mira::activeTimeToFileTime(fileTimeSpans, downbeat);
+                for (auto& tick : rhythm.essentiaBeatTicks)
+                    tick = mira::activeTimeToFileTime(fileTimeSpans, tick);
                 if (rhythm.ok) machine << ",\"rhythm\":" << mira::toJson(rhythm);
                 timer.mark("rhythm (essentia + beat_this_cpp)");
 
@@ -568,6 +819,11 @@ int runAnalyze(const std::vector<std::string>& args) {
                     // total analyze time — well past what the Phase 1 headline goal needs.
                     if (runChords) {
                         auto chords = mira::detectChords(*mono, c.audio.sampleRate);
+                        // Back into file time before serialising: Chordino saw the
+                        // spliced buffer, so every timeSeconds it returned is an offset
+                        // into that, not a position in the file (ActiveSpanMap.h).
+                        for (auto& chord : chords.chords)
+                            chord.timeSeconds = mira::activeTimeToFileTime(fileTimeSpans, chord.timeSeconds);
                         if (chords.ok) machine << ",\"chords\":" << mira::toJson(chords);
                         timer.mark("chords (Chordino)");
                     }
@@ -583,6 +839,16 @@ int runAnalyze(const std::vector<std::string>& args) {
                 if (runTranscription) {
                     auto transcription = mira::transcribe(*mono, c.audio.sampleRate,
                                                             MIRA_BASIC_PITCH_MODEL);
+                    // Same conversion as chords above. Both endpoints are mapped
+                    // independently here rather than split at splice points the way the
+                    // UI splits a drawn block: `notes` is a record of note events, and
+                    // turning one straddling note into two would misstate how many notes
+                    // were transcribed. A consumer that draws them clips to active_spans
+                    // instead (Main.cpp's reloadTimelineLanes).
+                    for (auto& note : transcription.notes) {
+                        note.startSeconds = mira::activeTimeToFileTime(fileTimeSpans, note.startSeconds);
+                        note.endSeconds = mira::activeTimeToFileTime(fileTimeSpans, note.endSeconds);
+                    }
                     if (transcription.ok)
                         machine << ",\"notes\":" << mira::toJson(transcription);
                     timer.mark("note transcription (Basic Pitch)");
@@ -619,6 +885,28 @@ int runAnalyze(const std::vector<std::string>& args) {
                 db.upsertSpectrum(c.record.id, spectrumF);
             }
             timer.mark("database write");
+
+            // Stems only, per review ("samples of the stem"). Long non-stem files also get
+            // active-region detection past 5 minutes, but a track's active region is
+            // nearly the whole track -- one giant segment adds nothing but a row.
+            if (finalContentType == "stem" && !activeSpans.empty()) {
+                createAutoSegments(db, c.record.id, activeSpans, c.audio.mono, c.audio.left, c.audio.right,
+                                   c.audio.sampleRate, instrumentTaxonomy, genreTaxonomy,
+                                   stemInstrumentTaxonomy, /*stemParent=*/true);
+                timer.mark("auto-segments");
+            } else {
+                // No longer a stem (a mix that used to be routed as one, review round 4):
+                // drop the auto-segments that routing gave it, keeping anything a person
+                // made or tagged, exactly as a re-analysis would.
+                db.deleteUntouchedAutoSegmentsForFile(c.record.id);
+            }
+
+            // A stable, plain-stdout progress marker (unlike the per-stage timings
+            // above, which only print under --verbose and go to stderr) -- mira_ui's
+            // AnalyzeJob reads this line-by-line off the subprocess's stdout the same
+            // way ScanJob already reads mira::scan()'s own in-process progress callback.
+            std::cout << "progress: " << ++completedCount << "/" << candidates.size() << " " << c.record.path
+                       << std::endl;
         }
     }
 
@@ -1187,7 +1475,8 @@ int runTagFolder(const std::vector<std::string>& args) {
 // "$.instrument" path back out, so this never writes "$.stem_instrument" either).
 std::string buildSegmentMachineJson(const std::vector<float>& mono, const std::vector<float>& left,
                                      const std::vector<float>& right, int sampleRate,
-                                     mira::Taxonomy& instrumentTaxonomy, mira::Taxonomy& genreTaxonomy) {
+                                     mira::Taxonomy& instrumentTaxonomy, mira::Taxonomy& genreTaxonomy,
+                                     mira::Taxonomy& stemInstrumentTaxonomy, bool stemParent) {
     std::ostringstream machine;
     machine << "{\"duration_seconds\":" << (static_cast<double>(mono.size()) / sampleRate)
             << ",\"sample_rate\":" << sampleRate;
@@ -1216,6 +1505,24 @@ std::string buildSegmentMachineJson(const std::vector<float>& mono, const std::v
                                                 mira::kInstrumentClassNames + mira::kInstrumentClassCount);
                 machine << ",\"instrument_normalized\":"
                         << normalizedLabelsJson(names, instrument.scores, instrumentTaxonomy);
+            }
+        }
+
+        // The stem-tuned opinion, for a segment of a stem (review round 4). Without it a
+        // segment could only ever report the full-mix model, so a segment of a vocal
+        // stem read "synthesizer" under a file that read "voice" -- the two rows
+        // disagreeing by construction. Same model, same taxonomy, same raw-code order as
+        // the whole-file pass above.
+        if (stemParent) {
+            auto stemInstrument = mira::classifyStemInstrument(mono, sampleRate, MIRA_IRMAS_INSTRUMENT_MODEL);
+            if (stemInstrument.ok) {
+                machine << ",\"stem_instrument\":" << mira::toJson(stemInstrument);
+                if (stemInstrumentTaxonomy.ok()) {
+                    static const std::vector<std::string> kIrmasCodes = {
+                        "cel", "cla", "flu", "gac", "gel", "org", "pia", "sax", "tru", "vio", "voi"};
+                    machine << ",\"stem_instrument_normalized\":"
+                            << normalizedLabelsJson(kIrmasCodes, stemInstrument.scores, stemInstrumentTaxonomy);
+                }
             }
         }
 
@@ -1349,6 +1656,7 @@ int runTagSegment(const std::vector<std::string>& args) {
     mira::EssentiaEngine engine; // essentia::init() for loadAudio + the analyzers below
     mira::Taxonomy instrumentTaxonomy(MIRA_INSTRUMENT_TAXONOMY, "mtg_jamendo_instrument");
     mira::Taxonomy genreTaxonomy(MIRA_GENRE_TAXONOMY, "genre_discogs400");
+    mira::Taxonomy stemInstrumentTaxonomy(MIRA_INSTRUMENT_TAXONOMY, "irmas_predominant_instrument");
 
     int analyzedCount = 0, skipCount = 0;
     for (const auto& file : targetFiles) {
@@ -1380,7 +1688,8 @@ int runTagSegment(const std::vector<std::string>& args) {
         std::vector<float> right(audio->right.begin() + startSample, audio->right.begin() + endSample);
 
         std::string machineJson = buildSegmentMachineJson(mono, left, right, audio->sampleRate,
-                                                            instrumentTaxonomy, genreTaxonomy);
+                                                            instrumentTaxonomy, genreTaxonomy,
+                                                            stemInstrumentTaxonomy, file.contentType == "stem");
         db.upsertSegmentAnalysis(segId, file.id, machineJson, static_cast<int64_t>(std::time(nullptr)));
         ++analyzedCount;
     }

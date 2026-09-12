@@ -23,16 +23,33 @@ namespace {
 constexpr int kSampleRate = 16000;
 constexpr int kFeatDim = 64;
 constexpr int kMusicClassIndex = 137; // AudioSet ontology index of "Music" (AudioSetLabels.h)
-// First-pass threshold (PRD §12.6: "store everything, tune thresholds later") — set from
-// real measurements, not a labeled dataset: flamenco.wav (real music, max-pooled across
-// its two chunks) scores 0.52; synthesized white noise (smoke_test.sh's standard
-// non-music fixture, single chunk) scores 0.39 — CED-small is genuinely uncertain on
-// pure digital noise (its own "White noise" class scores 0.20, a real second-place
-// contender, not a wiring bug), not something a hard 0.5 cutoff would misread as
-// confidently musical. 0.45 sits between the two measured points; revisit with a wider
-// set of real files before trusting it further. musicScore is stored regardless, so a
-// caller can re-threshold without re-running inference.
-constexpr double kContentGateMusicThreshold = 0.45;
+// Threshold, recalibrated 2026-09-12 from real material (PRD §12.6: "store everything,
+// tune thresholds later" — this is the later). The previous 0.45 was set from exactly two
+// points (flamenco.wav 0.52, synthesized white noise ~0.39) and its own comment asked for
+// a wider set of real files before being trusted. That wider set now exists and says 0.45
+// is too high.
+//
+// Measured over 284 auto-segments of 15 isolated score stems (EP9, 41:27 each):
+//   * 115 of 284 (40%) fell below 0.45 and so lost moodtheme/instrument/genre/
+//     voice-instrumental entirely -- they came out of analysis identified as nothing.
+//   * In every one of those, "Music" was still the TOP-RANKED AudioSet label (0.33-0.39).
+//     The gate was never saying "this isn't music"; it was saying "music, moderately".
+//   * Synthetic non-music controls measured on this same build: white noise 0.253 (and
+//     CED ranks its own "White noise" class FIRST there, not "Music"), impulse/click
+//     train 0.019 ("Engine"). Both sit well below the real-stem cluster.
+// 0.30 passes 265 of the 284 and still rejects both controls with room to spare.
+//
+// Known and deliberately not fixed here: this score is LENGTH-BIASED, because probs are
+// max-pooled across 10s chunks (see the pooling comment in runContentGate) and more chunks
+// can only raise a maximum. Measured mean musicScore by segment length: 0.399 (<5s),
+// 0.496 (5-10s), 0.515 (10-20s), 0.563 (20-40s), 0.619 (40s+) -- and the same audio as one
+// 41-minute file scores 0.71-0.87. So no single threshold is truly correct for both a 5s
+// segment and a whole file; 0.30 is chosen to be safe at the short end, where the bias
+// hurts. At 0.30 the remaining rejections stop tracking length (3/52, 6/103, 6/56, 2/71
+// across the same buckets), which is the sign the cutoff is now discriminating on content
+// rather than on duration. musicScore is stored regardless, so this can be re-thresholded
+// later without re-running inference.
+constexpr double kContentGateMusicThreshold = 0.30;
 
 std::vector<float> resampleTo16k(const std::vector<float>& mono, int sampleRate) {
     if (sampleRate == kSampleRate) return mono;
