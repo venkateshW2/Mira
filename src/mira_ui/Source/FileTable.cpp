@@ -196,6 +196,24 @@ FileTableModel::RowList FileTableModel::collectRows(const juce::String& scope, m
     // under it (TASKS.md Phase 5 discussion: the file list is a filesystem view, the DB
     // is just a status overlay on top of it), which is all Show All ever added.
     if (scope.isEmpty()) return collected;
+
+    // A collection scope lists exactly the files filed into it, in the order they were
+    // added, instead of walking a directory -- a collection's members can come from a
+    // dozen unrelated folders, so there is nothing on disk to walk. Encoded in the same
+    // `scope` string the rest of the file list already passes around (tabs remember it,
+    // row builds are keyed on it) rather than as a second parallel notion of scope, so
+    // everything that already works per-scope keeps working unchanged.
+    if (scope.startsWith(kCollectionScopePrefix))
+    {
+        auto collectionId = scope.substring(juce::String(kCollectionScopePrefix).length()).getLargeIntValue();
+        for (const auto& record : db.filesInCollection(collectionId))
+        {
+            if (shouldAbort && shouldAbort()) return {};
+            collected.push_back(buildRow(juce::File(record.path), db, fm));
+        }
+        return collected; // insertion order is the point -- deliberately not re-sorted
+    }
+
     std::vector<juce::File> roots { juce::File(scope) };
 
     for (const auto& root : roots)

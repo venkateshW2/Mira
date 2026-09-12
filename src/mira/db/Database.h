@@ -392,6 +392,34 @@ public:
     std::optional<FolderGroup> findFolderGroupByName(const std::string& name);
     void setFolderGroupCategory(int64_t groupId, const std::string& category);
 
+    // Collections -- mira-side folders whose members are individual files rather than
+    // folder roots ("allow me to add files and then i can make a folder inside mira and
+    // organise it"). See the ui_collections comment in Database.cpp for why this is its
+    // own concept and not another kind of FolderGroup.
+    //
+    // Membership is by reference throughout: adding a file to a collection copies
+    // nothing, moves nothing, and leaves it exactly where it already lives. One file can
+    // belong to any number of collections.
+    struct Collection {
+        int64_t id = 0;
+        std::string name;
+        int fileCount = 0; // members, for the sidebar's count
+    };
+    int64_t createCollection(const std::string& name);
+    void renameCollection(int64_t collectionId, const std::string& name);
+    // Drops the collection and its membership rows. Never touches the files themselves,
+    // their analysis, or the folders they live in.
+    void deleteCollection(int64_t collectionId);
+    std::vector<Collection> listCollections();
+    std::optional<Collection> findCollectionByName(const std::string& name);
+    // Idempotent: adding a file already in the collection is a no-op rather than an
+    // error, so "add these 12, 3 of which are already here" does the obvious thing.
+    void addFilesToCollection(int64_t collectionId, const std::vector<int64_t>& fileIds);
+    void removeFilesFromCollection(int64_t collectionId, const std::vector<int64_t>& fileIds);
+    // In insertion order -- a collection is something the user assembled, so the order
+    // they put it together in is meaningful in a way alphabetical isn't.
+    std::vector<FileRecord> filesInCollection(int64_t collectionId);
+
     // mira_ui's file table (TASKS.md Phase 5): the highest-scoring key of a JSON object
     // at `path` (e.g. "$.genre_normalized" -> the top genre label), regardless of
     // threshold — a compact single-label column has no room for CaptionFields.cpp's

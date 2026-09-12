@@ -294,10 +294,14 @@ void FolderTreeItem::itemClicked(const juce::MouseEvent& e)
 {
     if (e.mods.isPopupMenu())
     {
-        // Rename/group actions only make sense for a real added root, not a plain
-        // filesystem subfolder discovered by walking disk — TASKS.md Phase 5: "so can we
-        // rename the folder or can we group folders".
+        // Rename/group/remove only make sense for a real added root: a subfolder isn't a
+        // row in ui_folder_roots, it's something found by walking disk, so there is
+        // nothing to rename or remove. But the *actions on audio* apply to any folder --
+        // "subfolders dont get to be deleted or analysed i have to analyse to parent
+        // folders". A subfolder used to get no menu at all, which meant analysing one
+        // stem folder of twenty meant analysing the parent and waiting for all of them.
         if (isRoot) owner.showRootContextMenu(folder);
+        else owner.showSubfolderContextMenu(folder);
         return;
     }
 
@@ -383,6 +387,15 @@ void FolderGroupTreeItem::paintItem(juce::Graphics& g, int width, int height)
         g.fillPath(flag);
         g.setColour(neutral);
     }
+    else if (effectiveCategory == "collections")
+    {
+        // The same turned-corner sheets CollectionTreeItem draws, so the heading and its
+        // children read as one family.
+        g.fillRoundedRectangle(7.0f, iconY, 12.0f, iconH * 0.78f, 1.5f);
+        g.setColour(neutral.withAlpha(0.55f));
+        g.fillRoundedRectangle(4.0f, iconY + iconH * 0.26f, 12.0f, iconH * 0.78f, 1.5f);
+        g.setColour(neutral);
+    }
     else if (effectiveCategory == "samples")
     {
         // A 2x2 grid of small pads -- the common "sample pack" visual shorthand.
@@ -427,6 +440,13 @@ void FolderGroupTreeItem::paintItem(juce::Graphics& g, int width, int height)
 
 void FolderGroupTreeItem::itemClicked(const juce::MouseEvent& e)
 {
+    // groupId 0 is the synthetic COLLECTIONS heading -- not a ui_folder_groups row, so
+    // there is nothing to rename, delete or move roots into.
+    if (groupId == 0)
+    {
+        if (!e.mods.isPopupMenu()) setOpen(!isOpen());
+        return;
+    }
     if (e.mods.isPopupMenu()) owner.showGroupContextMenu(groupId, name);
     // Left-click just opens/closes (TreeView's own default handling) — a group has no
     // real folder of its own to scope the file list to; its member roots do that.
@@ -484,6 +504,21 @@ void FolderTreeView::rebuildRoots()
         if (info.groupId) continue;
         juce::String displayName = info.displayName ? juce::String(*info.displayName) : juce::String();
         superRoot.addSubItem(new FolderTreeItem(juce::File(info.path), laf, true, *this, displayName));
+    }
+
+    // Collections last, under their own heading: they are a different kind of thing from
+    // everything above (files gathered by hand, not folders found on disk), and mixing
+    // them into the same list would suggest they behave the same way -- they have no
+    // subfolders to expand and no scan of their own.
+    auto collections = database.listCollections();
+    if (!collections.empty())
+    {
+        empty = false;
+        auto* header = new FolderGroupTreeItem(0, "COLLECTIONS", "collections", laf, *this);
+        superRoot.addSubItem(header);
+        for (const auto& c : collections)
+            header->addSubItem(new CollectionTreeItem(c.id, c.name, c.fileCount, laf, *this));
+        header->setOpen(true);
     }
 }
 
@@ -641,6 +676,163 @@ void FolderTreeView::promptMoveToGroup(const juce::File& folder)
             rebuildRoots();
         });
     }
+    menu.showMenuAsync(juce::PopupMenu::Options());
+}
+
+// A plain filesystem subfolder. Deliberately a subset of the root menu rather than a
+// disabled-looking copy of it: only the things that mean something for a folder mira
+// doesn't track as a root of its own.
+CollectionTreeItem::CollectionTreeItem(int64_t idIn, juce::String nameIn, int fileCountIn,
+                                        const MiraLookAndFeel& lafIn, FolderTreeView& ownerIn)
+    : collectionId(idIn), name(std::move(nameIn)), fileCount(fileCountIn), laf(lafIn), owner(ownerIn)
+{
+}
+
+void CollectionTreeItem::paintItem(juce::Graphics& g, int width, int height)
+{
+    auto bounds = juce::Rectangle<int>(0, 0, width, height);
+    if (isSelected())
+    {
+        g.setColour(MiraLookAndFeel::accentSoft);
+        g.fillRoundedRectangle(bounds.reduced(3, 1).toFloat(), 5.0f);
+    }
+
+    // A stack of sheets with one corner turned -- "files gathered by hand", distinct from
+    // both the folder glyph (a real directory) and the group glyphs (containers of
+    // folders). Nothing here is a directory, so nothing here should look like one.
+    auto iconH = height * 0.40f;
+    auto iconY = (height - iconH) * 0.5f;
+    g.setColour(MiraLookAndFeel::textDim);
+    g.fillRoundedRectangle(7.0f, iconY, 12.0f, iconH * 0.78f, 1.5f);
+    g.setColour(MiraLookAndFeel::textFaint);
+    g.fillRoundedRectangle(4.5f, iconY + iconH * 0.24f, 12.0f, iconH * 0.78f, 1.5f);
+
+    auto textBounds = bounds.withTrimmedLeft(24);
+    // The count sits on the right, dim -- a collection with nothing in it should say so
+    // rather than looking like a folder that failed to load.
+    auto countBounds = textBounds.removeFromRight(juce::jmin(44, textBounds.getWidth() / 3));
+    g.setColour(MiraLookAndFeel::textFaint);
+    g.setFont(laf.monoRegular(11.0f));
+    g.drawText(juce::String(fileCount), countBounds, juce::Justification::centredRight, 1);
+
+    g.setColour(isSelected() ? MiraLookAndFeel::accent : MiraLookAndFeel::text);
+    g.setFont(laf.sansRegular(13.5f));
+    g.drawText(name, textBounds, juce::Justification::centredLeft, 1);
+}
+
+void CollectionTreeItem::itemClicked(const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu())
+    {
+        owner.showCollectionContextMenu(collectionId, name);
+        return;
+    }
+    if (owner.onCollectionSelected) owner.onCollectionSelected(collectionId);
+}
+
+void FolderTreeView::showCollectionContextMenu(int64_t collectionId, const juce::String& currentName)
+{
+    juce::PopupMenu menu;
+    menu.addItem("Rename...", [this, collectionId, currentName] {
+        promptRenameCollection(collectionId, currentName);
+    });
+    menu.addSeparator();
+    menu.addItem("Delete Collection...", [this, collectionId, currentName] {
+        promptDeleteCollection(collectionId, currentName);
+    });
+    menu.showMenuAsync(juce::PopupMenu::Options());
+}
+
+void FolderTreeView::promptRenameCollection(int64_t collectionId, const juce::String& currentName)
+{
+    promptForText("Rename Collection", "New name for \"" + currentName + "\":", currentName, this,
+                   [this, collectionId](const juce::String& name) {
+                       if (name.trim().isEmpty()) return;
+                       database.renameCollection(collectionId, name.trim().toStdString());
+                       rebuildRoots();
+                   });
+}
+
+void FolderTreeView::promptDeleteCollection(int64_t collectionId, const juce::String& currentName)
+{
+    // Worth spelling out what is and isn't destroyed: a collection holds references, so
+    // deleting one removes the grouping and nothing else. Same "nothing destructive by
+    // default" discipline as Remove Folder from mira.
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::QuestionIcon)
+            .withTitle("Delete Collection")
+            .withMessage("Delete the collection \"" + currentName + "\"?\n\nThe files in it stay in your "
+                         "library and on disk exactly where they are — only this grouping is removed.")
+            .withButton("Delete")
+            .withButton("Cancel"),
+        [this, collectionId](int result) {
+            if (result != 1) return;
+            database.deleteCollection(collectionId);
+            rebuildRoots();
+        });
+}
+
+void FolderTreeView::promptAddFiles()
+{
+    folderChooser = std::make_unique<juce::FileChooser>(
+        "Add files to mira", juce::File::getSpecialLocation(juce::File::userMusicDirectory),
+        "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a;*.ogg;*.opus");
+
+    auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                  | juce::FileBrowserComponent::canSelectMultipleItems;
+    folderChooser->launchAsync(flags, [this](const juce::FileChooser& chooser) {
+        std::vector<juce::String> paths;
+        for (const auto& f : chooser.getResults())
+            if (f.existsAsFile()) paths.push_back(f.getFullPathName());
+        if (paths.empty()) return; // cancelled
+        promptForCollectionThen(std::move(paths));
+    });
+}
+
+// Which collection the picked files go into, asked before they are indexed so the whole
+// operation is one decision rather than "they appeared somewhere, now go find them".
+// Existing collections first, then New Collection... -- the common case after the first
+// time is adding to one that already exists.
+void FolderTreeView::promptForCollectionThen(std::vector<juce::String> paths)
+{
+    auto collections = database.listCollections();
+    juce::StringArray choices;
+    for (const auto& c : collections)
+        choices.add(juce::String(c.name) + "  (" + juce::String(c.fileCount) + ")");
+    choices.add("New Collection...");
+    choices.add("Cancel");
+
+    promptForChoice("Add " + juce::String(paths.size()) + (paths.size() == 1 ? " File" : " Files"),
+                     "Which collection should these go into?", choices, this,
+                     [this, paths = std::move(paths), collections](int index) mutable {
+                         if (index < 0 || index >= static_cast<int>(collections.size()) + 1) return; // Cancel
+                         if (index < static_cast<int>(collections.size()))
+                         {
+                             if (onFilesAdded) onFilesAdded(std::move(paths), collections[static_cast<size_t>(index)].id);
+                             return;
+                         }
+                         promptForText("New Collection", "Name for the new collection:", "New Collection", this,
+                                        [this, paths = std::move(paths)](const juce::String& name) mutable {
+                                            auto trimmed = name.trim();
+                                            if (trimmed.isEmpty()) return;
+                                            auto id = database.createCollection(trimmed.toStdString());
+                                            if (onFilesAdded) onFilesAdded(std::move(paths), id);
+                                        });
+                     });
+}
+
+void FolderTreeView::showSubfolderContextMenu(const juce::File& folder)
+{
+    juce::PopupMenu menu;
+    menu.addItem("Analyze Folder", [this, folder] {
+        if (onAnalyzeFolderRequested) onAnalyzeFolderRequested(folder);
+    });
+    menu.addSeparator();
+    // The way to "remove" a subfolder is to add it as a root in its own right and then
+    // remove that -- said here rather than left to be discovered, since the absence of a
+    // Remove item is exactly what prompted the question.
+    menu.addItem("Add as Top-Level Folder...", [this, folder] { promptCategorizeNewFolder(folder); });
     menu.showMenuAsync(juce::PopupMenu::Options());
 }
 

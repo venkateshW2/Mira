@@ -101,6 +101,33 @@ private:
     FolderTreeView& owner;
 };
 
+// A mira-side folder of individual FILES (Database::Collection), as opposed to
+// FolderGroupTreeItem's container of folder roots -- "allow me to add files and then i
+// can make a folder inside mira and organise it". Like a group it is never a real
+// directory, and it has no children in the tree: clicking it scopes the file list to its
+// members, which are listed there rather than nested here (a collection can hold files
+// from a dozen unrelated folders, so a tree of them would say nothing).
+class CollectionTreeItem : public juce::TreeViewItem
+{
+public:
+    CollectionTreeItem(int64_t idIn, juce::String nameIn, int fileCountIn, const MiraLookAndFeel& lafIn,
+                        FolderTreeView& ownerIn);
+
+    bool mightContainSubItems() override { return false; }
+    int getItemHeight() const override { return 24; }
+    void paintItem(juce::Graphics&, int width, int height) override;
+    void itemClicked(const juce::MouseEvent&) override;
+
+    int64_t getCollectionId() const { return collectionId; }
+
+private:
+    int64_t collectionId;
+    juce::String name;
+    int fileCount;
+    const MiraLookAndFeel& laf;
+    FolderTreeView& owner;
+};
+
 // Invisible container so the TreeView can show multiple sibling roots/groups at once
 // (TreeView itself only ever has one root item) — never painted, never selectable.
 class FolderTreeSuperRoot : public juce::TreeViewItem
@@ -151,7 +178,23 @@ public:
     // those TreeViewItems (which don't own any state themselves) can reach them via
     // `owner`, same pattern onFolderSelected already uses.
     void showRootContextMenu(const juce::File& folder);
+    void showSubfolderContextMenu(const juce::File& folder);
     void showGroupContextMenu(int64_t groupId, const juce::String& currentName);
+    void showCollectionContextMenu(int64_t collectionId, const juce::String& currentName);
+
+    // Opens the "Add files to mira" picker -- multi-select, audio only. Public for the
+    // same reason promptAddFolder is: File > Add Files... drives the identical flow.
+    void promptAddFiles();
+
+    // Fires when a collection row is clicked, with the collection's id. MainComponent
+    // scopes the file list to it (FileTableModel's collection scope).
+    std::function<void(int64_t)> onCollectionSelected;
+    // Fires after files are picked, so MainComponent can scan them (it owns the scan
+    // queue) and then call back to file them into a collection.
+    std::function<void(std::vector<juce::String>, int64_t collectionId)> onFilesAdded;
+    // Rebuilt from the database -- called by MainComponent once the files it scanned are
+    // actually in the library and filed.
+    void refresh() { rebuildRoots(); }
 
 private:
     void rebuildRoots();
@@ -163,6 +206,9 @@ private:
     void promptRenameRoot(const juce::File& folder);
     void promptMoveToGroup(const juce::File& folder);
     void promptRemoveRoot(const juce::File& folder);
+    void promptRenameCollection(int64_t collectionId, const juce::String& currentName);
+    void promptDeleteCollection(int64_t collectionId, const juce::String& currentName);
+    void promptForCollectionThen(std::vector<juce::String> paths);
 
     mira::Database& database;
     const MiraLookAndFeel& laf;

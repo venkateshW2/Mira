@@ -2591,6 +2591,63 @@ need?) rather than an optimisation.
       unrelated picture: the two kinds are siblings, and the marker is precisely what makes
       a score stem different -- a long reel carrying cues.
 
+- [x] *(built 2026-09-12; data path verified, not yet checked on screen)* **Add individual
+      files, and mira-side collections to organise them.** Three separate problems the user
+      hit at once: "iam only able to add folders - now in this case i just want to add the
+      three files and not the folders", "subfolders dont get to be deleted or analysed i
+      have to analyse to parent folders", and "allow me to add files and then i can make a
+      folder inside mira and organise it".
+
+      **Subfolders had no context menu at all** — `FolderTreeItem::itemClicked` did
+      `if (isRoot) showRootContextMenu(...)` and nothing otherwise, so analysing one stem
+      folder out of twenty meant analysing the parent and waiting for all of them.
+      `showSubfolderContextMenu` offers the actions that mean something for a folder mira
+      doesn't track as a root — Analyze Folder (the callback already accepted any folder,
+      it was simply never offered) and Add as Top-Level Folder. Deliberately a subset, not
+      a greyed-out copy: a subfolder isn't a `ui_folder_roots` row, so there is genuinely
+      nothing to rename or remove, and the menu says so by offering the way to get one.
+
+      **Adding files needed the scanner, not just the file picker.** `ui_folder_roots.path`
+      is assumed to be a directory by the tree, by `collectRows`, and by `scan()`, which
+      skipped non-directory roots outright. Rather than make roots file-shaped — which
+      would have meant teaching all three about a root that isn't a directory, and still
+      given no way to organise anything — `Scanner.cpp`'s per-file indexing is factored out
+      of the directory walk into `indexEntry`, and a root that is a regular file goes
+      through it directly. Identical work either way, no second indexing path to drift.
+
+      **Collections** (`ui_collections`, `ui_collection_files`) are mira-side folders whose
+      members are individual *files*, where a `ui_folder_groups` row contains folder
+      *roots*. Kept as their own concept rather than letting a group hold files too: the
+      four built-in groups are analysis categories — filing a folder under Score Stems
+      declares its files as stems at scan time — and mixing loose files into them would
+      blur what a category means. Flat, not nested (decided with the user); nesting can be
+      added later without changing what exists.
+
+      Membership is by reference throughout, so PRD §1's "no file ever moves" holds: a file
+      can be in any number of collections while still living where it came from, and
+      deleting a collection removes only the grouping. The delete dialog says so in those
+      words, since "delete" on something that looks like a folder is exactly where a user
+      would expect files to go with it.
+
+      Scope travels as one opaque token (`mira:collection:<id>`) through the same `scope`
+      string tabs and row-build generations already pass around, so only the two places
+      that resolve a scope to files know the difference. Members list in **insertion
+      order** — a collection is something assembled by hand, so the order it was assembled
+      in means something alphabetical doesn't.
+
+      **Verified on real files** (the three loose `Ctrl_*.wav` in SK-SHOWREEL that prompted
+      this): `mira scan <file> <file>` indexes exactly those two and adds no root; a
+      collection holds them in order; adding the same files twice leaves the count at 2
+      rather than 4 (idempotent); removing one leaves one; and **deleting the collection
+      leaves both files still in the library** — the property worth checking rather than
+      assuming. `deleteCollection` clears membership explicitly instead of relying on
+      `ON DELETE CASCADE`, because foreign keys are per-connection and off by default in
+      SQLite: the constraint documents the intent, the code makes it true.
+
+      **Not verified on screen**: the sidebar's COLLECTIONS section, its icon, the Add
+      Files... picker and the Add to Collection submenu all compile and are wired, but
+      nobody has looked at them.
+
 ### Carried over from Phase 5 — captions and caption surfaces
 
 From Phase 5's original PRD §9/§13 checklist. These are the last three caption outputs and

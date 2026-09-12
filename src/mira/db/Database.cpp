@@ -118,6 +118,35 @@ CREATE TABLE IF NOT EXISTS ui_folder_groups (
     name       TEXT NOT NULL,
     added_at   INTEGER NOT NULL
 );
+
+-- "allow me to add files and then i can make a folder inside mira and organise it" --
+-- a collection is a mira-side folder whose members are individual FILES, where a
+-- ui_folder_groups row is a container for folder ROOTS. Kept as its own concept rather
+-- than letting a group hold files too: the four built-in groups are analysis categories
+-- (filing a folder under Score Stems declares its files as stems at scan time), and
+-- mixing arbitrary loose files into them would blur what a category means.
+--
+-- Membership references files, it never owns or moves them: the same file can sit in any
+-- number of collections while still living in whatever folder it came from, and deleting
+-- a collection deletes only the membership rows. PRD §1's "no file ever moves" applies
+-- here as much as anywhere.
+CREATE TABLE IF NOT EXISTS ui_collections (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    added_at   INTEGER NOT NULL
+);
+
+-- ON DELETE CASCADE on both sides: a removed collection takes its membership with it,
+-- and so does a file removed from the library -- a membership row pointing at a file that
+-- no longer exists would be an unreachable orphan, the same trap deleteSegment had to
+-- clean up by hand for segment_analysis.
+CREATE TABLE IF NOT EXISTS ui_collection_files (
+    collection_id INTEGER NOT NULL REFERENCES ui_collections(id) ON DELETE CASCADE,
+    file_id       INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    added_at      INTEGER NOT NULL,
+    PRIMARY KEY (collection_id, file_id)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_files_file ON ui_collection_files(file_id);
 )SQL";
 
 FileRecord fromRow(SQLite::Statement& q) {
@@ -777,6 +806,96 @@ void Database::deleteFolderGroup(int64_t groupId) {
     SQLite::Statement del(db, "DELETE FROM ui_folder_groups WHERE id = ?");
     del.bind(1, groupId);
     del.exec();
+}
+
+int64_t Database::createCollection(const std::string& name) {
+    SQLite::Statement q(db, "INSERT INTO ui_collections (name, added_at) VALUES (?, ?)");
+    q.bind(1, name);
+    q.bind(2, static_cast<int64_t>(std::time(nullptr)));
+    q.exec();
+    return db.getLastInsertRowid();
+}
+
+void Database::renameCollection(int64_t collectionId, const std::string& name) {
+    SQLite::Statement q(db, "UPDATE ui_collections SET name = ? WHERE id = ?");
+    q.bind(1, name);
+    q.bind(2, collectionId);
+    q.exec();
+}
+
+void Database::deleteCollection(int64_t collectionId) {
+    // Membership explicitly, not left to ON DELETE CASCADE: foreign keys are only
+    // enforced when PRAGMA foreign_keys is on, which is per-connection and off by
+    // default in SQLite. The constraint documents the intent; this makes it true.
+    SQLite::Statement members(db, "DELETE FROM ui_collection_files WHERE collection_id = ?");
+    members.bind(1, collectionId);
+    members.exec();
+    SQLite::Statement q(db, "DELETE FROM ui_collections WHERE id = ?");
+    q.bind(1, collectionId);
+    q.exec();
+}
+
+std::vector<Database::Collection> Database::listCollections() {
+    std::vector<Collection> result;
+    SQLite::Statement q(db,
+        "SELECT c.id, c.name, (SELECT COUNT(*) FROM ui_collection_files f WHERE f.collection_id = c.id) "
+        "FROM ui_collections c ORDER BY c.added_at");
+    while (q.executeStep()) {
+        Collection c;
+        c.id = q.getColumn(0).getInt64();
+        c.name = q.getColumn(1).getString();
+        c.fileCount = q.getColumn(2).getInt();
+        result.push_back(std::move(c));
+    }
+    return result;
+}
+
+std::optional<Database::Collection> Database::findCollectionByName(const std::string& name) {
+    SQLite::Statement q(db, "SELECT id, name FROM ui_collections WHERE name = ? COLLATE NOCASE LIMIT 1");
+    q.bind(1, name);
+    if (!q.executeStep()) return std::nullopt;
+    Collection c;
+    c.id = q.getColumn(0).getInt64();
+    c.name = q.getColumn(1).getString();
+    return c;
+}
+
+void Database::addFilesToCollection(int64_t collectionId, const std::vector<int64_t>& fileIds) {
+    SQLite::Transaction transaction(db);
+    SQLite::Statement q(db,
+        "INSERT INTO ui_collection_files (collection_id, file_id, added_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(collection_id, file_id) DO NOTHING");
+    auto now = static_cast<int64_t>(std::time(nullptr));
+    for (auto fileId : fileIds) {
+        q.bind(1, collectionId);
+        q.bind(2, fileId);
+        q.bind(3, now);
+        q.exec();
+        q.reset();
+    }
+    transaction.commit();
+}
+
+void Database::removeFilesFromCollection(int64_t collectionId, const std::vector<int64_t>& fileIds) {
+    SQLite::Transaction transaction(db);
+    SQLite::Statement q(db, "DELETE FROM ui_collection_files WHERE collection_id = ? AND file_id = ?");
+    for (auto fileId : fileIds) {
+        q.bind(1, collectionId);
+        q.bind(2, fileId);
+        q.exec();
+        q.reset();
+    }
+    transaction.commit();
+}
+
+std::vector<FileRecord> Database::filesInCollection(int64_t collectionId) {
+    std::vector<FileRecord> result;
+    SQLite::Statement q(db,
+        "SELECT f.* FROM files f JOIN ui_collection_files cf ON cf.file_id = f.id "
+        "WHERE cf.collection_id = ? ORDER BY cf.added_at, cf.rowid");
+    q.bind(1, collectionId);
+    while (q.executeStep()) result.push_back(fromRow(q));
+    return result;
 }
 
 std::vector<Database::FolderGroup> Database::listFolderGroups() {

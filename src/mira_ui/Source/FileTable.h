@@ -58,6 +58,12 @@ struct FacetOptions
     juce::StringArray keys, genres, instruments, moods;
 };
 
+// A file-list scope that is a mira-side collection rather than a folder on disk. The
+// scope string stays one opaque token everywhere else (tabs, row-build generations, the
+// status bar's folder readout), so only the two places that actually resolve it to files
+// need to know the difference.
+inline constexpr const char* kCollectionScopePrefix = "mira:collection:";
+
 class FileTableModel : public juce::TableListBoxModel
 {
 public:

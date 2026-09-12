@@ -808,6 +808,37 @@ public:
                                              : "Edit " + juce::String(static_cast<int>(selectedIds.size()))
                                                    + " Selected...";
             menu.addItem(detailsLabel, [this, selectedIds] { openFileDetails(selectedIds); });
+
+            // Organising files that are already in the library, as opposed to Add
+            // Files... which indexes new ones -- both end in the same place.
+            menu.addSeparator();
+            juce::PopupMenu collectionsMenu;
+            auto collections = database.listCollections();
+            for (const auto& c : collections)
+            {
+                auto id = c.id;
+                collectionsMenu.addItem(juce::String(c.name) + "  (" + juce::String(c.fileCount) + ")",
+                                         [this, selectedIds, id] {
+                                             if (onAddToCollection) onAddToCollection(selectedIds, id);
+                                         });
+            }
+            if (!collections.empty()) collectionsMenu.addSeparator();
+            collectionsMenu.addItem("New Collection...", [this, selectedIds] {
+                if (onAddToNewCollection) onAddToNewCollection(selectedIds);
+            });
+            menu.addSubMenu("Add to Collection", collectionsMenu);
+
+            // Only offered while actually looking at a collection: "remove from" needs a
+            // specific one to remove from, and removing a file from a collection you
+            // cannot see would be a silent edit to something off screen.
+            if (currentScope.startsWith(kCollectionScopePrefix))
+            {
+                auto collectionId = currentScope.substring(juce::String(kCollectionScopePrefix).length())
+                                        .getLargeIntValue();
+                menu.addItem("Remove from This Collection", [this, selectedIds, collectionId] {
+                    if (onRemoveFromCollection) onRemoveFromCollection(selectedIds, collectionId);
+                });
+            }
         }
         menu.showMenuAsync(juce::PopupMenu::Options());
     }
@@ -821,7 +852,7 @@ public:
             g.setColour(MiraLookAndFeel::textFaint);
             g.setFont(laf.sansRegular(13.0f));
             g.drawText(loadingRows ? juce::String(juce::CharPointer_UTF8("Loading\xe2\x80\xa6"))
-                                   : juce::String("Select a folder to see its files"),
+                                   : juce::String("Select a folder or collection to see its files"),
                        getLocalBounds().withTrimmedTop(kTabBarHeight),
                        juce::Justification::centred, 1);
         }
@@ -973,6 +1004,11 @@ public:
     std::function<juce::String()> getAnalyzeOptionsSuffix;
     // Double-click / "Details..." -- MainComponent opens its details sidebar for these.
     std::function<void(std::vector<int64_t>)> onDetailsRequested;
+    // Collection membership -- MainComponent owns the database writes and the refresh
+    // that has to follow them (the sidebar's counts change too).
+    std::function<void(std::vector<int64_t>, int64_t)> onAddToCollection;
+    std::function<void(std::vector<int64_t>)> onAddToNewCollection;
+    std::function<void(std::vector<int64_t>, int64_t)> onRemoveFromCollection;
 
     // Global (not per-tab) analysis state, forwarded straight through to the model —
     // see FileTableModel::setAnalysisState's own comment for why this has to be global.
@@ -1154,6 +1190,31 @@ public:
         // "scanning is mira's job not the user's job" — a newly added root gets scanned
         // automatically, no manual Scan click required.
         folderTree->onFolderAdded = [this](const juce::File& f) { enqueueScan(f.getFullPathName()); };
+        fileList->onAddToCollection = [this](std::vector<int64_t> ids, int64_t collectionId) {
+            database->addFilesToCollection(collectionId, ids);
+            folderTree->refresh();
+        };
+        fileList->onAddToNewCollection = [this](std::vector<int64_t> ids) {
+            promptForNewCollectionName([this, ids](int64_t collectionId) {
+                database->addFilesToCollection(collectionId, ids);
+                folderTree->refresh();
+                fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
+            });
+        };
+        fileList->onRemoveFromCollection = [this](std::vector<int64_t> ids, int64_t collectionId) {
+            database->removeFilesFromCollection(collectionId, ids);
+            folderTree->refresh();
+            fileList->refresh(); // the rows being looked at are exactly what just changed
+        };
+        folderTree->onCollectionSelected = [this](int64_t collectionId) {
+            fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
+        };
+        // Picked files are indexed here rather than in the tree: scanning is this class's
+        // job, and `mira::scan` takes file paths as roots directly (Scanner.cpp), so there
+        // is no folder to add and nothing beside them gets pulled in.
+        folderTree->onFilesAdded = [this](std::vector<juce::String> paths, int64_t collectionId) {
+            addFilesToLibrary(std::move(paths), collectionId);
+        };
         // "right click folder and choose to analyse the folder so all the files go into
         // analysis -- there is already groups made use that if need be" -- a real
         // recursive walk of the real files on disk, same audio-extension filtering
@@ -1439,6 +1500,76 @@ private:
     // "scanning is mira's job not the user's job" — every entry point into scanning
     // (Add Folder, an interrupted-scan resume at startup, or the native Rescan menu
     // item) funnels through here rather than each spinning up its own ScanJob.
+    // "i just want to add the three files and not the folders" -- index exactly these
+    // files and file them into a collection, adding no folder root at all.
+    //
+    // Indexed on a background thread (hashing a few hundred MB of stems is not instant)
+    // but through the same `mira::scan` every folder scan uses, with the files themselves
+    // as roots -- Scanner.cpp's indexEntry does not care whether a root was a file or
+    // something a directory walk produced, so there is no second indexing path to drift.
+    // A name for a brand-new collection. juce::AlertWindow rather than FolderTreeView's
+    // own promptForText: that one is file-local to FolderTreeView.cpp, and exporting it
+    // just for this would be a wider change than a one-field prompt is worth.
+    void promptForNewCollectionName(std::function<void(int64_t)> onCreated)
+    {
+        auto window = std::make_shared<juce::AlertWindow>("New Collection",
+                                                           "Name for the new collection:",
+                                                           juce::MessageBoxIconType::NoIcon, this);
+        window->addTextEditor("name", "New Collection");
+        window->addButton("Create", 1);
+        window->addButton("Cancel", 0);
+        window->enterModalState(true, juce::ModalCallbackFunction::create(
+            [this, window, onCreated = std::move(onCreated)](int result) {
+                auto name = window->getTextEditorContents("name").trim();
+                window->exitModalState(result);
+                window->setVisible(false);
+                if (result != 1 || name.isEmpty()) return;
+                onCreated(database->createCollection(name.toStdString()));
+            }), false);
+    }
+
+    void addFilesToLibrary(std::vector<juce::String> paths, int64_t collectionId)
+    {
+        if (paths.empty()) return;
+        scanActivityText = "Adding " + juce::String(paths.size())
+                            + (paths.size() == 1 ? " file" : " files")
+                            + juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"));
+        pushActivityText();
+
+        juce::Thread::launch([this, paths = std::move(paths), collectionId, db = dbPath] {
+            std::vector<std::string> roots;
+            for (const auto& p : paths) roots.push_back(p.toStdString());
+
+            // Its own connection, like RowBuildJob and ScanJob: SQLite handles are not
+            // safe to share across threads, and the UI thread keeps using its own.
+            std::vector<int64_t> fileIds;
+            {
+                mira::Database scanDb(db.toStdString());
+                mira::ScanOptions options;
+                options.roots = roots;
+                mira::scan(scanDb, options);
+                // Resolved after the scan, not before: a file only has an id once it is
+                // indexed, and one that failed to read simply has none and is skipped
+                // rather than filed as a dangling membership row.
+                for (const auto& root : roots)
+                    if (auto record = scanDb.findByPath(root)) fileIds.push_back(record->id);
+                scanDb.addFilesToCollection(collectionId, fileIds);
+            }
+
+            juce::MessageManager::callAsync([this, collectionId, added = fileIds.size()] {
+                scanActivityText = {};
+                pushActivityText();
+                folderTree->refresh();
+                refreshLibraryCount();
+                // Show what was just added, so the files are on screen rather than filed
+                // somewhere the user now has to go looking for.
+                fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
+                logStore.append(LogStore::Source::app,
+                                 "added " + juce::String(added) + " file(s) to a collection");
+            });
+        });
+    }
+
     void enqueueScan(const juce::String& root)
     {
         if (root == scanningRoot) return;
@@ -3424,7 +3555,20 @@ private:
         auto middleDot = juce::String(juce::CharPointer_UTF8("\xc2\xb7"));
         auto ellipsis = juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"));
         folderSummaryShown = true;
-        juce::String text = juce::File(scope).getFileName();
+        // A collection scope is a token, not a path -- juce::File would render it as a
+        // filename ("mira:collection:3") and the count would read as a folder's.
+        juce::String text;
+        if (scope.startsWith(kCollectionScopePrefix))
+        {
+            auto id = scope.substring(juce::String(kCollectionScopePrefix).length()).getLargeIntValue();
+            text = "Collection";
+            for (const auto& c : database->listCollections())
+                if (c.id == id) text = juce::String(c.name);
+        }
+        else
+        {
+            text = juce::File(scope).getFileName();
+        }
         if (loading)
         {
             statusBar->setFolderText(text + "  " + middleDot + " reading" + ellipsis);
@@ -3915,6 +4059,7 @@ class MiraMenuBarModel : public juce::MenuBarModel
 {
 public:
     std::function<void()> onAddFolder;
+    std::function<void()> onAddFiles;
     // "rescan can be in the osx toolbar like rescan not in the ui, its confusing" —
     // scanning itself is automatic (MainComponent::enqueueScan, fired on Add Folder and
     // resumed automatically at launch for anything left incomplete); this menu item is
@@ -3955,6 +4100,7 @@ public:
         if (topLevelMenuIndex == 0)
         {
             menu.addItem(1, "Add Folder...");
+            menu.addItem(3, "Add Files...");
             menu.addItem(2, "Rescan");
         }
         else if (topLevelMenuIndex == 1)
@@ -4012,6 +4158,7 @@ public:
     void menuItemSelected(int menuItemID, int) override
     {
         if (menuItemID == 1 && onAddFolder) onAddFolder();
+        else if (menuItemID == 3 && onAddFiles) onAddFiles();
         else if (menuItemID == 2 && onRescan) onRescan();
         else if (menuItemID == 3 && onAudioSettings) onAudioSettings();
         else if (menuItemID == 4 && onUndo) onUndo();
@@ -4051,6 +4198,7 @@ public:
         mainWindow = std::make_unique<MainWindow>(getApplicationName(), lookAndFeel);
 
         menuModel.onAddFolder = [this] { mainWindow->getMainComponent().getFolderTree().promptAddFolder(); };
+        menuModel.onAddFiles = [this] { mainWindow->getMainComponent().getFolderTree().promptAddFiles(); };
         menuModel.onRescan = [this] { mainWindow->getMainComponent().rescanCurrentOrAll(); };
         menuModel.buildTagsMenu = [this](juce::PopupMenu& menu) {
             mainWindow->getMainComponent().buildTagsMenu(menu);

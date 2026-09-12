@@ -66,10 +66,75 @@ std::string sha256File(const std::string& path) {
 ScanStats scan(Database& db, const ScanOptions& options) {
     ScanStats stats;
 
+    // One file's indexing, factored out of the directory walk so a root can be a single
+    // FILE as well as a directory ("i just want to add the three files and not the
+    // folders"). mira_ui's Add Files... passes the chosen files straight through here
+    // rather than adding their parent folder as a root and pulling in everything beside
+    // them. Identical work either way -- there is no second code path that could drift.
+    auto indexEntry = [&](const fs::directory_entry& entry) {
+        std::error_code ec;
+        if (!entry.is_regular_file(ec)) return;
+
+        const std::string path = entry.path().string();
+        if (isAppleDoubleSidecar(path)) {
+            stats.filesSkippedAppleDouble++;
+            return;
+        }
+        if (!hasSupportedAudioExtension(path)) {
+            stats.filesSkippedUnsupported++;
+            return;
+        }
+
+        stats.filesSeen++;
+        // Every file, not throttled by count here — a folder of a few dozen huge
+        // stem files (each taking real time to SHA-256) could otherwise sit at
+        // "0 files" for ages between updates, reading as hung rather than working.
+        // A caller that needs to bound UI update frequency for a very large library
+        // (mira_ui's ScanJob) throttles by wall-clock time on its own end instead.
+        if (options.onProgress) options.onProgress(stats, path);
+
+        auto mtime = fs::last_write_time(entry.path(), ec).time_since_epoch().count();
+        auto sizeBytes = static_cast<int64_t>(entry.file_size(ec));
+
+        // sha256 is the expensive step; skip it when mtime alone shows nothing
+        // changed, so a re-scan of an untouched drive is cheap.
+        if (auto existing = db.findByPath(path);
+            existing && existing->mtime == static_cast<int64_t>(mtime)) {
+            stats.filesUnchanged++;
+            if (options.declareAsStem && existing->contentTypeSource != "declared"
+                && !filenameSuggestsFullMix(path))
+                db.declareStem(path);
+            return;
+        }
+
+        std::string hash = sha256File(path);
+        if (hash.empty()) {
+            std::cerr << "mira scan: could not read " << path << std::endl;
+            return;
+        }
+
+        bool isNew = db.upsertScannedFile(path, hash, static_cast<int64_t>(mtime),
+                                           sizeBytes, nowUnix());
+        if (isNew) stats.filesNew++;
+        else stats.filesUpdated++;
+
+        // A mix sitting in a stem folder is not a stem (review round 4). Declaring it
+        // one would hand it the isolated-audio instrument model, which is exactly
+        // wrong for a full mix -- measured on Bhabi-BGM-StemMix.wav, where the
+        // stem-tuned model answered "voice 54%" for a whole arrangement.
+        if (options.declareAsStem && !filenameSuggestsFullMix(path)) db.declareStem(path);
+    };
+
     for (const auto& root : options.roots) {
         std::error_code ec;
+
+        if (fs::is_regular_file(root, ec)) {
+            indexEntry(fs::directory_entry(root));
+            continue;
+        }
         if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
-            std::cerr << "mira scan: skipping non-directory root: " << root << std::endl;
+            std::cerr << "mira scan: skipping root that is neither a file nor a directory: "
+                      << root << std::endl;
             continue;
         }
 
@@ -84,58 +149,7 @@ ScanStats scan(Database& db, const ScanOptions& options) {
                 ec.clear();
                 continue;
             }
-
-            const auto& entry = *it;
-            if (!entry.is_regular_file(ec)) continue;
-
-            const std::string path = entry.path().string();
-            if (isAppleDoubleSidecar(path)) {
-                stats.filesSkippedAppleDouble++;
-                continue;
-            }
-            if (!hasSupportedAudioExtension(path)) {
-                stats.filesSkippedUnsupported++;
-                continue;
-            }
-
-            stats.filesSeen++;
-            // Every file, not throttled by count here — a folder of a few dozen huge
-            // stem files (each taking real time to SHA-256) could otherwise sit at
-            // "0 files" for ages between updates, reading as hung rather than working.
-            // A caller that needs to bound UI update frequency for a very large library
-            // (mira_ui's ScanJob) throttles by wall-clock time on its own end instead.
-            if (options.onProgress) options.onProgress(stats, path);
-
-            auto mtime = fs::last_write_time(entry.path(), ec).time_since_epoch().count();
-            auto sizeBytes = static_cast<int64_t>(entry.file_size(ec));
-
-            // sha256 is the expensive step; skip it when mtime alone shows nothing
-            // changed, so a re-scan of an untouched drive is cheap.
-            if (auto existing = db.findByPath(path);
-                existing && existing->mtime == static_cast<int64_t>(mtime)) {
-                stats.filesUnchanged++;
-                if (options.declareAsStem && existing->contentTypeSource != "declared"
-                    && !filenameSuggestsFullMix(path))
-                    db.declareStem(path);
-                continue;
-            }
-
-            std::string hash = sha256File(path);
-            if (hash.empty()) {
-                std::cerr << "mira scan: could not read " << path << std::endl;
-                continue;
-            }
-
-            bool isNew = db.upsertScannedFile(path, hash, static_cast<int64_t>(mtime),
-                                               sizeBytes, nowUnix());
-            if (isNew) stats.filesNew++;
-            else stats.filesUpdated++;
-
-            // A mix sitting in a stem folder is not a stem (review round 4). Declaring it
-            // one would hand it the isolated-audio instrument model, which is exactly
-            // wrong for a full mix -- measured on Bhabi-BGM-StemMix.wav, where the
-            // stem-tuned model answered "voice 54%" for a whole arrangement.
-            if (options.declareAsStem && !filenameSuggestsFullMix(path)) db.declareStem(path);
+            indexEntry(*it);
         }
     }
 
