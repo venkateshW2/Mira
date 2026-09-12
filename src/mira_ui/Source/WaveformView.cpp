@@ -250,6 +250,7 @@ void WaveformView::setFile(const juce::File& file)
 void WaveformView::togglePlayPause()
 {
     if (currentFile == juce::File() || loadFailed || readerSource == nullptr) return;
+    playStopAtSeconds = 0.0; // pressing Play yourself means "play on", not "play that cue"
     if (transportSource.isPlaying())
     {
         transportSource.stop();
@@ -825,8 +826,37 @@ bool WaveformView::layoutRulerContains(juce::Point<int> position) const
 
 void WaveformView::changeListenerCallback(juce::ChangeBroadcaster*) { repaint(); }
 
+void WaveformView::playRange(double startSeconds, double endSeconds)
+{
+    if (currentFile == juce::File() || loadFailed || readerSource == nullptr) return;
+    selectRange(startSeconds, endSeconds);
+    playStopAtSeconds = endSeconds;
+    transportSource.setPosition(startSeconds);
+    transportSource.start();
+    startTimerHz(30);
+    playButton.setPlaying(true);
+}
+
+void WaveformView::stopPlayback()
+{
+    transportSource.stop();
+    playStopAtSeconds = 0.0;
+    stopTimer();
+    playButton.setPlaying(false);
+    repaint();
+    if (onPlaybackStopped) onPlaybackStopped();
+}
+
 void WaveformView::timerCallback()
 {
+    // End of a ranged audition. Cleared first so the ordinary transport is unaffected
+    // afterwards -- the next plain Play must run to the end of the file, not to this cue's.
+    if (playStopAtSeconds > 0.0 && transportSource.getCurrentPosition() >= playStopAtSeconds)
+    {
+        stopPlayback();
+        return;
+    }
+
     // Auto-follow the playhead when zoomed in, so playback doesn't silently run off the
     // edge of the visible window -- keeps it a bit ahead of the window's left edge
     // (10%) rather than dead-centring it, so there's still visible lead-in context.
@@ -1068,11 +1098,25 @@ void WaveformView::paint(juce::Graphics& g)
         }
     }
 
-    // Declared segments: a full-height tint over the peaks (so the boundary is readable
-    // against the wave itself) plus a solid labelled band along the bottom that is the
-    // actual click target. `good` for a group-scoped segment — one boundary covering a
-    // whole synced stem set is the thing Score Stems exists for, and it's worth being
-    // able to tell apart from a one-file-only boundary at a glance.
+    // Declared segments and cues: a full-height tint over the peaks (so the boundary is
+    // readable against the wave itself) plus a solid labelled band along the bottom that is
+    // the actual click target.
+    //
+    // Colour says WHICH KIND: green (`good`) is a cue -- group-scoped, one piece of music
+    // across the whole synced set; amber (`accent`) is a segment -- file-scoped, a sample
+    // cut out of this one stem.
+    //
+    // Teal was tried for segments (to free `good` up, since it also means "edited" in the
+    // matrix) and was WRONG, on screen, immediately: teal is the active-span lane's colour,
+    // and that lane sits directly above this band. A segment is literally made out of a
+    // span, so painting both teal made two adjacent lanes of different objects look
+    // identical -- the user's "what are these green things in the segment?".
+    //
+    // The lesson is that hue alone cannot carry three objects here when one of them is
+    // already teal. The real fix is structural and is review round 7 item 7: cues move out
+    // of this band entirely, onto their own named locator bar along the top of the
+    // timeline. Until then this is the pre-existing pairing, which at least does not
+    // collide with the lane above it.
     auto band = layout.segmentBand;
     if (!band.isEmpty())
     {

@@ -107,6 +107,12 @@ public:
     // whole current tab's folder) when nothing's selected, same fallback Scan used to have.
     std::vector<juce::String> getAllPaths() const;
 
+    // Display-row index for a file id, or -1 if that file isn't currently listed. Needed to
+    // drive the table's selection from somewhere other than a click on it -- the cue view's
+    // stem rows (review round 7: "i cant select a track /file so idont know the segemetn
+    // names"). Returns the FILE row, never one of its segment children.
+    int displayRowForFileId(int64_t fileId) const;
+
     // "status column should have analyse button not a separate button" + "so if i
     // analyse different files in a different folder then i dono which file is
     // analysing" — analysis state is global (not per-tab/scope), driven by
@@ -119,6 +125,10 @@ public:
     // Right-click on any row — FileTableComponent builds the actual context menu
     // (Analyze Selected/Folder); the model only reports the click and preserves whatever
     // multi-selection was already active (TableListBox's own default behaviour).
+    // Hover help for the child rows: "auto cue" and "auto segment" are two different kinds
+    // of object in one list, and the words alone do not carry that.
+    juce::String getCellTooltip(int rowNumber, int columnId) override;
+
     void cellClicked(int rowNumber, int columnId, const juce::MouseEvent& e) override;
     std::function<void(const juce::MouseEvent&)> onRightClicked;
 
@@ -166,6 +176,11 @@ private:
         // the filename-derived BPM/key guesses below. "we are not showing the time of
         // the file? the sample rate of the file? we should show all the metadata fields."
         juce::String formatText, durationText, sampleRateText;
+        // The same header read as durationText, kept as a number so a folder's total
+        // running time can be summed without re-parsing "4:05" back out of the string.
+        // 0 means the header couldn't be read (durationText is an em dash) -- a real
+        // "unknown", counted separately by getScopeSummary rather than added in as zero.
+        double durationSeconds = 0.0;
         // "so now files have key mentioned in it so lets use that also... this list even
         // without scanning is sortable" — a filename-derived guess (e.g. "Break_140bpm_
         // Fmin.wav"), shown only when there's no real analyzed value yet. Never conflated
@@ -211,6 +226,26 @@ private:
             double startSeconds = 0.0, endSeconds = 0.0;
             bool autoCreated = false; // source = 'auto' (analysis) vs a person's segment
             bool humanTagged = false; // has its own human tags -- shown in accent, like files
+            // Which KIND of thing this child row is. A segment is file-scoped -- a sample
+            // inside this one stem, cut from its own silence. A cue is group-scoped -- one
+            // piece of music across the whole synced set.
+            //
+            // Child rows are now SEGMENTS ONLY; this stays false in practice and is kept
+            // because the painters and the tooltip still branch on it. Cues were listed here
+            // as siblings of segments and it did not work: the user, after a fresh analysis,
+            // "i really dont get it what it means - and why i need it". They were right. A
+            // cue belongs to the SET, so listing it under a file meant the same cue appeared
+            // once under each of fifteen stems, and every one of those rows was blank
+            // (cues have no `segment_analysis`). Fifteen copies of a row with no data in it.
+            bool groupScoped = false;
+
+            // Which cue this segment falls inside -- "it should actually have which cue the
+            // segment is in - like cue 1 or 12". THIS is the relationship worth showing: a
+            // segment is a phrase in one stem, a cue is the section of the reel it happens
+            // during, and knowing "this flute phrase is in cue 12" is what connects the file
+            // list to the cue pass. 0 means no cue covers it (or none are detected yet).
+            int cueNumber = 0;
+            juce::String cueType; // the cue's authored type, when it has one
             juce::String loudnessText, genreText, instrumentText, moodText;
         };
         std::vector<SegmentFacets> segments;
@@ -227,6 +262,18 @@ public:
     // no model state at all, so that's safe while the UI keeps using the model -- then
     // hands the list back on the message thread via setRows. Row stays private; only
     // this list type travels.
+    // What the current scope holds, for the status bar's folder readout. Summed from the
+    // rows the table already built (each one read its own header for the Duration column),
+    // so this costs nothing extra and needs no scan and no analysis -- a folder shows its
+    // size and running time the moment it is clicked.
+    struct ScopeSummary
+    {
+        int fileCount = 0;        // files in scope, before the filter bar
+        double totalSeconds = 0.0;
+        int unknownDurations = 0; // headers that wouldn't read -- reported, never hidden
+    };
+    ScopeSummary getScopeSummary() const;
+
     using RowList = std::vector<Row>;
     RowList collectRows(const juce::String& scope, mira::Database& db, juce::AudioFormatManager& fm,
                         const std::function<bool()>& shouldAbort) const;

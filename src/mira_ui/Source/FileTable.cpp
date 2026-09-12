@@ -151,6 +151,20 @@ void FileTableModel::setScopeDeferred(const juce::String& folderPathOrEmpty)
     applyFilter(); // empties rows + display; paint() shows "Loading..." meanwhile
 }
 
+FileTableModel::ScopeSummary FileTableModel::getScopeSummary() const
+{
+    // Over allRows, not rows: this describes the folder, not the filter. The filter bar
+    // has its own "3 of 412" readout for the other question.
+    ScopeSummary summary;
+    summary.fileCount = static_cast<int>(allRows.size());
+    for (const auto& row : allRows)
+    {
+        if (row.durationSeconds > 0.0) summary.totalSeconds += row.durationSeconds;
+        else ++summary.unknownDurations;
+    }
+    return summary;
+}
+
 bool FileTableModel::setRows(const juce::String& scope, RowList newRows)
 {
     // A build that finished after the user moved to another folder is stale -- the
@@ -331,6 +345,41 @@ void FileTableModel::rebuildDisplay()
     }
 }
 
+int FileTableModel::displayRowForFileId(int64_t fileId) const
+{
+    for (size_t i = 0; i < display.size(); ++i)
+    {
+        // Segment children carry their parent's rowIndex, so skipping them is what keeps
+        // this from selecting a child row that happens to belong to the right file.
+        if (display[i].segmentIndex >= 0) continue;
+        if (rows[display[i].rowIndex].record.id == fileId) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+juce::String FileTableModel::getCellTooltip(int rowNumber, int columnId)
+{
+    juce::ignoreUnused(columnId);
+    const auto* segment = segmentAt(rowNumber);
+    if (segment == nullptr) return {};
+
+    juce::String text;
+    text << "SEGMENT - a range inside this one file, cut from its own silences.\n"
+         << (segment->autoCreated ? "\"auto\" = made by analysis, so a re-run may replace it.\n"
+                                  : "Made or edited by you, so a re-run never touches it.\n");
+
+    if (segment->cueNumber > 0)
+        text << "\nIt plays during CUE " << segment->cueNumber
+             << (segment->cueType.isNotEmpty() ? " (" + segment->cueType + ")" : juce::String())
+             << " - the section of the whole synced set that covers this moment.\n"
+             << "Cues span every stem; this segment is only in this file.";
+    else
+        text << "\nNot inside any cue - either none are detected for this set yet, "
+                "or it falls in a gap between them.";
+
+    return text;
+}
+
 const FileTableModel::Row* FileTableModel::fileRowAt(int displayRow) const
 {
     if (displayRow < 0 || displayRow >= static_cast<int>(display.size())) return nullptr;
@@ -509,7 +558,8 @@ FileTableModel::Row FileTableModel::buildRow(const juce::File& file, mira::Datab
     {
         if (reader->sampleRate > 0.0)
         {
-            row.durationText = formatDuration(static_cast<double>(reader->lengthInSamples) / reader->sampleRate);
+            row.durationSeconds = static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
+            row.durationText = formatDuration(row.durationSeconds);
             row.sampleRateText = juce::String(reader->sampleRate / 1000.0, 1) + "k";
         }
     }
@@ -696,15 +746,37 @@ FileTableModel::Row FileTableModel::buildRow(const juce::File& file, mira::Datab
     // Segments: file-scoped ones plus any covering this file's synced stem group.
     if (row.inDatabase)
     {
+        // SEGMENTS ONLY. Cues used to be appended here as sibling child rows and it was a
+        // mistake: a cue is group-scoped, so the same cue appeared under each of fifteen
+        // stems, and every one of those rows was blank because cues carry no
+        // `segment_analysis`. The relationship that IS worth showing is which cue each
+        // segment falls in, which is what `cues` below is for.
         auto segments = db.findSegmentsForFile(row.record.id);
+
+        std::vector<mira::SegmentRecord> cues;
         if (row.record.groupId)
         {
-            auto groupSegments = db.findSegmentsForGroup(*row.record.groupId);
-            segments.insert(segments.end(), groupSegments.begin(), groupSegments.end());
+            cues = db.findSegmentsForGroup(*row.record.groupId);
+            std::sort(cues.begin(), cues.end(),
+                      [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
         }
+
         for (const auto& segment : segments)
         {
             Row::SegmentFacets facets;
+
+            // Matched on the segment's MIDPOINT, not its start: a segment that begins a
+            // moment before a cue boundary belongs to the cue it spends its length in, not
+            // to the one it clips the last second of.
+            double midpoint = (segment.startSeconds + segment.endSeconds) * 0.5;
+            for (size_t c = 0; c < cues.size(); ++c)
+                if (midpoint >= cues[c].startSeconds && midpoint < cues[c].endSeconds)
+                {
+                    facets.cueNumber = static_cast<int>(c) + 1;
+                    if (auto type = db.jsonExtractString(cues[c].human, "$.cue_type"))
+                        facets.cueType = juce::String(*type);
+                    break;
+                }
             auto machine = db.getSegmentMachine(segment.id, row.record.id).value_or("{}");
             facets.genres = facetLabels(db, db.jsonStringArray(segment.human, "$.genre"), machine,
                                         { "$.genre_normalized", "$.genre" });
@@ -847,17 +919,42 @@ void FileTableModel::paintSegmentCell(juce::Graphics& g, const Row& row, const R
             // Indented past the parent's triangle, with a return arrow, so the time
             // range reads as belonging to the file above.
             auto rangeBounds = bounds.withTrimmedLeft(kDisclosureWidth + 12);
+            auto range = juce::String(juce::CharPointer_UTF8("\xe2\x86\xb3 "))
+                          + formatDuration(segment.startSeconds)
+                          + juce::String(juce::CharPointer_UTF8(" \xe2\x80\x93 "))
+                          + formatDuration(segment.endSeconds);
             g.setColour(rowIsSelected ? MiraLookAndFeel::accent : MiraLookAndFeel::textDim);
             g.setFont(laf.monoRegular(12.5f));
-            g.drawText(juce::String(juce::CharPointer_UTF8("\xe2\x86\xb3 ")) + formatDuration(segment.startSeconds)
-                           + juce::String(juce::CharPointer_UTF8(" \xe2\x80\x93 ")) + formatDuration(segment.endSeconds),
-                       rangeBounds, juce::Justification::centredLeft, 1);
+            g.drawText(range, rangeBounds, juce::Justification::centredLeft, 1);
+
+            // "it should actually have which cue the segment is in - like cue 1 or 12".
+            // Drawn after the range, in the cue colour, so it reads as a reference to
+            // something else rather than as part of this row's own identity.
+            if (segment.cueNumber > 0)
+            {
+                int offset = juce::roundToInt(
+                                  juce::GlyphArrangement::getStringWidth(laf.monoRegular(12.5f), range))
+                              + 14;
+                auto text = "cue " + juce::String(segment.cueNumber)
+                             + (segment.cueType.isNotEmpty() ? "  " + segment.cueType : juce::String());
+                g.setColour(MiraLookAndFeel::good);
+                g.setFont(laf.sansRegular(11.5f));
+                g.drawText(text, rangeBounds.withTrimmedLeft(offset), juce::Justification::centredLeft, 1);
+            }
             break;
         }
         case ColStatus:
-            g.setColour(MiraLookAndFeel::textFaint);
+            // Names the KIND, not just the provenance (review round 7, item 1). "cue" and
+            // "segment" are different objects -- group-scoped vs file-scoped -- and this
+            // column said "segment" for both, which is where the confusion started.
+            // Colour follows the same language: green for a cue, amber for a segment. See
+            // WaveformView's band painting for the other half of it, and the note there on
+            // why teal is not available for either.
+            g.setColour(segment.groupScoped ? MiraLookAndFeel::good : MiraLookAndFeel::accent);
             g.setFont(laf.monoRegular(12.5f));
-            g.drawText(segment.autoCreated ? "auto segment" : "segment", bounds, juce::Justification::centredLeft, 1);
+            g.drawText(segment.groupScoped ? (segment.autoCreated ? "auto cue" : "cue")
+                                           : (segment.autoCreated ? "auto segment" : "segment"),
+                       bounds, juce::Justification::centredLeft, 1);
             break;
         case ColBpm:
         case ColSampleRate:
@@ -888,9 +985,13 @@ void FileTableModel::paintSegmentCell(juce::Graphics& g, const Row& row, const R
             g.drawText(dash, bounds, juce::Justification::centredRight, 1);
             break;
         case ColType:
-            g.setColour(MiraLookAndFeel::textDim);
+            // Was hardcoded "SEG" for every child row, so a cue sat there labelled a
+            // segment -- in the one column whose entire job is saying what a row IS. Found
+            // by the user asking, for the second time, what the two words mean: the Status
+            // column had been taught the difference and this one was still contradicting it.
+            g.setColour(segment.groupScoped ? MiraLookAndFeel::good : MiraLookAndFeel::accent);
             g.setFont(laf.monoRegular(12.5f));
-            g.drawText("SEG", bounds, juce::Justification::centredLeft, 1);
+            g.drawText(segment.groupScoped ? "CUE" : "SEG", bounds, juce::Justification::centredLeft, 1);
             break;
         case ColGenre:
         case ColInstrument:

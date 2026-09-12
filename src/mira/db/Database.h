@@ -95,6 +95,11 @@ public:
     // whereClauseSql. `clearHumanFields` resets the whole object back to '{}'.
     void setHumanField(int64_t fileId, const std::string& jsonPath, const std::string& jsonValueJson);
     void clearHumanFields(int64_t fileId);
+    // Replaces `human` wholesale. Exists for undo (mira_ui's UndoManager), which restores a
+    // captured object rather than replaying the individual field writes that produced it --
+    // replaying is how an undo ends up subtly different from the state it claimed to
+    // restore. Not for ordinary editing: `setHumanField` is still the one-key path.
+    void setHuman(int64_t fileId, const std::string& humanJson);
 
     // Segment tagging (TASKS.md Phase 3 addition; see Database.cpp's `segments` schema
     // comment). `createSegment` takes exactly one of groupId/fileId (caller's
@@ -152,6 +157,20 @@ public:
     // same way `setHumanField` does for a file; `deleteSegment` also drops that
     // segment's `segment_analysis` rows, since they are keyed on a segment that no
     // longer exists.
+    // The segment counterparts of setHuman above, and of createSegment with the id chosen
+    // by the caller -- both for undo. Restoring a deleted segment under a NEW id would
+    // orphan its `segment_analysis` rows (keyed on segment_id) and leave every id captured
+    // by a later undo step pointing at nothing, so the id has to come back with it.
+    // `segments.id` is `INTEGER PRIMARY KEY`, so an explicit id is a plain insert.
+    void setSegmentHuman(int64_t segmentId, const std::string& humanJson);
+    int64_t createSegmentWithId(int64_t id, std::optional<std::string> groupId,
+                                 std::optional<int64_t> fileId, double startSeconds, double endSeconds,
+                                 const std::string& humanJson, const std::string& source);
+    // Every (file_id, machine, analyzed_at) row for one segment, so a delete can be undone
+    // with its analysis intact rather than silently losing it.
+    struct SegmentAnalysisRow { int64_t fileId; std::string machine; int64_t analyzedAt; };
+    std::vector<SegmentAnalysisRow> segmentAnalysisRows(int64_t segmentId);
+
     void setSegmentHumanField(int64_t segmentId, const std::string& jsonPath,
                                const std::string& jsonValueJson);
     void deleteSegment(int64_t segmentId);

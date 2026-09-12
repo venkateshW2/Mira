@@ -103,7 +103,7 @@ public:
         segmentsButton.onClick = [this] { if (onSegmentsMenu) onSegmentsMenu(); };
         addChildComponent(segmentsButton);
 
-        for (auto* b : { &tagsMenuButton, &segmentsMenuButton, &viewMenuButton })
+        for (auto* b : { &tagsMenuButton, &segmentsMenuButton, &cuesMenuButton, &viewMenuButton })
         {
             b->setColour(juce::TextButton::buttonColourId, MiraLookAndFeel::surface2);
             b->setColour(juce::TextButton::textColourOffId, MiraLookAndFeel::textDim);
@@ -111,6 +111,13 @@ public:
         }
         tagsMenuButton.onClick = [this] { showHeaderMenu(buildTagsMenu, tagsMenuButton); };
         segmentsMenuButton.onClick = [this] { showHeaderMenu(buildSegmentsMenu, segmentsMenuButton); };
+        // Review round 7, items 4 and 5: "i am still confused of how to reach the cue
+        // editor" and "need a way to not [have] the cue editor at the bottom". Both are the
+        // same problem -- the cue workspace and the toggle that hides it were buried inside
+        // the Segments menu, which is the menu for a different object entirely. This button
+        // sits next to the matrix it governs, which is where someone looking for it looks.
+        cuesMenuButton.onClick = [this] { showHeaderMenu(buildCuesMenu, cuesMenuButton); };
+        cuesMenuButton.setVisible(false); // until a file in a synced set is selected
         viewMenuButton.onClick = [this] {
             showHeaderMenu([this](juce::PopupMenu& menu) { waveform.buildViewMenu(menu); }, viewMenuButton);
         };
@@ -118,12 +125,15 @@ public:
         // The waveform's own right-click asks for the same Tags/Segments items, so the
         // gesture and the header reach identical menus rather than drifting apart.
         waveform.buildOwnerMenuSections = [this](juce::PopupMenu& menu) {
-            juce::PopupMenu tags, segmentsMenu;
+            juce::PopupMenu tags, segmentsMenu, cuesMenu;
             if (buildTagsMenu) buildTagsMenu(tags);
             if (buildSegmentsMenu) buildSegmentsMenu(segmentsMenu);
+            if (buildCuesMenu) buildCuesMenu(cuesMenu);
             if (tags.getNumItems() > 0) menu.addSubMenu("Tags", tags);
             if (segmentsMenu.getNumItems() > 0) menu.addSubMenu("Segments", segmentsMenu);
-            if (tags.getNumItems() > 0 || segmentsMenu.getNumItems() > 0) menu.addSeparator();
+            if (cuesMenu.getNumItems() > 0) menu.addSubMenu("Cues", cuesMenu);
+            if (tags.getNumItems() > 0 || segmentsMenu.getNumItems() > 0 || cuesMenu.getNumItems() > 0)
+                menu.addSeparator();
         };
         waveform.onOwnerMenuAction = [this](int actionId) { if (onMenuAction) onMenuAction(actionId); };
 
@@ -177,9 +187,14 @@ public:
         updateSegmentControls();
     }
 
+    // Counted apart, not together (review round 7, item 1): the "Segments (N)" button was
+    // reporting segments + cues as one number, so a stem with no segments of its own still
+    // claimed to have twelve. They are different objects and each surface names its own.
     void setSegments(std::vector<WaveformView::SegmentSpan> segments)
     {
-        segmentCount = static_cast<int>(segments.size());
+        segmentCount = cueCount = 0;
+        for (const auto& span : segments)
+            (span.groupScoped ? cueCount : segmentCount)++;
         waveform.setSegments(std::move(segments));
         updateSegmentControls();
     }
@@ -201,12 +216,17 @@ public:
     bool hasWaveformSelection() const { return waveform.getSelectionSeconds().has_value(); }
     std::optional<std::pair<double, double>> getWaveformSelection() const { return waveform.getSelectionSeconds(); }
     int getSegmentCount() const { return segmentCount; }
+    int getCueCount() const { return cueCount; }
 
     // The stem activity matrix (review round 6). Empty stems hides it entirely.
     void setGroupActivity(std::vector<GroupActivityView::StemRow> rows, double reelSeconds)
     {
+        // No stems means this file isn't part of a synced set, and cues are meaningless
+        // without one -- the Cues button goes away rather than opening an all-grey menu.
+        inSyncedSet = !rows.empty();
         matrix.setReelLength(reelSeconds);
         matrix.setStems(std::move(rows));
+        cuesMenuButton.setVisible(inSyncedSet);
         updateActivityVisibility();
     }
     void setCues(std::vector<GroupActivityView::CueMark> cues) { matrix.setCues(std::move(cues)); }
@@ -219,6 +239,10 @@ public:
     }
 
     void clearWaveformSelection() { waveform.clearSelection(); }
+    void playRange(double startSeconds, double endSeconds) { waveform.playRange(startSeconds, endSeconds); }
+    void setPlaybackStoppedCallback(std::function<void()> cb) { waveform.onPlaybackStopped = std::move(cb); }
+    void stopPlayback() { waveform.stopPlayback(); }
+    bool isPlaying() const { return waveform.isPlaying(); }
     void selectWaveformRange(double startSeconds, double endSeconds) { waveform.selectRange(startSeconds, endSeconds); }
 
     std::function<void(double, double)> onAddSegment; // start/end seconds of the waveform selection
@@ -235,7 +259,7 @@ public:
     // zoom and lane state. All three are reachable from this header, from the waveform's
     // right-click menu, and from the macOS menu bar -- same builders behind each, so there
     // is exactly one definition of what "the Segments menu" contains.
-    std::function<void(juce::PopupMenu&)> buildTagsMenu, buildSegmentsMenu;
+    std::function<void(juce::PopupMenu&)> buildTagsMenu, buildSegmentsMenu, buildCuesMenu;
     std::function<void(int)> onMenuAction;
 
     // "can we get the analysis file details in the bottom" -- a compact one-line real
@@ -263,7 +287,7 @@ public:
         auto bounds = getLocalBounds();
         MiraLookAndFeel::paintGlassPanel(g, bounds, 0.0f, MiraLookAndFeel::surface);
         auto header = bounds.removeFromTop(kHeaderHeight).reduced(12, 0);
-        header.removeFromRight(kHeaderMenuWidth); // the three menu buttons, placed in resized()
+        header.removeFromRight(kHeaderMenuWidth); // the four menu buttons, placed in resized()
 
         // Activity dot first, so the filename starts at a fixed x whether or not anything
         // is running -- a name that shifts sideways every time a batch starts reads as a
@@ -333,6 +357,8 @@ public:
         auto menus = header.removeFromRight(kHeaderMenuWidth);
         viewMenuButton.setBounds(menus.removeFromRight(64));
         menus.removeFromRight(4);
+        cuesMenuButton.setBounds(menus.removeFromRight(62));
+        menus.removeFromRight(4);
         segmentsMenuButton.setBounds(menus.removeFromRight(84));
         menus.removeFromRight(4);
         tagsMenuButton.setBounds(menus.removeFromRight(62));
@@ -365,6 +391,7 @@ private:
         addSegmentButton.setButtonText(waveform.getSelectionSeconds() ? "+ Segment" : "Drag to select");
         segmentsButton.setButtonText("Segments (" + juce::String(segmentCount) + ")");
         segmentsButton.setEnabled(segmentCount > 0);
+        cuesMenuButton.setButtonText(cueCount > 0 ? "Cues (" + juce::String(cueCount) + ")" : "Cues");
         resized();
         repaint();
     }
@@ -407,7 +434,7 @@ private:
     }
 
     static constexpr int kHeaderHeight = 28;
-    static constexpr int kHeaderMenuWidth = 218; // three buttons + gaps, reserved in paint() too
+    static constexpr int kHeaderMenuWidth = 284; // four buttons + gaps, reserved in paint() too
     static constexpr int kActivityDotWidth = 14;
     static constexpr int kDetailBarHeight = 22;
     static constexpr int kSegmentControlsWidth = 226; // two 110px buttons + a 6px gap
@@ -418,12 +445,15 @@ private:
     GroupActivityView matrix;
     bool showActivity = true;
     juce::TextButton addSegmentButton { "Drag to select" }, segmentsButton { "Segments (0)" };
-    juce::TextButton tagsMenuButton { "Tags" }, segmentsMenuButton { "Segments" }, viewMenuButton { "View" };
+    juce::TextButton tagsMenuButton { "Tags" }, segmentsMenuButton { "Segments" },
+        cuesMenuButton { "Cues" }, viewMenuButton { "View" };
     Activity activity = Activity::idle;
     juce::String activityDetail;
     int pulsePhase = 0;
     bool segmentWorkflowEnabled = false;
+    bool inSyncedSet = false;
     int segmentCount = 0;
+    int cueCount = 0;
 };
 
 // Left: real library stats (moved here from the old top-of-window status label — the
@@ -435,9 +465,13 @@ class StatusBarComponent : public juce::Component
 public:
     explicit StatusBarComponent(const MiraLookAndFeel& lafIn) : laf(lafIn)
     {
-        leftLabel.setFont(laf.monoRegular(12.5f));
-        leftLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
-        addAndMakeVisible(leftLabel);
+        folderLabel.setFont(laf.monoRegular(12.5f));
+        folderLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
+        addAndMakeVisible(folderLabel);
+        activityLabel.setFont(laf.monoRegular(12.5f));
+        activityLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
+        activityLabel.setJustificationType(juce::Justification::centred);
+        addAndMakeVisible(activityLabel);
         rightLabel.setFont(laf.monoRegular(12.5f));
         rightLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
         rightLabel.setJustificationType(juce::Justification::centredRight);
@@ -445,17 +479,27 @@ public:
         addAndMakeVisible(rightLabel);
     }
 
-    void setLeftText(const juce::String& text) { leftLabel.setText(text, juce::dontSendNotification); }
+    // Three slots with fixed jobs, so nothing has to share one and hope. Left: what the
+    // current folder *is* (count + running time) or, with no folder open, the library
+    // count. Centre: what the app is *doing* right now -- scanning or analyzing, the one
+    // that has to be legible from across the room. Right: what is selected.
+    //
+    // They used to be two, with scan progress, the library count and the analysis readout
+    // all writing the same left label and clearing each other. "i need status at the bottm
+    // ... showing what file is getting analysed and what going on -shouldnt look like its
+    // stuck" is what that cost.
+    void setFolderText(const juce::String& text) { folderLabel.setText(text, juce::dontSendNotification); }
     void setRightText(const juce::String& text) { rightLabel.setText(text, juce::dontSendNotification); }
 
-    // "can that be bolder and colored so we know its scanning" — an active background
-    // scan is easy to miss as a thin dim status line; bold + accent colour makes it read
-    // as "something is happening" at a glance, reverting to the normal dim readout once
-    // idle again.
-    void setLeftTextScanning(bool scanning)
+    // "can that be bolder and colored so we know its scanning" — background work is easy
+    // to miss as a thin dim status line; medium weight + accent colour makes it read as
+    // "something is happening" at a glance, reverting to the normal dim readout once idle.
+    void setActivityText(const juce::String& text, bool active)
     {
-        leftLabel.setFont(scanning ? laf.monoMedium(12.5f) : laf.monoRegular(12.5f));
-        leftLabel.setColour(juce::Label::textColourId, scanning ? MiraLookAndFeel::accent : MiraLookAndFeel::textFaint);
+        activityLabel.setText(text, juce::dontSendNotification);
+        activityLabel.setFont(active ? laf.monoMedium(12.5f) : laf.monoRegular(12.5f));
+        activityLabel.setColour(juce::Label::textColourId,
+                                 active ? MiraLookAndFeel::accent : MiraLookAndFeel::textFaint);
     }
 
     void paint(juce::Graphics& g) override
@@ -465,12 +509,17 @@ public:
 
     void resized() override
     {
+        // The activity slot gets the largest share because it carries the longest string
+        // by far (file name *and* stage *and* elapsed); the other two are short and fixed
+        // in shape. Proportional rather than fixed so a narrow window degrades evenly.
         auto bounds = getLocalBounds().reduced(10, 0);
-        leftLabel.setBounds(bounds.removeFromLeft(bounds.getWidth() / 2));
-        rightLabel.setBounds(bounds);
+        auto total = bounds.getWidth();
+        folderLabel.setBounds(bounds.removeFromLeft(total * 30 / 100));
+        rightLabel.setBounds(bounds.removeFromRight(total * 26 / 100));
+        activityLabel.setBounds(bounds);
     }
 
 private:
     const MiraLookAndFeel& laf;
-    juce::Label leftLabel, rightLabel;
+    juce::Label folderLabel, activityLabel, rightLabel;
 };

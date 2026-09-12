@@ -153,6 +153,18 @@ public:
     // what selecting a segment child row in the list does (review round 3).
     void selectRange(double startSeconds, double endSeconds);
 
+    // Play exactly one range and stop at its end (review round 7 item 6: "i will need to be
+    // able to play the cue to hear it and name it"). Distinct from selectRange + play:
+    // without a stop point, auditioning a 90-second cue on a 41-minute reel runs on into the
+    // next four cues, and naming what you just heard means having heard only that.
+    void playRange(double startSeconds, double endSeconds);
+    void stopPlayback();
+    bool isPlaying() const { return transportSource.isPlaying(); }
+    // Fires when playback stops for ANY reason, including a ranged audition reaching its
+    // own end. Without it the cue workspace's Play/Stop button would stay on "Stop" after
+    // the cue finished by itself, which is the state it is least able to notice.
+    std::function<void()> onPlaybackStopped;
+
     std::function<void()> onSelectionChanged;          // enables/disables the Add Segment control
     std::function<void(int64_t)> onSegmentRightClicked; // a band's own context menu (edit/delete)
 
@@ -198,6 +210,11 @@ private:
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer audioSourcePlayer;
     juce::AudioTransportSource transportSource;
+    // Where a ranged audition must stop; <= 0 means "play to the end of the file" (ordinary
+    // playback). Checked on the same 30Hz timer that already follows the playhead, which is
+    // accurate to ~33ms -- inaudible against a cue boundary, and far simpler than a
+    // PositionableAudioSource wrapper that would have to be torn down on every file change.
+    double playStopAtSeconds = 0.0;
     std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
 
     TransportPlayButton playButton;

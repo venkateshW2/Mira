@@ -27,6 +27,8 @@
 
 #include <cstdlib>
 #include <deque>
+#include <limits>
+#include <map>
 #include <iostream> // runScopeBenchmark's stderr readout
 #include <set>
 #include <typeinfo> // StallWatchdog's click-target names
@@ -305,10 +307,16 @@ struct AnalyzeOptions
     bool chords = false;
     bool transcribe = false;
     bool recheckTempo = false;
+    // The DCLAP embedding space. Off by default because it is the most expensive single
+    // stage (~27% of a file) and feeds no field mira displays -- its only readers are
+    // `mira similar --embedding dclap` and `--text`. Turn it on for folders that should be
+    // findable by typed description.
+    bool dclap = false;
 
     juce::StringArray toCliFlags() const
     {
         juce::StringArray flags;
+        if (dclap) flags.add("--dclap");
         if (chords) flags.add("--chords");
         if (transcribe) flags.add("--transcribe");
         if (recheckTempo) flags.add("--recheck-tempo");
@@ -544,6 +552,60 @@ public:
         statusLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
         statusLabel.setJustificationType(juce::Justification::centredRight);
         addAndMakeVisible(statusLabel);
+
+        // Review round 7, follow-up: "wont it be nice to have cue editor inside the main
+        // window... so clipeditor open in the place of the list and probably like a
+        // alternative to the list view also so does two jobs at the same time."
+        //
+        // This reverses round 6b's "its own window rather than a tab" -- and the reason is
+        // that the argument round 6b made turned out to be about the WINDOW, not about the
+        // view. Cue work does want the whole screen; a floating window is simply not how
+        // you get it when the window lands on top of the thing you were reading. The tab
+        // strip objection still stands (a tab means "show me this folder's files", and a
+        // cue workspace is not a folder) -- which is exactly why this is a view SWITCH
+        // beside the tabs rather than another tab in them. The folder scope keeps meaning
+        // what it meant; only what is drawn for it changes.
+        //
+        // The separate window stays, for the second-display-beside-the-DAW case.
+        for (auto* b : { &listViewButton, &cueViewButton })
+        {
+            b->setClickingTogglesState(false);
+            b->setColour(juce::TextButton::textColourOffId, MiraLookAndFeel::textDim);
+            b->setColour(juce::TextButton::textColourOnId, MiraLookAndFeel::text);
+            addAndMakeVisible(*b);
+        }
+        listViewButton.setConnectedEdges(juce::Button::ConnectedOnRight);
+        cueViewButton.setConnectedEdges(juce::Button::ConnectedOnLeft);
+        cueViewButton.setEnabled(false); // nothing selected yet, so no set to show cues for
+        listViewButton.onClick = [this] { if (onViewModeChanged) onViewModeChanged(false); };
+        cueViewButton.onClick = [this] { if (onViewModeChanged) onViewModeChanged(true); };
+        setCueViewActive(false);
+    }
+
+    // `false` = the file list, `true` = the cue workspace in its place.
+    std::function<void(bool)> onViewModeChanged;
+
+    void setCueViewActive(bool cueActive)
+    {
+        listViewButton.setColour(juce::TextButton::buttonColourId,
+                                  cueActive ? MiraLookAndFeel::surface2 : MiraLookAndFeel::surface3);
+        cueViewButton.setColour(juce::TextButton::buttonColourId,
+                                 cueActive ? MiraLookAndFeel::surface3 : MiraLookAndFeel::surface2);
+        listViewButton.setColour(juce::TextButton::textColourOffId,
+                                  cueActive ? MiraLookAndFeel::textDim : MiraLookAndFeel::text);
+        cueViewButton.setColour(juce::TextButton::textColourOffId,
+                                 cueActive ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
+        repaint();
+    }
+
+    // Greyed rather than hidden: a switch that vanishes when nothing is selected is a
+    // switch nobody learns exists. Disabled, it still says "there is a cue view".
+    void setCueViewAvailable(bool available)
+    {
+        cueViewButton.setEnabled(available);
+        // Selecting a file that isn't in a synced set while the cue view is open would
+        // otherwise leave an empty pane and a dead switch to get out of it.
+        if (!available && onViewModeChanged) onViewModeChanged(false);
     }
 
     // "status column should have analyse button not a separate button" -- Analyze moved
@@ -578,7 +640,12 @@ public:
         auto bounds = getLocalBounds().reduced(4, 3);
         newTabButton.setBounds(bounds.removeFromLeft(kNewTabButtonWidth));
         bounds.removeFromLeft(4);
-        statusLabel.setBounds(bounds.removeFromRight(220));
+        // Far right, past the status readout: it switches what the whole pane below is,
+        // so it does not belong in among the folder chips it is not one of.
+        cueViewButton.setBounds(bounds.removeFromRight(52));
+        listViewButton.setBounds(bounds.removeFromRight(46));
+        bounds.removeFromRight(10);
+        statusLabel.setBounds(bounds.removeFromRight(200));
         bounds.removeFromRight(8);
         int perChip = chips.isEmpty() ? 0 : juce::jlimit(80, 170, bounds.getWidth() / chips.size());
         for (auto* chip : chips)
@@ -592,6 +659,7 @@ private:
     juce::OwnedArray<TabChip> chips;
     juce::TextButton newTabButton;
     juce::Label statusLabel;
+    juce::TextButton listViewButton { "List" }, cueViewButton { "Cues" };
 };
 
 // The drag target: the dragged file's path travels as TableListBox's own drag
@@ -617,6 +685,7 @@ public:
         // multiple right click analyse" — Analyze itself lives on the table's own
         // right-click menu below, not a toolbar button; the Status column is the readout
         // (not scanned/queued/analyzing/analyzed).
+        tabBar.onViewModeChanged = [this](bool cueActive) { if (onViewModeChanged) onViewModeChanged(cueActive); };
         tabBar.onTabSelected = [this](int index) { switchTab(index); };
         tabBar.onNewTab = [this] { newTab(); };
         tabBar.onCloseTab = [this](int index) { closeTab(index); };
@@ -631,7 +700,7 @@ public:
         table.getHeader().setPopupMenuActive(true); // right-click on the HEADER -> JUCE's built-in column chooser
         addAndMakeVisible(table);
         table.updateContent();
-        table.setVisible(model.getNumRows() > 0); // starts empty: no folder selected yet
+        updateViewMode(); // starts empty: no folder selected yet, and never in cue mode
 
         model.onRightClicked = [this](const juce::MouseEvent&) { showRowContextMenu(); };
         model.onRowDoubleClicked = [this](int64_t fileId) { openFileDetails({ fileId }); };
@@ -670,6 +739,19 @@ public:
 
     int getRowCount() { return model.getNumRows(); } // MainComponent::runScopeBenchmark's readout
     void selectRowForBench(int row) { table.selectRow(row); } // same path as a real click (MIRA_BENCH=click)
+
+    // Selects a file by id, scrolling it into view. Goes through table.selectRow so the
+    // whole real selection path runs -- waveform load, segment reload, details sidebar --
+    // exactly as if it had been clicked. Silently does nothing if the file isn't in the
+    // current scope, which is the right answer: the cue view can show a set whose stems
+    // live in a folder the active tab isn't showing.
+    void selectFileById(int64_t fileId)
+    {
+        int row = model.displayRowForFileId(fileId);
+        if (row < 0) return;
+        table.selectRow(row);
+        table.scrollToEnsureRowIsOnscreen(row);
+    }
     std::vector<juce::String> getAllPathsForBench() const { return model.getAllPaths(); }
 
     std::vector<int64_t> getSelectedFileIds()
@@ -684,6 +766,18 @@ public:
     // JUCE's TableListBox preserves an existing multi-selection on right-click as long as
     // the clicked row is already part of it (native list-view convention) -- "select
     // multiple right click analyse" relies on exactly that.
+    // The table's own visibility already depends on whether there are rows to show
+    // (`table.setVisible(model.getNumRows() > 0)` at construction, and after every
+    // rebuild), so the cue view has to be folded into that rather than fighting it.
+    void updateViewMode()
+    {
+        bool showCues = cueViewActive && alternateView != nullptr;
+        if (alternateView != nullptr) alternateView->setVisible(showCues);
+        table.setVisible(!showCues && model.getNumRows() > 0);
+        resized();
+        repaint();
+    }
+
     void showRowContextMenu()
     {
         auto selected = model.getSelectedPaths(table.getSelectedRows());
@@ -737,8 +831,38 @@ public:
     {
         auto bounds = getLocalBounds();
         tabBar.setBounds(bounds.removeFromTop(kTabBarHeight));
+        // The tab bar stays in BOTH modes: the folder scope still applies (the cue view
+        // shows the set the selected file belongs to, and the selection comes from the
+        // folder), so hiding the tabs would be hiding a control that is still live.
         table.setBounds(bounds);
+        if (alternateView != nullptr) alternateView->setBounds(bounds);
     }
+
+    // The cue workspace, hosted in the table's own bounds. Owned by MainComponent, not by
+    // this class -- this class only knows where to put it, which keeps FileTableComponent
+    // free of any cue concepts at all.
+    std::function<void(bool)> onViewModeChanged; // List/Cues switch; MainComponent owns the view
+
+    void setCueViewAvailable(bool available) { tabBar.setCueViewAvailable(available); }
+
+    void setAlternateView(juce::Component* view)
+    {
+        if (alternateView == view) return;
+        if (alternateView != nullptr) removeChildComponent(alternateView);
+        alternateView = view;
+        if (alternateView != nullptr) addAndMakeVisible(*alternateView);
+        updateViewMode();
+    }
+
+    void setCueViewActive(bool active)
+    {
+        cueViewActive = active;
+        tabBar.setCueViewActive(active);
+        updateViewMode();
+    }
+
+    bool isCueViewActive() const { return cueViewActive; }
+    TabBarComponent& getTabBar() { return tabBar; }
 
     // Forwards TableListBoxModel's selection callback — MainComponent doesn't reach
     // into the model directly (FileTableComponent owns it), same encapsulation the
@@ -812,7 +936,7 @@ public:
     {
         model.setFilterCriteria(criteria);
         table.updateContent();
-        table.setVisible(model.getNumRows() > 0);
+        updateViewMode();
         if (onRowCountsChanged) onRowCountsChanged(model.getNumRows(), model.getUnfilteredRowCount());
         repaint();
     }
@@ -824,12 +948,16 @@ public:
         if (!model.refreshPath(path)) return; // not in this scope -- nothing on screen changed
         if (onFacetsChanged) onFacetsChanged(model.getFacetOptions());
         table.updateContent();
-        table.setVisible(model.getNumRows() > 0);
+        updateViewMode();
         if (onRowCountsChanged) onRowCountsChanged(model.getNumRows(), model.getUnfilteredRowCount());
         repaint();
     }
 
     std::function<void(int, int)> onRowCountsChanged; // shown, total -- drives the filter bar's readout
+    // What this tab's folder holds (file count + running time) -- drives the status
+    // bar's folder readout. Fired on rebuild, like onFacetsChanged and for the same
+    // reason: it describes the folder, not the filter.
+    std::function<void(FileTableModel::ScopeSummary, bool /*loading*/)> onScopeSummaryChanged;
     // New scope's distinct keys/genres/instruments/moods -- refills the filter dropdowns.
     // Fired on rebuild (scope change, refresh), not on filter changes: the options are
     // what the folder has, not what's currently passing the filter.
@@ -880,8 +1008,12 @@ private:
         // table.setColour paints its own opaque background over the whole row area even
         // with zero rows, which would hide the "Select a folder..." message paint() below
         // draws underneath it — hide the table itself so that message can show through.
-        table.setVisible(model.getNumRows() > 0);
+        updateViewMode();
         if (onRowCountsChanged) onRowCountsChanged(model.getNumRows(), model.getUnfilteredRowCount());
+        // Fired with the rows still empty, on purpose: it clears the previous folder's
+        // count the instant the scope changes, so a big folder loading for half a second
+        // never shows the last folder's totals as if they were this one's.
+        if (onScopeSummaryChanged) onScopeSummaryChanged(model.getScopeSummary(), true);
         repaint();
     }
 
@@ -900,6 +1032,10 @@ private:
     FileTableModel model;
     juce::TableListBox table;
     TabBarComponent tabBar;
+    // Not owned: MainComponent owns the cue workspace, because the cue workspace needs the
+    // database and this class deliberately has no idea what a cue is.
+    juce::Component* alternateView = nullptr;
+    bool cueViewActive = false;
     std::vector<juce::String> tabScopes { juce::String() }; // always at least one tab
 
     // Background row building. Declared after `model` on purpose, so they're destroyed
@@ -954,8 +1090,9 @@ private:
     {
         if (onFacetsChanged) onFacetsChanged(model.getFacetOptions());
         table.updateContent();
-        table.setVisible(model.getNumRows() > 0);
+        updateViewMode();
         if (onRowCountsChanged) onRowCountsChanged(model.getNumRows(), model.getUnfilteredRowCount());
+        if (onScopeSummaryChanged) onScopeSummaryChanged(model.getScopeSummary(), false);
         repaint();
     }
 
@@ -988,7 +1125,7 @@ private:
 // two-panel bottom strip): sidebar spans the full middle-row height by default; the
 // bottom combined panel only claims height once a file is selected, and the sidebar
 // shrinks to match rather than the two coexisting as permanent fixed strips.
-class MainComponent : public juce::Component
+class MainComponent : public juce::Component, private juce::Timer
 {
 public:
     static constexpr int kFilterBarHeight = 40;
@@ -1067,8 +1204,12 @@ public:
             reloadSegmentsForSelection();
             refreshDetailsSidebar(); // follows the selection while open, single or batch
             refreshMenuState();
+            // The Cues view only means anything for a file in a synced set, and it has to
+            // follow the selection the same way the bottom panel does.
+            fileList->setCueViewAvailable(record != nullptr && record->groupId.has_value());
             resized();
         });
+        fileList->onViewModeChanged = [this](bool cueActive) { setCueViewActive(cueActive); };
         fileList->onAnalyzeRequested = [this](std::vector<juce::String> paths) { enqueueAnalyze(std::move(paths)); };
         // The selection handler above has already loaded the parent file by the time
         // this runs (FileTableModel::selectedRowsChanged calls it first).
@@ -1082,6 +1223,8 @@ public:
         });
         fileList->getAnalyzeOptionsSuffix = [this] { return analyzeOptions.suffixForMenuLabel(); };
         fileList->onRowCountsChanged = [this](int shown, int total) { filterBar->setCounts(shown, total); };
+        fileList->onScopeSummaryChanged = [this](FileTableModel::ScopeSummary summary, bool loading)
+        { updateFolderSummaryText(summary, loading); };
         filterBar->onCriteriaChanged = [this](FilterCriteria c) { fileList->setFilterCriteria(c); };
         fileList->onFacetsChanged = [this](FacetOptions options) { filterBar->setFacetOptions(options); };
         fileList->onDetailsRequested = [this](std::vector<int64_t> ids) { openDetailsSidebar(std::move(ids)); };
@@ -1090,9 +1233,18 @@ public:
         bottomPanel = std::make_unique<BottomPanel>(laf);
         bottomPanel->buildTagsMenu = [this](juce::PopupMenu& menu) { buildTagsMenu(menu); };
         bottomPanel->buildSegmentsMenu = [this](juce::PopupMenu& menu) { buildSegmentsMenu(menu); };
+        bottomPanel->buildCuesMenu = [this](juce::PopupMenu& menu) { buildCuesMenu(menu); };
+        // One transport, two possible cue workspaces -- both told, so neither is left
+        // showing "Stop" after the cue played itself out.
+        bottomPanel->setPlaybackStoppedCallback([this] {
+            if (cueView != nullptr) cueView->setPlaying(false);
+            if (cueEditor != nullptr) cueEditor->getContent().setPlaying(false);
+        });
         bottomPanel->onMenuAction = [this](int actionId) { performMenuAction(actionId); };
-        bottomPanel->getActivityView().onCueBoundaryMoved = [this](int64_t id, double seconds) {
-            moveCueBoundary(id, seconds);
+        bottomPanel->getActivityView().onCueBoundaryMoved = [this](int64_t id,
+                                                                    GroupActivityView::Edge edge,
+                                                                    double seconds) {
+            moveCueBoundary(id, edge, seconds);
         };
         bottomPanel->getActivityView().onCueClicked = [this](int64_t id) {
             if (auto cue = database->findSegmentById(id))
@@ -1184,6 +1336,20 @@ public:
     // explicit focus-grabbing needed elsewhere.
     bool keyPressed(const juce::KeyPress& key) override
     {
+        // Cmd+Z / Shift+Cmd+Z. Also declared on the Edit menu so macOS advertises them;
+        // handled here as well because the menu bar only sees the key when nothing in the
+        // window has claimed it first.
+        if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0))
+        {
+            undoLastEdit();
+            return true;
+        }
+        if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier
+                                            | juce::ModifierKeys::shiftModifier, 0))
+        {
+            redoLastEdit();
+            return true;
+        }
         // Cmd+F to the filter box -- the one shortcut every browser-shaped app has, and
         // the filter bar is otherwise only reachable by aiming at it.
         if (key == juce::KeyPress('f', juce::ModifierKeys::commandModifier, 0))
@@ -1332,6 +1498,64 @@ private:
     // A segment's `human` object is CaptionFields.cpp's convention (keywords/moods/
     // genre/instruments); the band in the waveform has room for a few words at most, so
     // this collapses whichever of those are set into one short line.
+    // A cue's NAME, per review round 7 follow-up: "cue name should be
+    // [foldername_cuenumber_temp_key]" plus "a new type which is mood like action comedy
+    // drama".
+    //
+    // Derived, not stored: the folder, tempo and key all already live on the file, and a
+    // copy of them in the cue's own row would be a copy that goes stale the moment a tempo
+    // is corrected. The only part actually stored is the type, because it is the only part
+    // that is a judgement rather than a fact.
+    //
+    // The number is the cue's position in reel order (1-based), so it renumbers if a cue is
+    // inserted before it -- which is correct for something that reads "the twelfth cue in
+    // this reel" and is exactly why it isn't stored either.
+    // The folder half of every cue name in a set.
+    //
+    // Tempo and key were here and have been REMOVED, on purpose. They were derived from the
+    // set (median tempo, modal key) because a cue is group-scoped and the per-stem values
+    // disagree wildly -- EP9's fifteen stems report 61 to 127 BPM and five different keys.
+    // But that made every cue in a reel carry the identical number, printed in a name that
+    // reads as a per-cue fact: "all cues are not 80 and gmaj - they are not real valuses".
+    // Correct. A name that looks precise and isn't is worse than a name without the field.
+    //
+    // Real per-cue values are recoverable but are their own job -- see the TODO in TASKS.md
+    // under review round 7. Tempo is nearly free (every stem already stores
+    // `beat_this_beats`, so a cue's tempo is the beat intervals inside its range); key is
+    // not, because `buildSegmentMachineJson` deliberately computes neither rhythm nor key,
+    // so no per-range key exists anywhere yet.
+    struct GroupIdentity { juce::String folder; };
+
+    GroupIdentity groupIdentity(const mira::FileRecord& record) const
+    {
+        return { sanitiseForName(juce::File(record.path).getParentDirectory().getFileName()) };
+    }
+
+    juce::String cueName(const GroupIdentity& id, const mira::SegmentRecord& cue, int number) const
+    {
+        juce::StringArray parts { id.folder, juce::String(number).paddedLeft('0', 2) };
+        // The type goes last so the stable, derived part stays a constant prefix -- cues
+        // from one reel sort together in any list that sorts by name.
+        if (auto type = database->jsonExtractString(cue.human, "$.cue_type"))
+            if (!type->empty()) parts.add(sanitiseForName(juce::String(*type)));
+        return parts.joinIntoString("_");
+    }
+
+    // "D major" -> "Dmaj", "F# minor" -> "F#min". Filenames end up carrying these, so the
+    // spaces have to go; the quality is abbreviated rather than dropped because "D" and
+    // "Dm" are different cues to anyone reading the list.
+    // Keeps a name safe to put in a filename: the export path is where these end up.
+    static juce::String sanitiseForName(const juce::String& text)
+    {
+        juce::String out;
+        for (auto c : text)
+            out += (juce::CharacterFunctions::isLetterOrDigit(c) || c == '#') ? juce::String::charToString(c)
+                   : (c == ' ' || c == '-' || c == '_')                       ? juce::String("_")
+                                                                              : juce::String();
+        while (out.contains("__")) out = out.replace("__", "_");
+        return out.trimCharactersAtStart("_").trimCharactersAtEnd("_");
+    }
+
     juce::String segmentLabel(const mira::SegmentRecord& segment) const
     {
         juce::StringArray parts;
@@ -1487,10 +1711,17 @@ private:
         }
         bottomPanel->setGroupActivity(std::move(rows), reel);
 
+        auto cueRecords = database->findSegmentsForGroup(*record->groupId);
+        std::sort(cueRecords.begin(), cueRecords.end(),
+                   [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
+        auto identity = groupIdentity(*record);
         std::vector<GroupActivityView::CueMark> cues;
-        for (const auto& cue : database->findSegmentsForGroup(*record->groupId))
-            cues.push_back({ cue.id, cue.startSeconds, cue.endSeconds, segmentLabel(cue),
-                              cue.human != "{}" });
+        for (size_t i = 0; i < cueRecords.size(); ++i)
+        {
+            const auto& cue = cueRecords[i];
+            cues.push_back({ cue.id, cue.startSeconds, cue.endSeconds,
+                              cueName(identity, cue, static_cast<int>(i) + 1), cue.human != "{}" });
+        }
         bottomPanel->setCues(std::move(cues));
         refreshCueEditor();
     }
@@ -1520,26 +1751,33 @@ private:
         // Untouched proposals are replaced; a cue someone tagged or dragged is never
         // overwritten (the user's own rule). Existing edited cues stay exactly where they
         // are, and new proposals land around them.
-        database->deleteUntouchedAutoSegmentsForGroup(*record->groupId);
-        auto kept = database->findSegmentsForGroup(*record->groupId);
-
         int created = 0;
-        for (const auto& cue : result.cues)
-        {
-            // Don't propose a cue on top of one that was kept -- the human's boundary wins.
-            bool overlapsKept = false;
-            for (const auto& existing : kept)
-                if (cue.startSeconds < existing.endSeconds && cue.endSeconds > existing.startSeconds)
-                { overlapsKept = true; break; }
-            if (overlapsKept) continue;
-            database->createSegment(*record->groupId, std::nullopt, cue.startSeconds, cue.endSeconds,
-                                     "{}", "auto");
-            ++created;
-        }
+        std::size_t keptCount = 0;
+        // The whole detect pass is ONE undo step. It is a single decision from where the
+        // user stands ("run detection"), and undoing it a cue at a time would be unusable
+        // on a reel that produces twenty of them.
+        performUndoable("Detect Cues", [&] {
+            database->deleteUntouchedAutoSegmentsForGroup(*record->groupId);
+            auto kept = database->findSegmentsForGroup(*record->groupId);
+            keptCount = kept.size();
+
+            for (const auto& cue : result.cues)
+            {
+                // Don't propose a cue on top of one that was kept -- the human's boundary wins.
+                bool overlapsKept = false;
+                for (const auto& existing : kept)
+                    if (cue.startSeconds < existing.endSeconds && cue.endSeconds > existing.startSeconds)
+                    { overlapsKept = true; break; }
+                if (overlapsKept) continue;
+                database->createSegment(*record->groupId, std::nullopt, cue.startSeconds,
+                                         cue.endSeconds, "{}", "auto");
+                ++created;
+            }
+        });
 
         logStore.append(LogStore::Source::app,
                          "detect cues: " + juce::String(result.cues.size()) + " proposed, "
-                             + juce::String(created) + " created, " + juce::String(kept.size())
+                             + juce::String(created) + " created, " + juce::String((int) keptCount)
                              + " kept (" + juce::String(result.silenceBoundaries) + " silence, "
                              + juce::String(result.instrumentationBoundaries) + " instrumentation"
                              + (result.usedMix ? ", mix used" : "") + ")");
@@ -1551,7 +1789,257 @@ private:
     // Dragging a boundary moves TWO cues: the one that starts there and the one that ends
     // there. That is what makes a reel a partition rather than a pile of islands, and doing
     // it in one write pair is what keeps gaps and overlaps from ever existing.
-    void moveCueBoundary(int64_t cueId, double newStartSeconds)
+    // Moving either edge of a cue. Both matter: an END with silence after it has no
+    // neighbour to borrow a handle from, so until this existed there was literally no way to
+    // change it -- "now i really need to move the cue end to match the end of the segement
+    // and i cant do it".
+    //
+    // A boundary shared with a neighbour still moves both sides at once (review round 6:
+    // cues in a carpeted reel are a partition, not islands). A boundary with silence on the
+    // other side moves only this cue, because there is nothing on the other side to move.
+    // ---- Undo -------------------------------------------------------------------------
+    //
+    // Review round 7 item 3 ("can we get undo to work?"), made urgent rather than nice by
+    // what the boundary-drag bug did to the user's library: five cues collapsed to zero
+    // length, written straight through with no way back.
+    //
+    // Snapshot-based, not inverse-based. Every cue/segment edit in mira_ui affects a bounded
+    // set of rows -- one file's segments plus its group's cues -- so one mechanism captures
+    // that set before and after and restores either side, instead of a hand-written inverse
+    // per operation. Hand-written inverses are where undo bugs live: the inverse of "detect
+    // cues" or "clear untagged" is not a single statement, and the inverse of a tag edit is
+    // only correct if it restores the whole `human` object rather than replaying field
+    // writes.
+    //
+    // Restoring re-creates a deleted row under its ORIGINAL id (`createSegmentWithId`), so
+    // `segment_analysis` reconnects and any id captured by a neighbouring undo step still
+    // points at the same thing.
+    struct SegmentScope
+    {
+        std::optional<int64_t> fileId;
+        std::optional<std::string> groupId;
+    };
+
+    struct SegmentSnapshot
+    {
+        struct Row
+        {
+            mira::SegmentRecord record;
+            std::vector<mira::Database::SegmentAnalysisRow> analysis;
+        };
+        std::vector<Row> rows;
+    };
+
+    SegmentScope scopeForSelection() const
+    {
+        SegmentScope scope;
+        if (auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt)
+        {
+            scope.fileId = record->id;
+            scope.groupId = record->groupId;
+        }
+        return scope;
+    }
+
+    SegmentSnapshot captureSegments(const SegmentScope& scope) const
+    {
+        SegmentSnapshot snapshot;
+        auto take = [&](const std::vector<mira::SegmentRecord>& records) {
+            for (const auto& record : records)
+                snapshot.rows.push_back({ record, database->segmentAnalysisRows(record.id) });
+        };
+        if (scope.fileId) take(database->findSegmentsForFile(*scope.fileId));
+        if (scope.groupId) take(database->findSegmentsForGroup(*scope.groupId));
+        return snapshot;
+    }
+
+    void restoreSegments(const SegmentScope& scope, const SegmentSnapshot& target)
+    {
+        auto current = captureSegments(scope);
+
+        std::set<int64_t> wanted;
+        for (const auto& row : target.rows) wanted.insert(row.record.id);
+
+        // Anything that exists now but shouldn't: a row the edit created.
+        for (const auto& row : current.rows)
+            if (wanted.count(row.record.id) == 0) database->deleteSegment(row.record.id);
+
+        std::set<int64_t> present;
+        for (const auto& row : current.rows)
+            if (wanted.count(row.record.id) != 0) present.insert(row.record.id);
+
+        for (const auto& row : target.rows)
+        {
+            const auto& record = row.record;
+            if (present.count(record.id) != 0)
+            {
+                // Survived the edit: put its bounds and tags back. Written unconditionally
+                // rather than only when they differ -- the comparison is not cheaper than
+                // the write, and "only when different" is how a field gets missed.
+                database->setSegmentBounds(record.id, record.startSeconds, record.endSeconds);
+                database->setSegmentHuman(record.id, record.human);
+                continue;
+            }
+            // Deleted by the edit: back under its own id, analysis included.
+            database->createSegmentWithId(record.id, record.groupId, record.fileId, record.startSeconds,
+                                           record.endSeconds, record.human, record.source);
+            for (const auto& analysis : row.analysis)
+                database->upsertSegmentAnalysis(record.id, analysis.fileId, analysis.machine,
+                                                 analysis.analyzedAt);
+        }
+    }
+
+    // A file's `human` object, for the one edit that isn't segment-shaped.
+    struct FileHumanAction : juce::UndoableAction
+    {
+        MainComponent& owner;
+        int64_t fileId;
+        std::string before, after;
+        bool alreadyApplied = true;
+
+        FileHumanAction(MainComponent& o, int64_t id, std::string b, std::string a)
+            : owner(o), fileId(id), before(std::move(b)), after(std::move(a))
+        {
+        }
+
+        bool perform() override
+        {
+            if (alreadyApplied) { alreadyApplied = false; return true; }
+            owner.database->setHuman(fileId, after);
+            owner.refreshAfterUndo();
+            return true;
+        }
+
+        bool undo() override
+        {
+            owner.database->setHuman(fileId, before);
+            owner.refreshAfterUndo();
+            return true;
+        }
+
+        int getSizeInUnits() override { return 128; }
+    };
+
+    // The action itself. `perform()` is a no-op the first time, because the edit has already
+    // run by the time this is pushed -- capturing "after" requires running it, and running it
+    // twice is not the same as running it once for anything that touches ids.
+    struct SegmentEditAction : juce::UndoableAction
+    {
+        MainComponent& owner;
+        SegmentScope scope;
+        SegmentSnapshot before, after;
+        bool alreadyApplied = true;
+
+        SegmentEditAction(MainComponent& o, SegmentScope s, SegmentSnapshot b, SegmentSnapshot a)
+            : owner(o), scope(std::move(s)), before(std::move(b)), after(std::move(a))
+        {
+        }
+
+        bool perform() override
+        {
+            if (alreadyApplied) { alreadyApplied = false; return true; }
+            owner.restoreSegments(scope, after);
+            owner.refreshAfterUndo();
+            return true;
+        }
+
+        bool undo() override
+        {
+            owner.restoreSegments(scope, before);
+            owner.refreshAfterUndo();
+            return true;
+        }
+
+        int getSizeInUnits() override { return 256; }
+    };
+
+    // One undoable edit. Everything that writes segments goes through here, so adding an
+    // operation cannot forget to be undoable.
+    void performUndoable(const juce::String& name, const std::function<void()>& mutate)
+    {
+        auto scope = scopeForSelection();
+        if (!scope.fileId && !scope.groupId) { mutate(); return; } // nothing to snapshot
+        auto before = captureSegments(scope);
+        mutate();
+        auto after = captureSegments(scope);
+        undoManager.beginNewTransaction(name);
+        undoManager.perform(new SegmentEditAction(*this, scope, std::move(before), std::move(after)));
+    }
+
+    void refreshAfterUndo()
+    {
+        selectedSegmentId = 0; // it may not exist any more
+        reloadSegmentsForSelection();
+        fileList->refresh();
+        refreshDetailsSidebar();
+        refreshMenuState();
+    }
+
+public:
+    // Reached from the macOS Edit menu (MiraMenuBarModel), which lives outside this class.
+    void undoLastEdit()
+    {
+        if (undoManager.canUndo()) undoManager.undo();
+        refreshMenuState();
+    }
+
+    void redoLastEdit()
+    {
+        if (undoManager.canRedo()) undoManager.redo();
+        refreshMenuState();
+    }
+
+    juce::String undoDescription() const
+    {
+        return undoManager.canUndo() ? "Undo " + undoManager.getUndoDescription() : juce::String("Undo");
+    }
+
+    juce::String redoDescription() const
+    {
+        return undoManager.canRedo() ? "Redo " + undoManager.getRedoDescription() : juce::String("Redo");
+    }
+
+    bool canUndo() const { return undoManager.canUndo(); }
+    bool canRedo() const { return undoManager.canRedo(); }
+
+private:
+    // Review round 7 item 2: "make sure editing the cue will edit all the segments of this
+    // cue warning". A cue is one row covering every stem in the set, so moving a boundary
+    // rewrites the same instant on all fifteen at once -- correct behaviour with an
+    // invisible consequence.
+    //
+    // Once per session, not once per edit. That was deliberate and depended on item 3
+    // landing first: with no undo, a confirmation is the only safety net and has to fire
+    // every time, which is the version people learn to dismiss without reading. With undo
+    // in place the dialog only has to teach the scope once, and can say how to take it back.
+    // The permanent reminder lives in the cue menu's own header ("all stems"), which is
+    // there on every visit.
+    void withCueScopeWarning(std::function<void()> proceed)
+    {
+        if (warnedAboutCueScope) { proceed(); return; }
+        warnedAboutCueScope = true;
+
+        auto siblings = 0;
+        if (auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt)
+            if (record->groupId)
+                siblings = static_cast<int>(database->findFilesByGroupId(*record->groupId).size());
+
+        juce::AlertWindow::showOkCancelBox(
+            juce::MessageBoxIconType::WarningIcon, "This edits the whole set",
+            "A cue covers every stem in the synced set, so moving or deleting it changes the "
+            "same moment on all "
+                + juce::String(siblings) + " files at once \xe2\x80\x94 not just the one you have selected.\n\n"
+                "Cmd+Z undoes it. This warning appears once per session.",
+            "Edit the set", "Cancel", nullptr,
+            juce::ModalCallbackFunction::create([proceed](int result) { if (result == 1) proceed(); }));
+    }
+
+    void moveCueBoundary(int64_t cueId, GroupActivityView::Edge edge, double newSeconds)
+    {
+        withCueScopeWarning([this, cueId, edge, newSeconds] { moveCueBoundaryConfirmed(cueId, edge, newSeconds); });
+    }
+
+    void moveCueBoundaryConfirmed(int64_t cueId, GroupActivityView::Edge edge, double newSeconds)
     {
         auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt;
         if (!record || !record->groupId) return;
@@ -1559,23 +2047,65 @@ private:
         std::sort(cues.begin(), cues.end(),
                    [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
 
+        performUndoable(edge == GroupActivityView::Edge::start ? "Move Cue Start" : "Move Cue End",
+                         [&] { applyCueBoundary(cues, cueId, edge, newSeconds); });
+        reloadSegmentsForSelection();
+        fileList->refresh();
+    }
+
+    void applyCueBoundary(const std::vector<mira::SegmentRecord>& cues, int64_t cueId,
+                           GroupActivityView::Edge edge, double newSeconds)
+    {
+        // Deliberately 1s, not CueOptions::minCueSeconds (25s): that threshold governs what
+        // DETECTION is willing to propose. Someone trimming a cue to line up with a stem's
+        // last note is not making the mistake it guards against. This only has to stop a cue
+        // from ceasing to be a range.
+        constexpr double kMinCueLengthSeconds = 1.0;
+
         for (size_t i = 0; i < cues.size(); ++i)
         {
             if (cues[i].id != cueId) continue;
-            database->setSegmentBounds(cueId, newStartSeconds, cues[i].endSeconds);
-            database->markSegmentEdited(cueId);
-            // The cue before it now ends where this one starts -- but only if they were
-            // actually adjacent. A boundary between two cues separated by real silence is
-            // this cue's start alone, and dragging it must not stretch the previous cue
-            // across the gap.
-            if (i > 0 && std::abs(cues[i - 1].endSeconds - cues[i].startSeconds) < 1.0)
+
+            if (edge == GroupActivityView::Edge::start)
             {
-                database->setSegmentBounds(cues[i - 1].id, cues[i - 1].startSeconds, newStartSeconds);
-                database->markSegmentEdited(cues[i - 1].id);
+                double lowerBound = i > 0 ? cues[i - 1].startSeconds + kMinCueLengthSeconds : 0.0;
+                double upperBound = cues[i].endSeconds - kMinCueLengthSeconds;
+                if (upperBound < lowerBound) return; // already degenerate; a drag can't fix it
+                double start = juce::jlimit(lowerBound, upperBound, newSeconds);
+
+                database->setSegmentBounds(cueId, start, cues[i].endSeconds);
+                database->markSegmentEdited(cueId);
+                // The cue before it now ends where this one starts -- but only if they were
+                // actually adjacent. A boundary between two cues separated by real silence
+                // is this cue's start alone, and dragging it must not stretch the previous
+                // cue across the gap.
+                if (i > 0 && std::abs(cues[i - 1].endSeconds - cues[i].startSeconds) < 1.0)
+                {
+                    database->setSegmentBounds(cues[i - 1].id, cues[i - 1].startSeconds, start);
+                    database->markSegmentEdited(cues[i - 1].id);
+                }
+            }
+            else
+            {
+                bool adjacent = i + 1 < cues.size()
+                                 && std::abs(cues[i + 1].startSeconds - cues[i].endSeconds) < 1.0;
+                double lowerBound = cues[i].startSeconds + kMinCueLengthSeconds;
+                double upperBound = adjacent ? cues[i + 1].endSeconds - kMinCueLengthSeconds
+                                              : (i + 1 < cues.size() ? cues[i + 1].startSeconds
+                                                                      : std::numeric_limits<double>::max());
+                if (upperBound < lowerBound) return;
+                double endSeconds = juce::jlimit(lowerBound, upperBound, newSeconds);
+
+                database->setSegmentBounds(cueId, cues[i].startSeconds, endSeconds);
+                database->markSegmentEdited(cueId);
+                if (adjacent)
+                {
+                    database->setSegmentBounds(cues[i + 1].id, endSeconds, cues[i + 1].endSeconds);
+                    database->markSegmentEdited(cues[i + 1].id);
+                }
             }
             break;
         }
-        reloadSegmentsForSelection();
     }
 
     // "type timecode will also be helpful" -- dragging is fast but imprecise (at fit zoom on
@@ -1588,23 +2118,38 @@ private:
         auto segment = database->findSegmentById(cueId);
         if (!segment) return;
 
-        auto* window = new juce::AlertWindow("Cue start", "Start time as m:ss or m:ss.mmm",
+        // BOTH edges, not just the start. Dragging is fast but imprecise (at fit zoom on a
+        // 41-minute reel one pixel is about 1.7 seconds), and the end is exactly the edge
+        // someone needs to place exactly -- to land it on where a stem actually stops.
+        auto* window = new juce::AlertWindow("Cue bounds", "m:ss or m:ss.mmm \xe2\x80\x94 leave a field "
+                                                            "unchanged to keep that edge",
                                               juce::MessageBoxIconType::NoIcon);
-        window->addTextEditor("time", formatSegmentTime(segment->startSeconds));
+        window->addTextEditor("start", formatSegmentTime(segment->startSeconds), "Start");
+        window->addTextEditor("end", formatSegmentTime(segment->endSeconds), "End");
         window->addButton("Set", 1, juce::KeyPress(juce::KeyPress::returnKey));
         window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-        window->enterModalState(true, juce::ModalCallbackFunction::create([this, window, cueId](int result) {
-            if (result == 1)
-            {
-                auto text = window->getTextEditorContents("time").trim();
-                auto colon = text.indexOfChar(':');
-                double seconds = colon >= 0
-                    ? text.substring(0, colon).getDoubleValue() * 60.0 + text.substring(colon + 1).getDoubleValue()
-                    : text.getDoubleValue();
-                if (seconds >= 0.0) moveCueBoundary(cueId, seconds);
-            }
-            delete window;
-        }), false);
+        window->enterModalState(true, juce::ModalCallbackFunction::create(
+            [this, window, cueId, was = *segment](int result) {
+                if (result == 1)
+                {
+                    auto parse = [window](const char* field) {
+                        auto text = window->getTextEditorContents(field).trim();
+                        auto colon = text.indexOfChar(':');
+                        return colon >= 0 ? text.substring(0, colon).getDoubleValue() * 60.0
+                                                + text.substring(colon + 1).getDoubleValue()
+                                          : text.getDoubleValue();
+                    };
+                    double start = parse("start");
+                    double endSeconds = parse("end");
+                    // End first: moving the start of a cue whose end is about to move too
+                    // would clamp against the OLD end and could refuse a legitimate edit.
+                    if (endSeconds > 0.0 && std::abs(endSeconds - was.endSeconds) > 0.001)
+                        moveCueBoundary(cueId, GroupActivityView::Edge::end, endSeconds);
+                    if (start >= 0.0 && std::abs(start - was.startSeconds) > 0.001)
+                        moveCueBoundary(cueId, GroupActivityView::Edge::start, start);
+                }
+                delete window;
+            }), false);
     }
 
     void reloadSegmentsForSelection()
@@ -1642,8 +2187,15 @@ private:
         for (const auto& segment : database->findSegmentsForFile(record->id))
             spans.push_back({ segment.id, segment.startSeconds, segment.endSeconds, segmentLabel(segment), false });
         if (record->groupId)
-            for (const auto& segment : database->findSegmentsForGroup(*record->groupId))
-                spans.push_back({ segment.id, segment.startSeconds, segment.endSeconds, segmentLabel(segment), true });
+        {
+            auto groupCues = database->findSegmentsForGroup(*record->groupId);
+            std::sort(groupCues.begin(), groupCues.end(),
+                       [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
+            auto identity = groupIdentity(*record);
+            for (size_t i = 0; i < groupCues.size(); ++i)
+                spans.push_back({ groupCues[i].id, groupCues[i].startSeconds, groupCues[i].endSeconds,
+                                   cueName(identity, groupCues[i], static_cast<int>(i) + 1), true });
+        }
 
         std::sort(spans.begin(), spans.end(),
                    [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
@@ -1663,9 +2215,12 @@ private:
 
         auto create = [this, startSeconds, endSeconds](std::optional<std::string> groupId,
                                                         std::optional<int64_t> fileId) {
-            database->createSegment(std::move(groupId), fileId, startSeconds, endSeconds, "{}");
+            performUndoable(groupId ? "Add Cue" : "Add Segment", [&] {
+                database->createSegment(std::move(groupId), fileId, startSeconds, endSeconds, "{}");
+            });
             bottomPanel->clearWaveformSelection();
             reloadSegmentsForSelection();
+            fileList->refresh();
         };
 
         // A file in a synced stem set gets the choice explicitly rather than a guess:
@@ -1712,6 +2267,7 @@ public:
         kToggleActivityMatrix,
         kClearCues,
         kOpenCueEditor,
+        kCueList, // the cue counterpart of kSegmentsList -- group-scoped rows only
     };
 
     void buildTagsMenu(juce::PopupMenu& menu)
@@ -1731,6 +2287,11 @@ public:
         menu.addItem(kAnalyzeSelected, "Analyze This File", haveFile);
     }
 
+    // Segments ONLY -- file-scoped, this one stem, cut from its own silence. Cues used to
+    // live down at the bottom of this menu as a section, which is a large part of why
+    // review round 7 opens with "rite now segemetns and cue are confusing": two different
+    // objects sharing one menu reads as one object with two halves. They are now two menus,
+    // everywhere.
     void buildSegmentsMenu(juce::PopupMenu& menu)
     {
         // The macOS menu bar can ask for a menu at moments this component doesn't control
@@ -1738,6 +2299,7 @@ public:
         // builders tolerates a panel that isn't there rather than assuming it is.
         if (bottomPanel == nullptr) return;
         bool haveSelection = bottomPanel->hasWaveformSelection();
+        menu.addSectionHeader("Segments (this file)");
         menu.addItem(kAddSegmentFromSelection,
                       haveSelection ? "+ Segment from Selection" : "+ Segment (drag to select first)",
                       haveSelection);
@@ -1746,21 +2308,61 @@ public:
         menu.addSeparator();
         menu.addItem(kDeleteSegment, "Delete Selected Segment", selectedSegmentId != 0);
         menu.addItem(kExportSegments, "Export Segments...", bottomPanel->getSegmentCount() > 0);
+    }
 
-        // Cues are the group-scoped half of the same feature: a segment that covers every
-        // stem in the synced set at once. Only offered when there IS a set.
+    // Cues -- group-scoped, one piece of music across the whole synced set, at identical
+    // timestamps on every sibling stem. Its own menu, its own top-level entry in the macOS
+    // menu bar, and its own button in the bottom panel's header (review round 7, items 4
+    // and 5: reaching the cue editor was not discoverable, and neither was the toggle that
+    // hides the matrix).
+    //
+    // Cue Editor... is FIRST and separated: it is the workspace this whole menu is about,
+    // and burying it under three other verbs is how it got lost in the Segments menu.
+    void buildCuesMenu(juce::PopupMenu& menu)
+    {
+        if (bottomPanel == nullptr) return;
         auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt;
         bool inGroup = record && record->groupId.has_value();
-        menu.addSeparator();
-        menu.addSectionHeader("Cues (synced set)");
+        menu.addSectionHeader(inGroup ? "Cues (synced set)" : "Cues (no synced set selected)");
         menu.addItem(kOpenCueEditor, "Cue Editor...", inGroup);
+        menu.addSeparator();
         menu.addItem(kDetectCues, "Detect Cues", inGroup);
+        menu.addItem(kCueList, "Cues (" + juce::String(bottomPanel->getCueCount()) + ")...",
+                      inGroup && bottomPanel->getCueCount() > 0);
         menu.addItem(kClearCues, "Clear Untagged Cues", inGroup);
-        menu.addItem(kToggleActivityMatrix, "Stem Activity Matrix", inGroup,
-                      bottomPanel->isActivityShown());
+        menu.addSeparator();
+        // The toggle lives beside the thing it hides, not in another object's menu. That
+        // was item 5's entire complaint -- the feature existed and could not be found.
+        // Disabled, not hidden, while the Cues view is up: the matrix is already on screen
+        // at full size, so the toggle has nothing left to reveal -- and a toggle that
+        // silently does nothing is worse than one that says why it can't.
+        bool cueViewUp = fileList != nullptr && fileList->isCueViewActive();
+        menu.addItem(kToggleActivityMatrix,
+                      cueViewUp ? "Show Stem Activity Matrix (shown in Cues view)"
+                                : "Show Stem Activity Matrix",
+                      inGroup && !cueViewUp, bottomPanel->isActivityShown());
     }
 
     void performMenuAction(int actionId)
+    {
+        // Every one of these changes something a menu ITEM's state is computed from -- a
+        // tick (Show Stem Activity Matrix), a count ("Cues (16)..."), or an enabled flag
+        // (Delete Selected Segment). The macOS menu bar bakes all of that in at build time,
+        // so an action that changes state without rebuilding leaves the menu lying.
+        //
+        // Found by the user: "the stem activity matrix remain alwasy ticked in the osx
+        // bar". It genuinely was -- `showActivity` starts true, the menu was built once,
+        // and toggling it never asked for a rebuild, so the tick was frozen at its launch
+        // value forever. refreshMenuState() only fired on selection change, which is why
+        // round 6b's fix looked complete and wasn't.
+        //
+        // Wrapped rather than sprinkled: the body below returns from a dozen places, so a
+        // refresh call per case is a refresh call someone forgets on the next case added.
+        performMenuActionImpl(actionId);
+        refreshMenuState();
+    }
+
+    void performMenuActionImpl(int actionId)
     {
         switch (actionId)
         {
@@ -1770,9 +2372,17 @@ public:
             case kClearFileTags:
                 if (selectedFileId != 0)
                 {
-                    database->clearHumanFields(selectedFileId);
+                    // Not a segment edit, so it carries its own before/after rather than
+                    // going through performUndoable's segment snapshot.
+                    auto id = selectedFileId;
+                    auto before = database->findById(id);
+                    if (!before) return;
+                    undoManager.beginNewTransaction("Clear Human Tags");
+                    undoManager.perform(new FileHumanAction(*this, id, before->human, "{}"));
+                    database->clearHumanFields(id);
                     fileList->refresh();
                     refreshSelectedFilePanel();
+                    refreshMenuState();
                 }
                 return;
             case kAnalyzeSelected:
@@ -1788,11 +2398,13 @@ public:
                         addSegment(range->first, range->second);
                 return;
             case kSegmentsList: showSegmentsList(); return;
+            case kCueList: showCueList(); return;
             case kExportSegments: exportSegments(); return;
             case kDeleteSegment:
                 if (selectedSegmentId != 0)
                 {
-                    database->deleteSegment(selectedSegmentId);
+                    auto id = selectedSegmentId;
+                    performUndoable("Delete Segment", [&] { database->deleteSegment(id); });
                     selectedSegmentId = 0;
                     reloadSegmentsForSelection();
                     fileList->refresh();
@@ -1808,7 +2420,9 @@ public:
                 if (auto rec = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt)
                     if (rec->groupId)
                     {
-                        database->deleteUntouchedAutoSegmentsForGroup(*rec->groupId);
+                        performUndoable("Clear Untagged Cues", [&] {
+                            database->deleteUntouchedAutoSegmentsForGroup(*rec->groupId);
+                        });
                         reloadSegmentsForSelection();
                         fileList->refresh();
                     }
@@ -1836,11 +2450,30 @@ public:
         auto cue = database->findSegmentById(cueId);
         if (!cue) return;
         juce::PopupMenu menu;
+        // Permanent, not just the once-per-session dialog: this is the line someone reads
+        // on the twentieth cue of the session, when the dialog is long gone.
         menu.addSectionHeader(formatSegmentTime(cue->startSeconds)
                                + juce::String(juce::CharPointer_UTF8("\xe2\x80\x93"))
-                               + formatSegmentTime(cue->endSeconds) + "  (all stems)");
+                               + formatSegmentTime(cue->endSeconds) + "  \xe2\x80\x94  edits ALL stems");
+        if (auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt)
+            menu.addSectionHeader(cueName(groupIdentity(*record), *cue, cueNumberOf(cueId)));
+        // The type IS the name's only editable part, so it gets its own submenu of the
+        // words a scoring session actually uses rather than being buried in the four-field
+        // tag dialog. "Custom..." is there because no fixed list survives contact with a
+        // real reel.
+        juce::PopupMenu types;
+        auto current = database->jsonExtractString(cue->human, "$.cue_type").value_or("");
+        for (const char* type : kCueTypes)
+            types.addItem(juce::String(type), true, current == type,
+                           [this, cueId, type] { setCueType(cueId, type); });
+        types.addSeparator();
+        types.addItem("Custom...", [this, cueId] { promptCueType(cueId); });
+        types.addItem("Clear Type", !current.empty(), false, [this, cueId] { setCueType(cueId, ""); });
+        menu.addSubMenu("Type", types);
+
         menu.addItem("Edit Cue Tags...", [this, cueId] { editSegmentTags(cueId); });
-        menu.addItem("Set Start Timecode...", [this, cueId] { promptCueTimecode(cueId); });
+        menu.addItem("Set Start / End Timecode...", [this, cueId] { promptCueTimecode(cueId); });
+        menu.addItem("Open in Cue Editor...", [this] { showCueEditor(); });
         menu.addSeparator();
         menu.addItem("Play From Here", [this, cueId] {
             if (auto c = database->findSegmentById(cueId))
@@ -1848,10 +2481,117 @@ public:
         });
         menu.addSeparator();
         menu.addItem("Delete Cue", [this, cueId] {
-            database->deleteSegment(cueId);
-            reloadSegmentsForSelection();
+            withCueScopeWarning([this, cueId] {
+                performUndoable("Delete Cue", [&] { database->deleteSegment(cueId); });
+                reloadSegmentsForSelection();
+                fileList->refresh();
+            });
         });
         menu.showMenuAsync(juce::PopupMenu::Options());
+    }
+
+    // One wiring function for both hosts. The in-window Cues view and the standalone window
+    // are the same component type doing the same job, so the alternative was two copies of
+    // these eight callbacks -- and the bug that follows is the one where an edit works in
+    // one host and silently does nothing in the other.
+    void wireCueWorkspace(CueEditorComponent& page)
+    {
+        page.onDetectCues = [this] { detectCuesForSelection(); };
+        page.onClearUntagged = [this] { performMenuAction(kClearCues); };
+        page.onMarkCue = [this](double start, double end) { addCueFromRange(start, end); };
+        page.onCueSelected = [this](int64_t id) {
+            if (auto cue = database->findSegmentById(id))
+                bottomPanel->selectWaveformRange(cue->startSeconds, cue->endSeconds);
+        };
+        page.onCueRightClicked = [this](int64_t id) { showCueMenu(id); };
+        // "i cant select a track /file so idont know the segemetn names" -- clicking a stem
+        // row in the matrix now selects that file in the table, which is what makes the
+        // bottom panel, the details sidebar and the segment list all follow it. Without
+        // this the matrix was a picture you could not get out of.
+        page.onStemClicked = [this](int stemIndex) { selectStemInGroup(stemIndex); };
+        page.onPlayCue = [this, &page](int64_t cueId) {
+            if (bottomPanel->isPlaying()) { bottomPanel->stopPlayback(); page.setPlaying(false); return; }
+            if (auto cue = database->findSegmentById(cueId))
+            {
+                bottomPanel->playRange(cue->startSeconds, cue->endSeconds);
+                page.setPlaying(true);
+            }
+        };
+        page.getMatrix().onCueBoundaryMoved = [this](int64_t id, GroupActivityView::Edge edge,
+                                                      double seconds) {
+            moveCueBoundary(id, edge, seconds);
+        };
+        page.getMatrix().onCueRightClicked = [this](int64_t id) { showCueMenu(id); };
+        // Inline rename writes the same field the Type submenu writes, through the same
+        // undoable setter -- one field, two ways in, one undo step either way.
+        page.onCueRenamed = [this](int64_t id, juce::String type) { setCueType(id, type); };
+    }
+
+    // Selects the nth stem of the currently selected file's synced set, by the same row
+    // order refreshCueEditor built the matrix in.
+    void selectStemInGroup(int stemIndex)
+    {
+        auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt;
+        if (!record || !record->groupId) return;
+        auto siblings = database->findFilesByGroupId(*record->groupId);
+        if (stemIndex < 0 || stemIndex >= static_cast<int>(siblings.size())) return;
+        fileList->selectFileById(siblings[static_cast<size_t>(stemIndex)].id);
+    }
+
+    // The vocabulary a scoring session actually uses, per the user: "a new type which is
+    // mood like action comedy drama and thatstuff". A starting set, not a taxonomy -- it is
+    // a convenience list in front of a free-text field, so an unusual reel is never stuck.
+    static constexpr const char* kCueTypes[] = {
+        "action", "comedy", "drama", "romance", "tension", "suspense",
+        "chase",  "sad",    "happy", "horror",  "triumph", "montage",
+        "transition", "source", "titles", "end_credits",
+    };
+
+    // Where a cue falls in reel order, 1-based -- the number in its name.
+    int cueNumberOf(int64_t cueId) const
+    {
+        auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt;
+        if (!record || !record->groupId) return 0;
+        auto cues = database->findSegmentsForGroup(*record->groupId);
+        std::sort(cues.begin(), cues.end(),
+                   [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
+        for (size_t i = 0; i < cues.size(); ++i)
+            if (cues[i].id == cueId) return static_cast<int>(i) + 1;
+        return 0;
+    }
+
+    // Setting a type is a human judgement about the cue, so it marks the cue edited -- it
+    // must survive a re-detect, exactly like a boundary someone moved by hand.
+    void setCueType(int64_t cueId, const juce::String& type)
+    {
+        performUndoable(type.isEmpty() ? "Clear Cue Type" : "Set Cue Type", [&] {
+            database->setSegmentHumanField(
+                cueId, "$.cue_type",
+                juce::JSON::toString(juce::var(type), juce::JSON::FormatOptions {}.withSpacing(
+                                                           juce::JSON::Spacing::none))
+                    .toStdString());
+            if (type.isNotEmpty()) database->markSegmentEdited(cueId);
+        });
+        reloadSegmentsForSelection();
+        fileList->refresh();
+    }
+
+    void promptCueType(int64_t cueId)
+    {
+        auto* window = new juce::AlertWindow("Cue Type", "One word, e.g. action / comedy / drama",
+                                              juce::MessageBoxIconType::NoIcon);
+        auto cue = database->findSegmentById(cueId);
+        window->addTextEditor("type",
+                               cue ? juce::String(database->jsonExtractString(cue->human, "$.cue_type")
+                                                       .value_or(""))
+                                   : juce::String(),
+                               "Type");
+        window->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        window->enterModalState(true, juce::ModalCallbackFunction::create([this, window, cueId](int result) {
+            if (result == 1) setCueType(cueId, window->getTextEditorContents("type").trim());
+            delete window;
+        }), false);
     }
 
     void showCueEditor()
@@ -1859,19 +2599,7 @@ public:
         if (cueEditor == nullptr)
         {
             cueEditor = std::make_unique<CueEditorWindow>(laf);
-            auto& page = cueEditor->getContent();
-            page.onDetectCues = [this] { detectCuesForSelection(); };
-            page.onClearUntagged = [this] { performMenuAction(kClearCues); };
-            page.onMarkCue = [this](double start, double end) { addCueFromRange(start, end); };
-            page.onCueSelected = [this](int64_t id) {
-                if (auto cue = database->findSegmentById(id))
-                    bottomPanel->selectWaveformRange(cue->startSeconds, cue->endSeconds);
-            };
-            page.onCueRightClicked = [this](int64_t id) { showCueMenu(id); };
-            page.getMatrix().onCueBoundaryMoved = [this](int64_t id, double seconds) {
-                moveCueBoundary(id, seconds);
-            };
-            page.getMatrix().onCueRightClicked = [this](int64_t id) { showCueMenu(id); };
+            wireCueWorkspace(cueEditor->getContent());
             cueEditor->onClosed = [this] {
                 juce::MessageManager::callAsync([this] { cueEditor.reset(); });
             };
@@ -1883,15 +2611,59 @@ public:
         refreshCueEditor();
     }
 
-    // The cue window shows the SET, not the selected file, so it is fed from the same reload
-    // the bottom panel's matrix uses and simply ignores which sibling happens to be selected.
+    // The in-window Cues view: same component, hosted where the file table is. Built lazily
+    // -- most sessions never open it, and it is not free (fifteen stem rows plus a cue list).
+    void setCueViewActive(bool active)
+    {
+        if (active && cueView == nullptr)
+        {
+            cueView = std::make_unique<CueEditorComponent>(laf);
+            wireCueWorkspace(*cueView);
+            fileList->setAlternateView(cueView.get());
+        }
+
+        // The bottom panel's compact matrix stands down while the Cues view is up. Both
+        // draw the same fifteen stem rows, so with the cue workspace filling the main pane
+        // the panel underneath was repeating it verbatim -- the user's "now the ep_9 stems
+        // are duplicated - showing twice".
+        //
+        // The compact matrix exists to answer "what is this file doing inside the set"
+        // WHILE BROWSING THE LIST. When the list has become the cue workspace, that question
+        // is already answered above it at full size, and the small copy is just noise in the
+        // space the waveform wants.
+        //
+        // Their own setting is remembered and handed back on the way out, rather than being
+        // silently switched off: it is the user's toggle, not this view's to spend.
+        if (active != fileList->isCueViewActive())
+        {
+            if (active) matrixShownBeforeCueView = bottomPanel->isActivityShown();
+            bottomPanel->setActivityShown(active ? false : matrixShownBeforeCueView);
+        }
+
+        fileList->setCueViewActive(active);
+        refreshMenuState(); // the Cues menu's matrix tick just changed meaning
+        if (active) refreshCueEditor();
+    }
+
+    // The cue workspace shows the SET, not the selected file, so it is fed from the same
+    // reload the bottom panel's matrix uses and simply ignores which sibling happens to be
+    // selected.
+    //
+    // There are now TWO possible hosts for the same component type: the in-window Cues view
+    // and the standalone window (review round 7 follow-up). The content is built once and
+    // pushed to whichever exist, so the two can never show different cues -- the failure
+    // mode of feeding them separately is the one that only appears after an edit in one.
     void refreshCueEditor()
     {
-        if (cueEditor == nullptr) return;
+        std::vector<CueEditorComponent*> hosts;
+        if (cueEditor != nullptr) hosts.push_back(&cueEditor->getContent());
+        if (cueView != nullptr) hosts.push_back(cueView.get());
+        if (hosts.empty()) return;
+
         auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt;
         if (!record || !record->groupId)
         {
-            cueEditor->getContent().setContent({}, {}, 0.0, "no synced stem set selected");
+            for (auto* host : hosts) host->setContent({}, {}, 0.0, "no synced stem set selected");
             return;
         }
 
@@ -1908,12 +2680,21 @@ public:
                 reel = juce::jmax(reel, *duration);
             rows.push_back(std::move(row));
         }
+        auto cueRecords = database->findSegmentsForGroup(*record->groupId);
+        std::sort(cueRecords.begin(), cueRecords.end(),
+                   [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
+        auto identity = groupIdentity(*record);
         std::vector<GroupActivityView::CueMark> cues;
-        for (const auto& cue : database->findSegmentsForGroup(*record->groupId))
-            cues.push_back({ cue.id, cue.startSeconds, cue.endSeconds, segmentLabel(cue), cue.human != "{}" });
+        for (size_t i = 0; i < cueRecords.size(); ++i)
+        {
+            const auto& cue = cueRecords[i];
+            cues.push_back({ cue.id, cue.startSeconds, cue.endSeconds,
+                              cueName(identity, cue, static_cast<int>(i) + 1), cue.human != "{}" });
+        }
 
-        cueEditor->getContent().setContent(std::move(rows), std::move(cues), reel,
-                                            juce::File(record->path).getParentDirectory().getFileName());
+        auto groupName = juce::File(record->path).getParentDirectory().getFileName();
+        for (auto* host : hosts)
+            host->setContent(rows, cues, reel, groupName);
     }
 
     // A cue marked by hand is edited from birth: nobody swept a range across fifteen stems by
@@ -1922,9 +2703,11 @@ public:
     {
         auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt;
         if (!record || !record->groupId || endSeconds <= startSeconds) return;
-        auto id = database->createSegment(*record->groupId, std::nullopt, startSeconds, endSeconds, "{}",
-                                           "manual");
-        database->markSegmentEdited(id);
+        performUndoable("Add Cue", [&] {
+            auto id = database->createSegment(*record->groupId, std::nullopt, startSeconds, endSeconds,
+                                               "{}", "manual");
+            database->markSegmentEdited(id);
+        });
         reloadSegmentsForSelection();
         fileList->refresh();
     }
@@ -1952,17 +2735,28 @@ private:
         auto segment = findSegmentById(*record, segmentId);
         if (!segment) return;
 
+        // A group-scoped band IS a cue, and clicking one should open the cue's own menu --
+        // which says "all stems", offers the timecode editor, and can get to the cue
+        // workspace. Routing both kinds here was how a cue ended up wearing a menu titled
+        // "Delete Segment" (review round 7, items 1 and 4: clicking a cue is one of the two
+        // ways in the user asked for).
+        if (segment->groupId)
+        {
+            showCueMenu(segmentId);
+            return;
+        }
+
         juce::PopupMenu menu;
         menu.addSectionHeader(formatSegmentTime(segment->startSeconds)
                                + juce::String(juce::CharPointer_UTF8("\xe2\x80\x93"))
-                               + formatSegmentTime(segment->endSeconds)
-                               + (segment->groupId ? juce::String("  (synced set)") : juce::String()));
+                               + formatSegmentTime(segment->endSeconds) + "  (this file only)");
         menu.addItem("Edit Tags...", [this, segmentId] { editSegmentTags(segmentId); });
         menu.addItem("Export Segments...", [this] { exportSegments(); });
         menu.addSeparator();
         menu.addItem("Delete Segment", [this, segmentId] {
-            database->deleteSegment(segmentId);
+            performUndoable("Delete Segment", [&] { database->deleteSegment(segmentId); });
             reloadSegmentsForSelection();
+            fileList->refresh();
         });
         menu.showMenuAsync(juce::PopupMenu::Options());
     }
@@ -1977,34 +2771,60 @@ private:
         return std::nullopt;
     }
 
+    // File-scoped rows only (review round 7, item 1). This list used to splice the synced
+    // set's cues in beside them under a "(synced set)" suffix, which made "Segments (12)"
+    // on a stem with no segments of its own -- the clearest instance of the two objects
+    // being presented as one. Cues have their own list now; see showCueList.
     void showSegmentsList()
     {
         auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt;
         if (!record) return;
 
-        std::vector<mira::SegmentRecord> all = database->findSegmentsForFile(record->id);
-        if (record->groupId)
-        {
-            auto groupSegments = database->findSegmentsForGroup(*record->groupId);
-            all.insert(all.end(), groupSegments.begin(), groupSegments.end());
-        }
+        auto all = database->findSegmentsForFile(record->id);
         std::sort(all.begin(), all.end(),
                    [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
 
         juce::PopupMenu menu;
+        menu.addSectionHeader("Segments \xe2\x80\x94 this file only");
         for (const auto& segment : all)
-        {
-            auto label = formatSegmentTime(segment.startSeconds)
-                          + juce::String(juce::CharPointer_UTF8("\xe2\x80\x93"))
-                          + formatSegmentTime(segment.endSeconds);
-            if (segment.groupId) label += "  (synced set)";
-            auto tags = segmentLabel(segment);
-            if (tags.isNotEmpty()) label += "  " + juce::String(juce::CharPointer_UTF8("\xc2\xb7")) + "  " + tags;
-            menu.addItem(label, [this, id = segment.id] { showSegmentMenu(id); });
-        }
+            menu.addItem(segmentRangeLabel(segment), [this, id = segment.id] { showSegmentMenu(id); });
         menu.addSeparator();
         menu.addItem("Export Segments...", [this] { exportSegments(); });
         menu.showMenuAsync(juce::PopupMenu::Options());
+    }
+
+    // The cue counterpart. Same shape deliberately -- the two lists are siblings, and the
+    // thing that tells them apart is the header and the wording, not a different layout.
+    void showCueList()
+    {
+        auto record = selectedFileId != 0 ? database->findById(selectedFileId) : std::nullopt;
+        if (!record || !record->groupId) return;
+
+        auto all = database->findSegmentsForGroup(*record->groupId);
+        std::sort(all.begin(), all.end(),
+                   [](const auto& a, const auto& b) { return a.startSeconds < b.startSeconds; });
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader("Cues \xe2\x80\x94 every stem in the set");
+        auto identity = groupIdentity(*record);
+        for (size_t i = 0; i < all.size(); ++i)
+            menu.addItem(formatSegmentTime(all[i].startSeconds) + "  "
+                              + cueName(identity, all[i], static_cast<int>(i) + 1),
+                          [this, id = all[i].id] { showCueMenu(id); });
+        menu.addSeparator();
+        menu.addItem("Cue Editor...", [this] { showCueEditor(); });
+        menu.showMenuAsync(juce::PopupMenu::Options());
+    }
+
+    // "3:20-4:05 . action" -- shared by both lists so they cannot drift apart.
+    juce::String segmentRangeLabel(const mira::SegmentRecord& segment)
+    {
+        auto label = formatSegmentTime(segment.startSeconds)
+                      + juce::String(juce::CharPointer_UTF8("\xe2\x80\x93"))
+                      + formatSegmentTime(segment.endSeconds);
+        auto tags = segmentLabel(segment);
+        if (tags.isNotEmpty()) label += "  " + juce::String(juce::CharPointer_UTF8("\xc2\xb7")) + "  " + tags;
+        return label;
     }
 
     // Writes through Database::setSegmentHumanField, the same `human` convention
@@ -2045,17 +2865,22 @@ private:
         window->enterModalState(true, juce::ModalCallbackFunction::create([this, window, segmentId](int result) {
             if (result == 1)
             {
-                for (const auto& field : kFields)
-                {
-                    juce::var array = juce::Array<juce::var>();
-                    for (auto& token : juce::StringArray::fromTokens(window->getTextEditorContents(field.name), ",", ""))
-                        if (token.trim().isNotEmpty()) array.append(token.trim());
-                    database->setSegmentHumanField(
-                        segmentId, field.jsonPath,
-                        juce::JSON::toString(array, juce::JSON::FormatOptions {}.withSpacing(juce::JSON::Spacing::none))
-                            .toStdString());
-                }
+                performUndoable("Edit Tags", [&] {
+                    for (const auto& field : kFields)
+                    {
+                        juce::var array = juce::Array<juce::var>();
+                        for (auto& token :
+                              juce::StringArray::fromTokens(window->getTextEditorContents(field.name), ",", ""))
+                            if (token.trim().isNotEmpty()) array.append(token.trim());
+                        database->setSegmentHumanField(
+                            segmentId, field.jsonPath,
+                            juce::JSON::toString(array,
+                                                  juce::JSON::FormatOptions {}.withSpacing(juce::JSON::Spacing::none))
+                                .toStdString());
+                    }
+                });
                 reloadSegmentsForSelection();
+                fileList->refresh();
             }
             delete window;
         }), false);
@@ -2301,7 +3126,8 @@ private:
         {
             // Truly idle: nothing running, nothing waiting — back to the plain dim
             // library-count readout instead of the bold "scanning" one.
-            statusBar->setLeftTextScanning(false);
+            scanActivityText = {};
+            pushActivityText();
             // Analysis may still be running -- don't claim idle on its behalf.
             if (analyzeJob == nullptr) bottomPanel->setActivity(BottomPanel::Activity::idle, {});
             logStore.append(LogStore::Source::scan, "scan finished");
@@ -2312,7 +3138,6 @@ private:
         scanQueue.pop_front();
         folderTree->setRootScanState(scanningRoot, FolderRootScanState::Scanning, 0);
 
-        statusBar->setLeftTextScanning(true);
         bottomPanel->setActivity(BottomPanel::Activity::scanning, {});
         logStore.append(LogStore::Source::scan, "scan started");
         updateScanStatusText(0, {});
@@ -2352,13 +3177,33 @@ private:
                              + juce::String(filesSeen) + " files";
         if (currentFile.isNotEmpty()) text += " " + middleDot + " " + currentFile;
         if (!scanQueue.empty()) text += " (" + juce::String(scanQueue.size()) + " more queued)";
-        statusBar->setLeftText(text);
+        scanActivityText = text;
+        pushActivityText();
         if (isScopeUnderScanningRoot())
         {
             juce::String toolbarText = "Scanning" + ellipsis + " " + juce::String(filesSeen) + " files";
             if (currentFile.isNotEmpty()) toolbarText += " " + middleDot + " " + currentFile;
             fileList->setScanStatusText(toolbarText);
         }
+    }
+
+    // Scan and analyze both run in the background and can overlap, so the one status-bar
+    // activity slot needs a rule rather than two writers racing for it (which is what the
+    // old shared `setLeftText` was). Analysis wins when both are live: it is the one that
+    // takes tens of minutes and the one that was reading as hung. A scan still running
+    // underneath is named at the end rather than dropped, because a folder whose file
+    // count is climbing while it is analyzed should say so.
+    void pushActivityText()
+    {
+        auto dot = juce::String(juce::CharPointer_UTF8("\xc2\xb7"));
+        if (analyzeActivityText.isNotEmpty())
+        {
+            auto text = analyzeActivityText;
+            if (scanActivityText.isNotEmpty()) text += "  " + dot + " scanning";
+            statusBar->setActivityText(text, true);
+            return;
+        }
+        statusBar->setActivityText(scanActivityText, scanActivityText.isNotEmpty());
     }
 
     bool isScopeUnderScanningRoot() const
@@ -2553,8 +3398,59 @@ private:
     {
         auto count = database->queryFiles("1=1").size();
         auto dash = juce::String(juce::CharPointer_UTF8("\xe2\x80\x94"));
-        statusBar->setLeftText(juce::String(count) + " file(s) in " + dbPath
-                                + (count == 0 ? "  " + dash + " add a folder to get started" : ""));
+        libraryCountText = juce::String(count) + " file(s) in " + dbPath
+                            + (count == 0 ? "  " + dash + " add a folder to get started" : "");
+        if (!folderSummaryShown) statusBar->setFolderText(libraryCountText);
+    }
+
+    // "i need to get a status of the folder sowhere in the ui visible totatl numberof file
+    // total time that is ones after the scann" -- what the open folder actually holds, in
+    // the status bar's left slot, replacing the library count while a folder is open.
+    //
+    // Summed from the rows the table already built, each of which read its own header for
+    // the Duration column. So this needs no scan, no analysis and no new database column:
+    // the totals are there the moment the folder's rows land. (`files.duration_seconds`,
+    // still open in Phase 6, is for the question this *cannot* answer -- a total across
+    // folders that aren't open, without re-reading every header.)
+    void updateFolderSummaryText(FileTableModel::ScopeSummary summary, bool loading)
+    {
+        auto scope = fileList->getScope();
+        if (scope.isEmpty())
+        {
+            folderSummaryShown = false;
+            statusBar->setFolderText(libraryCountText);
+            return;
+        }
+        auto middleDot = juce::String(juce::CharPointer_UTF8("\xc2\xb7"));
+        auto ellipsis = juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"));
+        folderSummaryShown = true;
+        juce::String text = juce::File(scope).getFileName();
+        if (loading)
+        {
+            statusBar->setFolderText(text + "  " + middleDot + " reading" + ellipsis);
+            return;
+        }
+        text += "  " + middleDot + " " + juce::String(summary.fileCount)
+                 + (summary.fileCount == 1 ? " file" : " files");
+        if (summary.totalSeconds > 0.0)
+            text += "  " + middleDot + " " + formatRunningTime(summary.totalSeconds);
+        // Never folded into the total as zero: a header that wouldn't read is a real
+        // unknown, and a running time quietly short by six files is worse than one that
+        // says so.
+        if (summary.unknownDurations > 0)
+            text += " (" + juce::String(summary.unknownDurations) + " unknown)";
+        statusBar->setFolderText(text);
+    }
+
+    // Hours only when there are hours -- "4h 12m" for an album, "6m 31s" for a folder of
+    // loops, rather than a uniform 0:06:31 that reads as a timecode.
+    static juce::String formatRunningTime(double seconds)
+    {
+        auto total = static_cast<int64_t>(seconds + 0.5);
+        auto h = total / 3600, m = (total % 3600) / 60, sec = total % 60;
+        if (h > 0) return juce::String(h) + "h " + juce::String(m) + "m";
+        if (m > 0) return juce::String(m) + "m " + juce::String(sec) + "s";
+        return juce::String(sec) + "s";
     }
 
     // "so if i analyse different files in a different folder then i dono which file is
@@ -2623,11 +3519,16 @@ private:
         // than showing as a stalled "0/12".
         analyzeCurrentPath = path;
         analyzeCurrentStage = n == 0 ? "decoding" : "starting";
+        analyzeCurrentIsDecoding = (n == 0);
+        analyzeCurrentFileStartMs = juce::Time::getMillisecondCounter();
         if (n > 0)
         {
             analyzeCurrentIndex = n;
             analyzeCurrentTotal = m;
         }
+        // The Status column's "analyzing" is exactly this one file, so it has to be
+        // restated every time the CLI moves on to the next one.
+        updateAnalysisState();
         updateAnalyzeReadout();
     }
 
@@ -2637,28 +3538,100 @@ private:
         updateAnalyzeReadout();
     }
 
+    // The CLI's stage names are written for a --verbose log, where naming the actual
+    // library is the point ("rhythm (essentia + beat_this_cpp)"). In a status bar that
+    // width is better spent on the file name, and the parenthetical says nothing to
+    // someone watching a progress line. Shortened here rather than in the CLI, which has
+    // a different reader.
+    //
+    // The two embeddings keep distinct labels on purpose: they run back to back and are
+    // the two most expensive stages (~27% of a file's analysis each, measured), so
+    // collapsing both to "embedding" would show the same word for a sixth of the run and
+    // read as stuck -- the exact thing this readout exists to disprove.
+    static juce::String shortStageName(const juce::String& stage)
+    {
+        if (stage.startsWith("embedding (discogs-effnet)")) return "embedding";
+        if (stage.startsWith("embedding (dclap)")) return "text-search embedding";
+        if (stage.startsWith("DSP descriptors")) return "descriptors";
+        if (stage.startsWith("content gate")) return "content gate";
+        if (stage.startsWith("note transcription")) return "transcription";
+        if (stage.startsWith("active-region")) return "active regions";
+        // Everything else: drop the parenthetical, keep the name ("rhythm (essentia +
+        // beat_this_cpp)" -> "rhythm", "key (libKeyFinder)" -> "key").
+        auto trimmed = stage.upToFirstOccurrenceOf(" (", false, false).trim();
+        return trimmed.isEmpty() ? stage : trimmed;
+    }
+
     void updateAnalyzeReadout()
     {
         if (analyzeCurrentPath.isEmpty())
         {
-            fileList->setScanStatusText({});
+            analyzeActivityText = {};
+            pushActivityText();
             bottomPanel->setActivity(BottomPanel::Activity::idle, {});
+            stopAnalyzeElapsedTimer();
             return;
         }
         auto dot = juce::String(juce::CharPointer_UTF8("\xc2\xb7"));
-        juce::String text = "Analyzing";
-        if (analyzeCurrentTotal > 0)
-            text += " " + juce::String(analyzeCurrentIndex) + "/" + juce::String(analyzeCurrentTotal);
-        text += " " + dot + " " + juce::File(analyzeCurrentPath).getFileName();
-        if (analyzeCurrentStage.isNotEmpty()) text += " " + dot + " " + analyzeCurrentStage;
+        auto ellipsis = juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"));
+
+        // The decode pass runs over every candidate before any analysis starts -- on this
+        // machine 37 seconds for a 38-file album, during which there is no "file N of M"
+        // to report. Naming the pass (and the file it is on) is what keeps that stretch
+        // from reading as a stalled "0/38".
+        juce::String text;
+        if (analyzeCurrentIsDecoding)
+            text = "Decoding" + ellipsis + " " + dot + " " + juce::File(analyzeCurrentPath).getFileName();
+        else
+        {
+            text = "Analyzing";
+            if (analyzeCurrentTotal > 0)
+                text += " " + juce::String(analyzeCurrentIndex) + "/" + juce::String(analyzeCurrentTotal);
+            text += " " + dot + " " + juce::File(analyzeCurrentPath).getFileName();
+            if (analyzeCurrentStage.isNotEmpty()) text += " " + dot + " " + shortStageName(analyzeCurrentStage);
+            // Elapsed on the *current file*, ticking every second. The stages already
+            // move every few seconds, but a running clock is the one part of this line
+            // that cannot stall while work is happening -- which is what "shouldnt look
+            // like its stuck" actually asks for.
+            text += " " + dot + " " + formatElapsed(juce::Time::getMillisecondCounter() - analyzeCurrentFileStartMs);
+        }
         if (!analyzeQueue.empty()) text += " (" + juce::String(analyzeQueue.size()) + " more queued)";
-        fileList->setScanStatusText(text);
+        analyzeActivityText = text;
+        pushActivityText();
+        startAnalyzeElapsedTimer();
         // The panel gets the short form: it has a dot and a strip of header, not a status
         // bar's full width.
         bottomPanel->setActivity(BottomPanel::Activity::analyzing,
                                   juce::File(analyzeCurrentPath).getFileName()
-                                      + (analyzeCurrentStage.isNotEmpty() ? " " + dot + " " + analyzeCurrentStage
-                                                                           : juce::String()));
+                                      + (analyzeCurrentStage.isNotEmpty()
+                                             ? " " + dot + " " + shortStageName(analyzeCurrentStage)
+                                             : juce::String()));
+    }
+
+    static juce::String formatElapsed(uint32_t ms)
+    {
+        auto total = static_cast<int>(ms / 1000);
+        return juce::String(total / 60) + ":" + juce::String(total % 60).paddedLeft('0', 2);
+    }
+
+    // Runs only while something is being analyzed, purely to re-render the elapsed clock;
+    // every other part of the readout is already event-driven off the CLI's own output.
+    // One second is the coarsest tick that still visibly moves.
+    void startAnalyzeElapsedTimer()
+    {
+        if (!isTimerRunning()) startTimer(1000);
+    }
+    void stopAnalyzeElapsedTimer() { stopTimer(); }
+
+    void timerCallback() override
+    {
+        if (analyzeCurrentPath.isEmpty() || analyzeCurrentIsDecoding)
+        {
+            // Nothing with an elapsed clock on screen -- don't keep waking the UI thread.
+            if (analyzeCurrentPath.isEmpty()) stopTimer();
+            return;
+        }
+        updateAnalyzeReadout();
     }
 
     void onAnalyzeProgress(int n, int m, const juce::String& finishedPath)
@@ -2696,6 +3669,7 @@ private:
         analyzeJob.reset();
         analyzeCurrentPath = {};
         analyzeCurrentStage = {};
+        analyzeCurrentIsDecoding = false;
         analyzeCurrentIndex = analyzeCurrentTotal = 0;
         updateAnalyzeReadout();
         logStore.append(LogStore::Source::app, success ? "analyze batch finished"
@@ -2722,12 +3696,31 @@ public:
     void setAnalyzeOptions(AnalyzeOptions o) { analyzeOptions = o; }
 
 private:
+    // Exactly one file is ever being analyzed, so exactly one row may say so.
+    //
+    // This used to hand the whole running batch to the table as "analyzing", which meant a
+    // 38-file album showed 38 accent-coloured `analyzing...` rows at once, none of them
+    // changing for the ~49 seconds each file actually takes -- indistinguishable from a
+    // hang, and the direct cause of "the status of analysis is not correct and its
+    // confusing". The CLI has told us which file is really running since `starting: N/M`
+    // was added; this is the consumer it was missing.
+    //
+    // Nothing is "analyzing" during the decode pass: that runs over every candidate before
+    // any analysis begins, so naming one row there would be a lie and pointing at each in
+    // turn would just flicker. The status bar says "decoding" for that stretch instead.
     void updateAnalysisState()
     {
+        std::set<juce::String> analyzing;
+        if (!analyzeCurrentIsDecoding && analyzeCurrentPath.isNotEmpty()
+            && activeAnalyzeBatch.count(analyzeCurrentPath) > 0)
+            analyzing.insert(analyzeCurrentPath);
+
         std::set<juce::String> queued;
+        for (const auto& p : activeAnalyzeBatch)
+            if (analyzing.count(p) == 0) queued.insert(p);
         for (const auto& batch : analyzeQueue)
             for (const auto& p : batch.paths) queued.insert(p);
-        fileList->setAnalysisState(activeAnalyzeBatch, queued);
+        fileList->setAnalysisState(std::move(analyzing), std::move(queued));
     }
 
     const MiraLookAndFeel& laf;
@@ -2774,12 +3767,35 @@ private:
     // What the CLI is doing right now, as reported by its own `starting:`/`stage:` lines.
     juce::String analyzeCurrentPath, analyzeCurrentStage;
     int analyzeCurrentIndex = 0, analyzeCurrentTotal = 0;
+    // True while the CLI is in its up-front decode pass (`decoding:`, reported as 0/0)
+    // rather than analyzing a numbered file. Keeps the Status column honest -- nothing is
+    // "analyzing" yet -- and switches the status bar to naming the pass.
+    bool analyzeCurrentIsDecoding = false;
+    uint32_t analyzeCurrentFileStartMs = 0; // for the elapsed clock on the current file
+    // The status bar's left slot when no folder is open. Cached because a folder summary
+    // temporarily takes that slot and has to be able to put this back without re-counting
+    // the whole library.
+    juce::String libraryCountText;
+    bool folderSummaryShown = false;
+    // The two background activities' own readouts; pushActivityText decides which the
+    // single status-bar slot actually shows.
+    juce::String scanActivityText, analyzeActivityText;
 
     // Every line the analyzer prints, kept for the Window > Log... window. Declared here
     // rather than as a global so it dies with the component that owns the jobs feeding it.
     LogStore logStore;
     std::unique_ptr<LogWindow> logWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;
+    // The in-window Cues view. Owned here (it needs the database through this class's
+    // callbacks) and merely positioned by FileTableComponent.
+    std::unique_ptr<CueEditorComponent> cueView;
+    juce::UndoManager undoManager;
+    // Nothing in mira_ui had one, so every getCellTooltip in the app was dead code. The
+    // child rows need it: "auto cue" vs "auto segment" is the one place two different kinds
+    // of object share a list and a vocabulary.
+    juce::TooltipWindow tooltipWindow { nullptr, 600 };
+    bool warnedAboutCueScope = false; // the once-per-session cue-scope dialog
+    bool matrixShownBeforeCueView = true; // restored when the Cues view closes
 
 public:
     // The macOS menu bar bakes each item's enabled/ticked state in when the menu is BUILT,
@@ -2918,12 +3934,19 @@ public:
     // menus the waveform's header and right-click show, in the macOS menu bar -- built by
     // the same functions, so they cannot drift apart, and dispatched through the same
     // single action id space.
-    std::function<void(juce::PopupMenu&)> buildTagsMenu, buildSegmentsMenu, buildViewMenu;
+    std::function<void(juce::PopupMenu&)> buildTagsMenu, buildSegmentsMenu, buildCuesMenu, buildViewMenu;
+    std::function<void()> onUndo, onRedo;
+    std::function<bool()> canUndo, canRedo;
+    std::function<juce::String()> undoName, redoName;
     std::function<void(int)> onAction;
 
     juce::StringArray getMenuBarNames() override
     {
-        return {"File", "Analyze", "Tags", "Segments", "View", "Window"};
+        // "Cues" is top-level rather than a section inside Segments -- review round 7, item
+        // 4: "its own entry in the macOS menu bar ("Cues" as a top-level menu rather than a
+        // section inside Segments)". It sits right after Segments because the two are
+        // siblings, file-scoped and group-scoped.
+        return {"File", "Edit", "Analyze", "Tags", "Segments", "Cues", "View", "Window"};
     }
 
     juce::PopupMenu getMenuForIndex(int topLevelMenuIndex, const juce::String&) override
@@ -2936,29 +3959,46 @@ public:
         }
         else if (topLevelMenuIndex == 1)
         {
+            // Review round 7 item 3. Cmd+Z / Shift+Cmd+Z are declared here so macOS shows
+            // them; MainComponent::keyPressed handles them too, for when focus is inside a
+            // child that would otherwise swallow the key.
+            menu.addItem(4, undoName ? undoName() : juce::String("Undo"), canUndo && canUndo(), false);
+            menu.addItem(5, redoName ? redoName() : juce::String("Redo"), canRedo && canRedo(), false);
+            return menu;
+        }
+        else if (topLevelMenuIndex == 2)
+        {
             auto options = getAnalyzeOptions ? getAnalyzeOptions() : AnalyzeOptions {};
             menu.addSectionHeader("Extra stages (slower)");
             menu.addItem(10, "Chords (Chordino)", true, options.chords);
             menu.addItem(11, "Transcription (MIDI notes)", true, options.transcribe);
             menu.addItem(12, "Recheck Tempo (Essentia cross-check)", true, options.recheckTempo);
+            menu.addItem(14, "Text Search Index (DCLAP)", true, options.dclap);
             // The costs are the reason these are off by default, so they belong in the
-            // menu rather than only in TASKS.md — measured on a 5:08 song.
+            // menu rather than only in TASKS.md — measured on a 5:08 song, and the DCLAP
+            // figure on a 4:05 track.
             menu.addSeparator();
             menu.addItem(13, "Chords +15s/file, Transcription +4s/file", false, false);
-        }
-        else if (topLevelMenuIndex == 2)
-        {
-            if (buildTagsMenu) buildTagsMenu(menu);
+            menu.addItem(15, "Text Search +27% per file — needed for search by description",
+                          false, false);
         }
         else if (topLevelMenuIndex == 3)
         {
-            if (buildSegmentsMenu) buildSegmentsMenu(menu);
+            if (buildTagsMenu) buildTagsMenu(menu);
         }
         else if (topLevelMenuIndex == 4)
         {
-            if (buildViewMenu) buildViewMenu(menu);
+            if (buildSegmentsMenu) buildSegmentsMenu(menu);
         }
         else if (topLevelMenuIndex == 5)
+        {
+            if (buildCuesMenu) buildCuesMenu(menu);
+        }
+        else if (topLevelMenuIndex == 6)
+        {
+            if (buildViewMenu) buildViewMenu(menu);
+        }
+        else if (topLevelMenuIndex == 7)
         {
             // Audio Settings lives here rather than in its own one-item top-level menu now
             // that there is a Window menu to hold it and the log.
@@ -2974,12 +4014,16 @@ public:
         if (menuItemID == 1 && onAddFolder) onAddFolder();
         else if (menuItemID == 2 && onRescan) onRescan();
         else if (menuItemID == 3 && onAudioSettings) onAudioSettings();
+        else if (menuItemID == 4 && onUndo) onUndo();
+        else if (menuItemID == 5 && onRedo) onRedo();
         else if (menuItemID >= 700 && onAction) onAction(menuItemID); // Tags/Segments/View share one id space
-        else if (menuItemID >= 10 && menuItemID <= 12 && getAnalyzeOptions && setAnalyzeOptions)
+        else if ((menuItemID >= 10 && menuItemID <= 12) || menuItemID == 14)
         {
+            if (!getAnalyzeOptions || !setAnalyzeOptions) return;
             auto options = getAnalyzeOptions();
             if (menuItemID == 10) options.chords = !options.chords;
             else if (menuItemID == 11) options.transcribe = !options.transcribe;
+            else if (menuItemID == 14) options.dclap = !options.dclap;
             else options.recheckTempo = !options.recheckTempo;
             setAnalyzeOptions(options);
             menuItemsChanged(); // repaint the checkmarks
@@ -3010,6 +4054,15 @@ public:
         menuModel.onRescan = [this] { mainWindow->getMainComponent().rescanCurrentOrAll(); };
         menuModel.buildTagsMenu = [this](juce::PopupMenu& menu) {
             mainWindow->getMainComponent().buildTagsMenu(menu);
+        };
+        menuModel.onUndo = [this] { mainWindow->getMainComponent().undoLastEdit(); };
+        menuModel.onRedo = [this] { mainWindow->getMainComponent().redoLastEdit(); };
+        menuModel.canUndo = [this] { return mainWindow->getMainComponent().canUndo(); };
+        menuModel.canRedo = [this] { return mainWindow->getMainComponent().canRedo(); };
+        menuModel.undoName = [this] { return mainWindow->getMainComponent().undoDescription(); };
+        menuModel.redoName = [this] { return mainWindow->getMainComponent().redoDescription(); };
+        menuModel.buildCuesMenu = [this](juce::PopupMenu& menu) {
+            mainWindow->getMainComponent().buildCuesMenu(menu);
         };
         menuModel.buildSegmentsMenu = [this](juce::PopupMenu& menu) {
             mainWindow->getMainComponent().buildSegmentsMenu(menu);

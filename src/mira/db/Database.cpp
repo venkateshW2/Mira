@@ -318,6 +318,50 @@ void Database::clearHumanFields(int64_t fileId) {
     update.exec();
 }
 
+void Database::setHuman(int64_t fileId, const std::string& humanJson) {
+    SQLite::Statement stmt(db, "UPDATE files SET human = json(?) WHERE id = ?");
+    stmt.bind(1, humanJson);
+    stmt.bind(2, fileId);
+    stmt.exec();
+}
+
+void Database::setSegmentHuman(int64_t segmentId, const std::string& humanJson) {
+    SQLite::Statement stmt(db, "UPDATE segments SET human = json(?) WHERE id = ?");
+    stmt.bind(1, humanJson);
+    stmt.bind(2, segmentId);
+    stmt.exec();
+}
+
+int64_t Database::createSegmentWithId(int64_t id, std::optional<std::string> groupId,
+                                       std::optional<int64_t> fileId, double startSeconds,
+                                       double endSeconds, const std::string& humanJson,
+                                       const std::string& source) {
+    SQLite::Statement insert(db,
+        "INSERT INTO segments (id, group_id, file_id, start_seconds, end_seconds, human, created_at, source) "
+        "VALUES (?, ?, ?, ?, ?, json(?), ?, ?)");
+    insert.bind(1, id);
+    if (groupId) insert.bind(2, *groupId); else insert.bind(2);
+    if (fileId) insert.bind(3, *fileId); else insert.bind(3);
+    insert.bind(4, startSeconds);
+    insert.bind(5, endSeconds);
+    insert.bind(6, humanJson);
+    insert.bind(7, static_cast<int64_t>(std::time(nullptr)));
+    insert.bind(8, source);
+    insert.exec();
+    return id;
+}
+
+std::vector<Database::SegmentAnalysisRow> Database::segmentAnalysisRows(int64_t segmentId) {
+    std::vector<SegmentAnalysisRow> out;
+    SQLite::Statement q(db,
+        "SELECT file_id, machine, analyzed_at FROM segment_analysis WHERE segment_id = ?");
+    q.bind(1, segmentId);
+    while (q.executeStep())
+        out.push_back({ q.getColumn(0).getInt64(), q.getColumn(1).getString(),
+                        q.getColumn(2).getInt64() });
+    return out;
+}
+
 int64_t Database::createSegment(std::optional<std::string> groupId, std::optional<int64_t> fileId,
                                  double startSeconds, double endSeconds, const std::string& humanJson,
                                  const std::string& source) {

@@ -281,6 +281,8 @@ add_executable(mira
   mira/analyze/OrtEnv.cpp
   mira/analyze/Embedding.cpp
   mira/analyze/DclapEmbedding.cpp
+  mira/analyze/ClapText.cpp
+  mira/analyze/RobertaTokenizer.cpp
   mira/analyze/ContentGate.cpp
   mira/analyze/ClassificationHead.cpp
   mira/analyze/MoodTheme.cpp
@@ -309,6 +311,9 @@ target_compile_definitions(mira PRIVATE
   MIRA_BASIC_PITCH_MODEL="${BASICPITCH_ROOT}/ort-model/model.onnx"
   MIRA_EFFNET_MODEL="${MODELS_ROOT}/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx"
   MIRA_DCLAP_AUDIO_MODEL="${MODELS_ROOT}/similarity-embeddings/dclap/model_epoch_36.onnx"
+  MIRA_DCLAP_TEXT_MODEL="${MODELS_ROOT}/similarity-embeddings/dclap/clap_text_model.onnx"
+  MIRA_DCLAP_TEXT_VOCAB="${MODELS_ROOT}/similarity-embeddings/dclap/roberta-vocab.tsv"
+  MIRA_DCLAP_TEXT_MERGES="${MODELS_ROOT}/similarity-embeddings/dclap/roberta-merges.txt"
   MIRA_MOODTHEME_MODEL="${MODELS_ROOT}/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx"
   MIRA_INSTRUMENT_MODEL="${MODELS_ROOT}/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.onnx"
   MIRA_DANCEABILITY_MODEL="${MODELS_ROOT}/classification-heads/danceability/danceability-discogs-effnet-1.onnx"

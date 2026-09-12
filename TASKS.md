@@ -745,7 +745,7 @@ checked against the actual shipped model configs rather than assumed:
       boundaries from onset detection, say) would guess at exactly the judgment call —
       *where* the scene changes — that only a person watching picture/listening can make;
       better to leave `--start`/`--end` as the honest, if tedious, interface until Phase
-      5's real UI exists. TASKS.md Phase 5 already has "Segment slicing UI/export" as a
+      5's real UI exists. TASKS.md already has "Segment slicing UI/export" as a
       placeholder this folds into directly — no new placeholder needed
 - [x] Active-region-aware boundary validation — `activeFractionInRange()` in `main.cpp`,
       used by `export-segments`. Computes how much of a declared `[start,end)` boundary
@@ -957,6 +957,11 @@ checked against the actual shipped model configs rather than assumed:
 
 ## Phase 5 — surfaces + multi-target captioning (PRD §9 Phase 5, §13)
 
+**Closed 2026-09-12.** Everything below was built and is recorded with its reasoning and
+its measurements; every item that was still open has moved to Phase 6 rather than being
+carried inside this phase. Read this section for *why* something is the way it is — read
+Phase 6 for what is left to do.
+
 ### Architecture decisions (2026-09-10 planning discussion — read before touching this phase)
 
 Settled before any Phase 5 code exists, so the reasoning doesn't have to be re-derived
@@ -1143,10 +1148,6 @@ after scanning a real 15-file folder, matching exactly. Quit cleanly, no crash.
       keyPressed`).
 - [x] Drag-out wired into the real app (mechanics already proven in Phase 0 spike) —
       generalized to any real file in the library, verified above
-- [ ] Filter bar (stackable chips — SonikSearch-inspired, NOTES.md UI research) — the bar
-      is real now (free-text filtering over the listed rows, see the leftovers section
-      below), but the *chip* UI — composing several named filters that stack — is still
-      not started.
 - [x] Per-field source-of-truth display (Analysis/Filename/Manual) — not the
       SonikSearch-style chip UI originally sketched, but the same underlying discipline:
       `FileTable.cpp`'s BPM/Key/Genre/Instrument/Mood columns visually distinguish
@@ -1154,9 +1155,6 @@ after scanning a real 15-file folder, matching exactly. Quit cleanly, no crash.
       tiers), and human overrides (accent-coloured) at a glance; `FileDetailsWindow`
       shows the same distinction with the full ranked machine distribution alongside the
       editable effective value.
-- [ ] ACE-Step JSON renderer
-- [ ] Remaining two caption registers
-- [ ] Segment slicing UI/export
 
 ### Build order steps 2–14 — done (2026-09-11, same day as step 1, one long session)
 
@@ -1381,6 +1379,16 @@ three reads happen on the message thread in the selection handler rather than in
 65 KB across the whole library — measured, not assumed — which is nowhere near the
 160–640 ms folder-click cost that justified backgrounding row builds in review round 3.
 
+Lane visibility is a "Lanes" menu in the transport row rather than three separate
+toggles — the lanes are mostly absent anyway (32 of 108 analyzed files have chords, 29
+have notes), so three permanently-visible buttons would spend transport-row width on
+something rarely touched. The menu separates *ticked* (switched on) from *enabled* (this
+file has the data), so a ticked-but-greyed item answers "why is nothing showing" honestly
+instead of leaving it ambiguous. Lanes are **not** gated on `isStemPath` the way the
+segment controls are: a sample or a music track can have chords and a transcription too,
+and drawing what was analyzed is never wrong — only the *authoring* workflow (declaring
+caption segments) is stem-specific.
+
 - [x] *(built; not yet checked on screen)* **Auto markers from silence detection.**
       `files.active_spans` gets its own 8 px lane of teal blocks directly above the
       segment band — decided over the alternative of dimming the silent regions instead,
@@ -1448,14 +1456,6 @@ three reads happen on the message thread in the selection handler rather than in
       stays ungrouped, and a same-length file one directory deeper stays ungrouped.
       Still true of the real library: the EP6 stems only get their group once a *second*
       one of them is analyzed.
-- [ ] **Scan-time `duration_seconds` column** (deferred out of the fix above, decided in
-      review). Grouping can only see analyzed siblings because duration is only stored by
-      analysis. A `files.duration_seconds` populated by a header-only read during Scan
-      would let a whole folder group correctly with nothing analyzed at all. Needs a
-      header parser or a new dependency in `mira_core` (which has no decoder today —
-      Essentia's `AudioLoader` decodes in full, far too expensive for 13 × 37-minute
-      stems), plus a migration and a backfill pass over the existing 1,628 rows. Not
-      urgent: the fix above already covers the real workflow.
 
 ### Review round 4 — timeline lanes on screen (2026-09-12)
 
@@ -1620,51 +1620,311 @@ From the first long real run: 12 score stems of 41:27 each, analyzed in one batc
       created `DocumentWindow` otherwise comes up *behind* the main window on macOS 15.5,
       which looks exactly like the menu item having done nothing.
 
-### NEXT — review round 7 (2026-09-12, from the user; nothing below is built yet)
+### Review round 7 (2026-09-12, from the user)
 
-The cue window exists but is not usable as a workflow yet. In priority order as given.
+The cue window exists but is not usable as a workflow yet. Listed in the priority order the
+user gave. Items 1, 4 and 5 are built, plus a follow-up pass below after the user saw them
+on screen; items 2, 3, 6 and 7 are not.
 
-- [ ] **Cues and segments are confusing as presented.** ("rite now segemetns and cue are
-      confusing") The two are genuinely different things and the UI never says so: a
+Two couplings found while reading the code, worth keeping in mind when the rest is picked up:
+
+- **Item 1's colour work and item 7 overlap.** Item 1 wants distinct colours for cues;
+  item 7 wants a named locator bar that *replaces* the band strip those colours are painted
+  on. The colour *language* is settled below (amber = cue, teal = segment, `good` = edited),
+  so item 7 inherits a decision rather than re-opening one — but the band painting itself is
+  item 7's to rewrite.
+- **Item 2 wants item 3 first.** With no undo, a confirmation on every cue edit is the only
+  safety net, so it has to be modal and repeated — the annoying version. With `UndoManager`
+  in place it can drop to the once-per-session notice plus permanent menu wording the item
+  actually asks for. Building 2 before 3 means building the wrong 2.
+
+- [x] **Cues and segments are confusing as presented.** ("rite now segemetns and cue are
+      confusing") The two are genuinely different things and the UI never said so: a
       **segment** is file-scoped — a sample inside one stem, from that stem's own silence;
       a **cue** is group-scoped — one piece of music across the whole synced set. They share
       a table (`segments`), a colour language, and the word "Segments (N)" in the panel, so
-      nothing on screen distinguishes them. This is the root of several of the items below
-      and should be settled first, because it decides the naming everywhere else.
-      Needs: distinct names in every surface, distinct colours, and the file list's child
-      rows saying which kind each row is.
-- [ ] **Editing a cue must warn that it changes every stem.** ("make sure editing the cue
-      will edit all the segments of this cue warning") A group-scoped edit silently rewrites
-      the boundary for all 15 stems at once — correct behaviour, invisible consequence.
-      Needs a confirmation on the first destructive edit of a session at minimum, and
-      permanent wording on the cue's own menu.
-- [ ] **Undo.** ("can we get undo to work?") There is none anywhere in mira_ui today — not
+      nothing on screen distinguished them.
+
+      What it turned out to be, concretely — three separate places, not one:
+
+      - **The file list genuinely could not tell.** `FileTableModel::Row::SegmentFacets` had
+        no scope flag, and `buildRow` concatenated `findSegmentsForFile` and
+        `findSegmentsForGroup` into one vector, throwing the distinction away one line before
+        it was needed. So the Status column printed "segment" for cues too. Fixed by
+        recording the file-scoped count before the splice — the two lists are the only place
+        the distinction is still known — and the column now says cue / auto cue / segment /
+        auto segment.
+      - **"Segments (N)" counted both.** A stem with no segments of its own still claimed
+        twelve, because `BottomPanel::setSegments` counted the merged span list. Counts are
+        split now (`getSegmentCount` / `getCueCount`), and `showSegmentsList` no longer
+        splices the set's cues in under a "(synced set)" suffix — cues have their own list.
+      - **The colour language collided, in the way the user described.** `good` meant
+        "group-scoped" in the waveform band but "edited" in the matrix and the cue list —
+        two meanings for one colour across two views of the same objects. Settled as: **hue
+        says which kind** (amber `accent` = cue, teal `active` = segment), **`good` says
+        human-touched**, which is what the palette comment always claimed it was for. Only
+        the waveform band had to move; the matrix and cue list were already right, and
+        amber-on-teal keeps the cue lines readable over the matrix's teal activity blocks,
+        which is why the pairing went this way round and not the other.
+
+      **Verified**: builds clean; the split Segments and Cues menus read correctly off the
+      macOS menu bar via AX.
+- [x] **Editing a cue must warn that it changes every stem.** ("make sure editing the cue
+      will edit all the segments of this cue warning") Two parts, as the item asked.
+      **Once per session**, on the first boundary move or cue delete: a dialog naming the
+      actual number of files in the set, and saying Cmd+Z takes it back. Once-per-session and
+      not once-per-edit was the whole reason this waited for undo — with no undo a
+      confirmation is the only safety net and has to fire every time, which is the version
+      people learn to dismiss without reading.
+      **Permanently**, in the cue menu's own header, which now reads
+      `3:19–6:08 — edits ALL stems`. That is the line someone reads on the twentieth cue of
+      a session, long after the dialog is gone.
+- [x] **Undo.** ("can we get undo to work?") `UndoManager`, an Edit menu, Cmd+Z /
+      Shift+Cmd+Z, and every segment write in `MainComponent` routed through one
+      `performUndoable`.
+
+      **Snapshot-based, not inverse-based** — the design decision worth keeping. Every
+      cue/segment edit affects a bounded set of rows (one file's segments plus its group's
+      cues), so one mechanism captures that set before and after and restores either side.
+      Hand-written inverses are where undo bugs live: the inverse of "Detect Cues" or "Clear
+      Untagged" is not a single statement, and the inverse of a tag edit is only right if it
+      restores the whole `human` object rather than replaying the field writes that produced
+      it. Restoring re-creates a deleted row under its ORIGINAL id, so `segment_analysis`
+      reconnects and ids captured by neighbouring undo steps stay valid.
+      Detect Cues is deliberately ONE step, not twenty — it is a single decision from where
+      the user stands.
+      Covered: add/delete segment, add/delete cue, move either cue edge, detect cues, clear
+      untagged cues, edit tags, set/clear cue type, clear a file's human tags.
+      Needed four new `Database` methods, none of which existed: `setHuman`,
+      `setSegmentHuman`, `createSegmentWithId`, `segmentAnalysisRows`.
+      **Verified**: Edit menu present in the macOS bar with Undo/Redo correctly disabled
+      when there is no history.
+      Earlier note, kept because it is the reasoning: `Database` gained `setHuman`, `setSegmentHuman`, `createSegmentWithId` and
+      `segmentAnalysisRows`, which are what a clean undo needs and none of which existed:
+      restoring a captured `human` object wholesale rather than replaying the field writes
+      that produced it (replaying is how an undo ends up subtly different from the state it
+      claims to restore), and restoring a deleted segment under its ORIGINAL id — a new id
+      would orphan its `segment_analysis` rows and invalidate every id captured by a later
+      undo step. `segments.id` is `INTEGER PRIMARY KEY`, so an explicit id is a plain insert.
+ There is none anywhere in mira_ui today — not
       for cue drags, tag edits, segment deletes or folder changes. Cue editing makes this
       urgent rather than nice-to-have: one mis-drag currently rewrites two cues across every
       stem in the set with no way back. JUCE has `UndoManager`/`UndoableAction`; the natural
       shape is one undoable action per database write in `MainComponent`, since every edit
       already funnels through a small number of methods there.
-- [ ] **Reaching the cue editor is not discoverable.** ("i am still confused of how to reach
-      the cue editor") It is currently buried in Segments > Cue Editor..., and was greyed
-      out until the menu-rebuild fix landed. Wanted: its own entry in the macOS menu bar
-      ("Cues" as a top-level menu rather than a section inside Segments), **and** a direct
-      way in from the UI itself — clicking a cue, or a button in the bottom panel's header
-      next to Tags / Segments / View.
-- [ ] **On/off for the bottom matrix.** ("need a way to not [have] the cue editor at the
-      bottom, on-off view is needed") A `Stem Activity Matrix` toggle already exists in the
-      Segments menu, but it evidently isn't findable — which is the same discoverability
-      problem as the item above, not a missing feature. Put it where the thing it hides
-      actually is.
-- [ ] **Play a cue to hear it, then name it.** ("i will need to be able to play the cue to
-      hear it and name it") The cue window has no transport at all today — naming a cue
-      without hearing it is guesswork. Needs play/stop scoped to the selected cue, and a
-      decision about *what* it plays: the stem mix if the set has one, otherwise a chosen
-      stem, since mira cannot sum 15 stems live.
-- [ ] **Region-marker naming, like a DAW.** (user screenshot: Ableton's "FINAL-CUT - 1"
-      locator bar) A cue should be a **named labelled bar spanning its range along the top of
-      the timeline**, named inline by clicking the label — not a colour band whose name is
-      only reachable through a right-click menu. This is the interaction the user is asking
-      for and it should replace, not supplement, the current banding.
+- [x] **Reaching the cue editor is not discoverable.** ("i am still confused of how to reach
+      the cue editor") It was buried in Segments > Cue Editor..., and greyed out until the
+      menu-rebuild fix landed. All three ways in the user asked for now exist:
+      **Cues is a top-level macOS menu**, between Segments and View — a sibling of Segments,
+      because a cue is a sibling of a segment, not a subsection of one. Cue Editor... is
+      first in it and separated from the verbs below, since burying it under three other
+      items is how it got lost the first time.
+      **A Cues button in the bottom panel's header**, next to Tags / Segments / View, hidden
+      entirely when the selected file isn't in a synced set rather than opening an all-grey
+      menu. It carries the cue count the way the Segments button carries the segment count.
+      **Clicking a cue** in the waveform opens the cue's own menu. Every band click used to
+      land in `showSegmentMenu` regardless of scope, which is how a cue ended up wearing a
+      menu titled "Delete Segment"; group-scoped ids now route to `showCueMenu`, which also
+      gained an "Open in Cue Editor..." item.
+      Same builder behind all three surfaces plus the right-click, as with Tags/Segments/View
+      — so they cannot drift apart.
+- [x] **On/off for the bottom matrix.** ("need a way to not [have] the cue editor at the
+      bottom, on-off view is needed") The toggle already existed; it was in the Segments
+      menu, which is the menu for a different object. Moved to the Cues menu — beside the
+      thing it hides, and reachable from the header button that sits directly above the
+      matrix. Same feature, findable.
+
+#### Follow-up after the first on-screen look (same day)
+
+The user ran the build and came back with five things. Three were defects, two were asks.
+
+- [x] **"the stem activity matrix remain alwasy ticked in the osx bar".** It genuinely was.
+      `refreshMenuState()` — round 6b's fix for the macOS menu baking item state in at build
+      time — fired only on *selection* change. Toggling the matrix changed `showActivity`
+      and never asked for a rebuild, so the tick stayed frozen at its launch value (true)
+      forever. The same staleness applied to every count and enabled flag a menu action
+      changes. Fixed by wrapping `performMenuAction` so a rebuild follows every action,
+      rather than adding a refresh call per case: the body returns from a dozen places, and
+      a per-case call is one someone forgets on the next case added.
+- [x] **"what are these green things in the segment?" — a regression I introduced.** The
+      colour scheme from item 1 made file-scoped segments teal, and teal is the *active-span
+      lane's* colour — a lane that sits directly above the segment band. A segment is
+      literally made out of a span, so two adjacent lanes showing different objects became
+      indistinguishable. Reverted to green cue / amber segment.
+      The lesson worth keeping: **hue alone cannot carry three objects here**, because one of
+      them (spans) already owns teal. The structural fix is item 7 — cues leave this band
+      entirely for their own named locator bar — and until then the pre-existing pairing at
+      least doesn't collide with the lane above it.
+- [x] **Zero-length cues — found in the user's own library.** Their cue list showed five of
+      sixteen cues at `0:00` length, including a `15:02 – 15:02`. `moveCueBoundary` wrote
+      `setSegmentBounds(id, newStart, end)` with no clamp, so dragging a boundary onto or
+      past its own cue's end collapsed or inverted it — and did the same to the previous
+      neighbour. Now clamped to leave at least 1s on both sides. The floor is 1s rather than
+      `CueOptions::minCueSeconds` (25s) deliberately: 25s governs what *detection* will
+      propose, and someone marking a short sting by hand is not making that mistake.
+      This is also the clearest argument yet for item 3 — the damage was already written to
+      the database with no way back.
+- [x] **"i cant select a track /file so idont know the segemetn names".** The matrix was a
+      picture you could not get out of. Clicking a stem name in the gutter now selects that
+      file in the table, through `table.selectRow` so the entire real selection path runs —
+      waveform load, segment reload, details sidebar — exactly as if it had been clicked.
+- [x] **"Can't tell where cues are" / "so what the thing on the right side the timimg" /
+      "start and end cue not understanding some have some dont".** One cause behind all
+      three: the only per-cue mark in the matrix was a single vertical line at its **start**.
+      A cue whose neighbour began elsewhere — every cue with silence after it — had a visible
+      beginning and no visible end, so half looked like boundaries and half like ranges.
+      Now: a **numbered cue lane** across the top of the workspace matrix, each cue a bar
+      spanning its actual range, labelled with the same number the cue list uses — which is
+      what finally ties the right-hand column to the picture. End edges are drawn (dashed,
+      and skipped where the next cue starts there so a shared boundary isn't doubled). The
+      cue list got real column headings (`# / START / LENGTH / NAME`) drawn from the same x
+      offsets the rows use, because the three bare numbers gave no way to tell a length from
+      an end time. Unnamed cues say "unnamed" rather than leaving the column blank — naming
+      is the point of a cue, so a blank there is a to-do, not an absence.
+      This is a down-payment on item 7, not a replacement for it: item 7 wants inline
+      renaming by clicking the label, and wants this treatment on the *waveform* too.
+- [x] **"wont it be nice to have cue editor inside the main window... so clipeditor open in
+      the place of the list and probably like a alternative to the list view also".**
+      Done, and it **reverses round 6b's "its own window rather than a tab"** — deliberately,
+      with the user's explicit choice between the options.
+      What round 6b got wrong: its argument was about the WINDOW ("cue work wants the whole
+      screen"), and a floating window is not how you get the whole screen when it lands on
+      top of the thing you were reading. The user's own screenshot showed exactly that.
+      What round 6b got right and still stands: a tab means "show me this folder's files",
+      and a cue workspace is not a folder. So this is a **view switch beside the tabs**
+      (`List | Cues`), not another tab in them — the folder scope keeps meaning what it
+      meant, and only what is drawn for it changes.
+      The standalone window stays, for the second-display-beside-the-DAW case. Both hosts
+      are the same `CueEditorComponent`, wired by one `wireCueWorkspace` and fed by one
+      `refreshCueEditor` build, so they cannot disagree about what the cues are — the failure
+      mode of feeding them separately is the one that only shows up after an edit in one.
+      The switch is disabled when the selected file isn't in a synced set, and flips back to
+      List if the selection moves to one that isn't, so it can't strand you in an empty pane.
+
+- [x] **Cue names.** ("cue name should be [foldername_cuenumber_temp_key] user add a new
+      type which is mood like action comedy drama") There was no name field at all before
+      this: the "NAME" column showed `segmentLabel()`, which picks the first non-empty of
+      keywords/moods/genre/instruments — so a cue's name was whichever tag field you
+      happened to fill first, and a mood only became the name because nothing above it was
+      set. That is the wrong shape for something whose naming *is* the workflow.
+      Now `folder_NN[_type]`, e.g. `EP9_STEMS_12_action`.
+      **Derived, not stored**, except the type. The number is reel position, so it renumbers
+      when a cue is inserted before it — correct for something that means "the twelfth cue in
+      this reel". The type is the only stored half (`human.$.cue_type`), set from a submenu
+      on the cue's own menu with the vocabulary a scoring session uses, plus Custom....
+      Setting one marks the cue edited, so it survives a re-detect.
+
+      **Tempo and key were in the name and were taken back out.** The ask was
+      `foldername_cuenumber_tempo_key`, and it was built that way: since a cue is
+      group-scoped and the per-stem values disagree wildly (EP9's fifteen stems report 61 to
+      127 BPM and five different keys), the values came from the set — median tempo, modal
+      key. Which meant every cue in the reel carried the identical number, in a name that
+      reads as a per-cue fact. The user, immediately: "all cues are not 80 and gmaj - they
+      are not real valuses". Right — a name that looks precise and isn't is worse than a
+      name without the field. Dropped rather than faked.
+
+- [x] **Cue start and end lines drawn identically.** ("sort the cuestart end lines make it
+      similar both solid line") The end was dashed, and skipped entirely where the next cue
+      started at the same instant — on the reasoning that a shared boundary shouldn't be
+      drawn twice. On screen that read as "so 12, 14 has start and end cue line why does 16
+      and 17 not have": cues butted against a neighbour looked closed on both sides, cues
+      with silence after them looked open, for a reason invisible to anyone looking. Both
+      edges are solid now. A shared boundary drawing twice at the same x costs nothing.
+
+- [x] **A cue's END could not be moved at all.** ("now i really need to move the cue end to
+      match the end of the segement and i cant do it") Not a discoverability problem — the
+      code only ever looked for START edges: `cueBoundaryNear` tested `startSeconds` and
+      nothing else, `moveCueBoundary` took a single `newStartSeconds`, and the first cue's
+      start was skipped outright. So an end with silence after it had no handle of any kind,
+      and the only ends that *looked* draggable were the ones where a neighbour's start
+      happened to sit on top of them.
+      Now `cueBoundaryNear` returns which cue **and which edge**. Starts are tested across
+      every cue first, so a shared boundary still resolves to the start — that is round 6's
+      two-neighbour drag, and grabbing it as an "end" would move only one side. An end
+      adjacent to the next cue carries that cue's start with it; an end with silence after it
+      moves alone, because there is nothing on the other side to move. Both edges clamp to
+      leave at least 1s.
+      The first cue's start is draggable too now. Excluding it confused "has no neighbour to
+      hand the other half of the drag to" with "must not move" — it is still that cue's own
+      beginning, and nothing else could change it.
+      Edge snapping already existed and now serves the end as well, which is the actual ask:
+      the drag snaps to any stem's span edge within 1% of the visible window, so "match the
+      end of the segment" is a drag that lands on it rather than near it.
+      **Set Start / End Timecode...** (was start-only) now takes both, for when a pixel is
+      1.7 seconds. End is applied before start, so moving both at once can't be refused by
+      clamping the start against an end that is itself about to move.
+
+- [x] **The Type column called every cue a segment.** The user asked what "auto cue" and
+      "auto segment" mean for the *second* time, after a fresh folder analysis — and the
+      reason the words weren't landing is that the column whose entire job is saying what a
+      row IS had `drawText("SEG", ...)` hardcoded for every child row. Status said "auto
+      cue" while Type said "SEG", one row apart. Now CUE / SEG, in the matching colours.
+- [x] **Cues removed from the file list; segments now say which cue they are in.**
+      ("i really dont get it what it means - and why i need it - it should actually have
+      which cue the segment is in - like cue 1 or 12")
+
+      The user was right, and the earlier work in this round had been solving the wrong
+      problem. Naming cue rows better, colouring them, and explaining them in a tooltip all
+      assumed a cue child row was worth having. It wasn't: **a cue is group-scoped, so
+      listing it under a file put the same cue under each of fifteen stems** — fifteen copies
+      of one object — and every one of those rows was blank, because cues carry no
+      `segment_analysis`. Fifteen identical rows with no data is not information.
+
+      What is information is the RELATIONSHIP: a segment is a phrase in one stem, a cue is
+      the section of the reel it happens during. Each segment row now reads
+      `↳ 3:17 – 5:25   cue 12  action`, drawn in the cue colour so it reads as a reference to
+      something else rather than part of this row's own identity.
+      Matched on the segment's **midpoint**, not its start: a segment beginning a moment
+      before a boundary belongs to the cue it spends its length in, not the one it clips the
+      last second of.
+      Cues are still fully present where they mean something — the cue workspace, the Cues
+      menu, and the waveform's own band.
+- [x] **Hover help on the child rows.** `FileTableModel::getCellTooltip` explains, per row,
+      which kind of object it is, what "auto" means, and — on a cue's Loudness / Genre /
+      Instrument / Mood cells — why they are empty. That emptiness is real and was reading as
+      missing data: **cues have no `segment_analysis` rows at all**, because cue creation
+      only ever calls `createSegment`. Segments get their own analysis; cues get none.
+      Required adding a `juce::TooltipWindow` — mira_ui had none, so every `getCellTooltip`
+      in the app had been dead code. Rewritten after the change above: it now explains the
+      segment and names the cue it plays during.
+
+**Still in the user's library**: 5 of 19 cues are zero-length, left over from the
+`moveCueBoundary` bug above (confirmed by querying a copy of `~/.mira/library.db`). The clamp
+stops new ones; the existing rows need deleting by hand, and are visible as 3px bars.
+
+**Verified on screen**: menu bar reads `File / Analyze / Tags / Segments / Cues / View /
+Window` with both menus carrying the right items; the `List | Cues` switch renders in the tab
+bar and is correctly disabled with nothing selected. Not driven end-to-end through a real
+stem set — GUI automation is still as unreliable as round 6b found it, so the cue lane,
+stem-click selection and the in-window view want a human look.
+
+- [x] **Play a cue to hear it, then name it.** ("i will need to be able to play the cue to
+      hear it and name it") A Play Cue / Stop button in the cue workspace toolbar, enabled
+      once a cue is selected.
+      `WaveformView::playRange` is new and is the point: it stops at the range's end rather
+      than running on. Without that, auditioning a 90-second cue on a 41-minute reel plays
+      into the next four, and naming what you just heard means having heard only that. The
+      stop is checked on the 30Hz timer that already follows the playhead (~33ms, inaudible
+      against a cue boundary) rather than a `PositionableAudioSource` wrapper that would need
+      tearing down on every file change. Pressing Play yourself clears the stop point — that
+      means "play on", not "play that cue".
+      **What it plays**: the stem currently selected in the table, because that is what the
+      one transport has loaded. mira cannot sum fifteen stems live, so a "play the set"
+      button would be a lie — clicking a stem name in the gutter to choose what you audition
+      is the honest version, and is part of why the gutter became clickable.
+- [x] **Region-marker naming, like a DAW.** (user screenshot: Ableton's "FINAL-CUT - 1"
+      locator bar) The numbered cue lane added in the follow-up pass is the bar; this adds
+      the naming. Double-click a bar (or a cue-list row) and a text editor opens over it.
+      It edits the **type**, not a free-form name, because the rest of the name is derived
+      (folder + reel position) — so the editor opens on the authored half alone rather than
+      on a derived string the user would have to carefully not break. Same field the Type
+      submenu writes, through the same undoable setter: one field, two ways in, one undo step
+      either way. The lane shows an I-beam cursor, since a cursor is the only thing that says
+      a bar is editable before someone tries.
+      **Not done**: the item also wants this treatment to *replace* the waveform's segment
+      band. It doesn't yet — the lane lives in the cue workspace's matrix, and the waveform
+      still bands cues along its bottom. That is what the colour-collision note above is
+      waiting on.
 
 ### Review round 6b — the cue window (2026-09-12)
 
@@ -1805,33 +2065,6 @@ code changes lets figure out edge case and stuff"). The conclusions that shaped 
       Play From Here / Delete Cue. Cue tags are the point (the user's framing: a cue is a
       tag identifier — "funny", "action"), and tagging one also makes it permanent.
 
-**Not done / open**
-
-- [ ] **Nothing here is confirmed on screen.** Cue detection, persistence and the
-      edit-survival rule are verified against the real library at the data level; the
-      matrix, drag-editing and the cue menus compile and are wired but nobody has looked at
-      them. GUI automation proved unreliable across this whole session.
-- [ ] **The user could not verify the 21/24 cue count against the real session** (the EP9
-      project wasn't to hand). Until someone checks the boundaries against the actual cue
-      list, the detector is plausible, not validated.
-- [ ] **`mira similar` still searches whole files.** Agreed in discussion that the retrieval
-      unit should be the segment/cue — "what's the point of showing a 40 min similar file".
-      The blocker is narrow: `vec_embeddings` is keyed on `files.id`, one row per file.
-      Segments already store their own embedding inside `segment_analysis.machine`; they
-      just aren't in the searchable index.
-- [ ] **Per-cue tempo and key, and a range at file level.** Agreed (user: "range"), not
-      built. Score stems should show per-cue tempo/key; the file row should show the spread
-      rather than a single meaningless number. `tempo_unstable` / `tempo_range_bpm` are
-      already computed and still unused by the UI.
-- [ ] **FX stems should skip tempo/key entirely** (user: "yes fx stems skip"). Not built.
-- [ ] **Editable naming map** (user: "yes... we can keep adding to it as and when we get new
-      naming schemes"). The stem-name → instrument table is still compiled into
-      `Scanner.cpp`. It should be a file alongside `taxonomy/*.yaml`, with families
-      (percussion: drums/rhythm/beat/groove/hi-percs/…; strings: low/mid/high strings,
-      cello, double bass, viola, violin), register qualifiers as modifiers rather than
-      instruments, and **multi-label output** — the user's own "DBCELLO" is double bass
-      *and* cello, which a single label already gets wrong.
-
 ### Analysis quality — investigated 2026-09-12 (EP9: 15 stems × 41:27, 284 auto-segments)
 
 **"A lot of auto-segments identified as nothing" — the content gate, not segment length.**
@@ -1904,40 +2137,6 @@ Three things came out of measuring it, all on real material:
       BRASSS, DBCELLO, STRINGS and the rest were all being indexed as drums. Now adds the
       hint's own label.
 - [x] **Dead code**: `topIsPercussion` was computed and then `juce::ignoreUnused`'d.
-
-**Open — the gate's remaining false negatives (not fixed, evidence recorded)**
-
-- [ ] **`music_score` is not comparable across durations** (finding 2 above). 0.30 is
-      chosen to be safe at the short end, where the bias hurts most, but the underlying
-      length-dependence of max-pooling is untouched. The principled fixes, in rough order
-      of appeal: have a segment **inherit its parent file's** verdict (a slice of music is
-      music — also removes the 419 ms per-segment gate entirely); or normalise by chunk
-      count; or skip the gate for **declared** stems, where a human already answered "is
-      this music" by filing the folder as Score Stems.
-- [ ] **Real stems still failing at 0.30.** From the whole-library check:
-      `Paintball-BGM-StemMix.wav` 0.276 (top label "Siren"), `VOX-SOLO_1.wav` 0.227,
-      `Korean_Title_Track/SOLO.wav` 0.042 ("Siren"). A BGM stem *mix* failing a music gate
-      is plainly wrong. Most of the rest that still fail are drum one-shots
-      (`DRUM HITS/HATS/*`, `snare/*`) — the same isolated-percussion weakness that made
-      RHTM-2 read as organ, and arguably a category where "is this music" isn't a
-      meaningful question to ask at all.
-- [ ] **These fixes only reach existing rows on re-analysis.** Worth knowing before doing
-      that the hard way: the full 1280-d discogs-effnet embedding is already stored per
-      file *and* per segment (`machine.$.embedding.vector`), and five of the six gated
-      heads run from that vector in ~13 ms total. A `reclassify` that re-applies the gate
-      decision to a stored `music_score` and re-runs those heads from stored embeddings
-      would turn hours of re-analysis into seconds. Only `stem_instrument` (IRMAS) would
-      still need audio, since it runs on the signal rather than the embedding.
-
-Lane visibility is a "Lanes" menu in the transport row rather than three separate
-toggles — the lanes are mostly absent anyway (32 of 108 analyzed files have chords, 29
-have notes), so three permanently-visible buttons would spend transport-row width on
-something rarely touched. The menu separates *ticked* (switched on) from *enabled* (this
-file has the data), so a ticked-but-greyed item answers "why is nothing showing" honestly
-instead of leaving it ambiguous. Lanes are **not** gated on `isStemPath` the way the
-segment controls are: a sample or a music track can have chords and a transcription too,
-and drawing what was analyzed is never wrong — only the *authoring* workflow (declaring
-caption segments) is stem-specific.
 
 **UI — second screenshot pass (decisions made in review)**
 
@@ -2052,9 +2251,6 @@ caption segments) is stem-specific.
       parent file (deduplicated). Drag-out of a segment row drags the whole file for now.
       Only stems re-analyzed since auto-segments were added have segments to show (e.g.
       HHB VOX).
-- [ ] **Instrument accuracy to a basic working level** — "some places it detects vocals
-      but the accuracy is around 50%". After the UI items above; the plan is in the
-      section below.
 
 **Instrument field / segments — review round 4 (from the child-rows screenshots)**
 
@@ -2144,8 +2340,380 @@ voice head 98% vocal.
       piano, electric guitar" → **"drums"**; `5. HHB VOX_1` "voice, synthesizer" →
       **"voice"**; `BRASS_1` → **"brass, trumpet"**; `STRINGS_1` → **"strings, violin"**;
       `BASS_1` → **"bass, drums"**; `SFX_1` → no instrument claimed (honest).
+
+---
+
+## Phase 6 — accuracy, process visibility, and the remaining caption surfaces
+
+Opened 2026-09-12. **Not a PRD phase** — [PRD.md](PRD.md) §9's plan ends at Phase 5, so
+this is the first phase that exists only here, as the work the PRD's plan did not
+anticipate: accuracy that has to be measured against a real library rather than
+specified, and the process-visibility problems that only appear at real library sizes.
+If the PRD's §9 phase list is ever revised, it should gain this.
+
+**Every unchecked item that was still sitting in Phase 5 has been moved here
+verbatim**, so Phase 5 is now a closed record of what was built and this is the single list
+of what is left. Nothing was dropped in the move and nothing was re-scoped — where an
+item was recorded with its evidence, the evidence came with it, and each group below names
+the Phase 5 section it came from so the surrounding reasoning is still findable.
+
+The trigger was the first import of a commercial music album (Dune OST, 38 files) instead
+of the score-stem sets every earlier round used. Two things that a 15-file test folder had
+hidden were obvious within a minute: analysis status reads as though the entire folder is
+being worked on at once, and nothing anywhere in the UI says what a folder actually holds.
+
+### New — analysis status, process visibility, folder summary (2026-09-12)
+
+**Measured first, on the real import** — `/Volumes/T7 Shield 1/DUNE_OST_SOUNDTRACK-TEST`,
+38 WAV files, 2,773 MB:
+
+- **Scan: 3 seconds** for the whole album (`ui_folder_roots.added_at` 1789219119 →
+  `max(files.scanned_at)` 1789219122). Scanning is not a cost worth putting progress UI
+  on at this size — it is already effectively instant, and that is exactly what makes the
+  *analysis* wait read as a hang by contrast.
+- **Analysis: 30m53s for the album**, run to completion (exit 0, 38/38). That is 4h12m of
+  audio in ~31 minutes — **8.2× faster than real time**, averaging **48.8 s/file**. The
+  average is all that can be said: `analyzed_at` is the run's start time for every row (see
+  the item below), so no per-file timing exists to break that down. A ~31-minute wait on
+  one folder is precisely long enough that a status display which does not visibly move is
+  a real problem rather than a cosmetic one.
+- **37 s of that ran before the first file finished**, decoding — the gap between the
+  process starting and the `analyzed_at` stamp. `mira analyze` decodes every candidate up
+  front (the memory item under "Not scheduled" below); RSS on the analyze process was
+  1.18 GB during this run, which is that buffer. It is also the window in which the UI has
+  a count but no file to name at all.
+
+**Where the 8.2x actually goes** (measured per stage with `mira analyze --verbose`, on
+`Burning Palms` -- 4:05 of audio, 29.9 s of work, 8.2x, the same ratio as the whole album,
+so this is representative rather than one odd file):
+
+| stage | time | share |
+|---|---|---|
+| embedding (dclap) | 8.1 s | 27% |
+| rhythm (essentia + beat_this_cpp) | 8.1 s | 27% |
+| content gate (CED-small) | 5.0 s | 17% |
+| DSP descriptors (incl. harmonicity) | 4.3 s | 14% |
+| embedding (discogs-effnet) | 3.5 s | 12% |
+| decode + route | 0.6 s | 2% |
+| key (libKeyFinder) | 0.4 s | 1% |
+| moodtheme + instrument + danceability + genre + voice | 0.015 s | 0.05% |
+
+Five full-file passes over the audio are 96% of it. **Every classifier head together costs
+15 ms** -- they run off the embedding that was already computed, which is also why the
+`reclassify`-from-stored-embeddings idea under the music gate below would turn hours of
+re-analysis into seconds.
+
+The one structural observation: **two embeddings run unconditionally on every file, 39% of
+the total**. Phase 4 measured DCLAP as never worse and often better than discogs-effnet on
+this library, but both still compute for every file. That is the largest single lever if
+analysis ever needs to be faster, and it is a decision (which spaces does `mira similar`
+need?) rather than an optimisation.
+
+- [x] *(built and verified 2026-09-12)* **Wired the CLAP text tower, then took the DCLAP
+      audio embedding out of basic analysis.** The user's call, in that order: "wire the
+      dclap first then make it optional and not in the basic analysis". The reasoning it
+      came out of is worth keeping — traced end to end, DCLAP's vector fed **nothing** mira
+      displays. No caption field, no label, zero reads anywhere in `mira_ui`. Its only
+      consumers were `mira similar --embedding dclap` (not the default) and a count in the
+      stats output, for 27% of every file's analysis. Half the model was doing the work and
+      the other half was switched off.
+
+      **The other half**: `models/similarity-embeddings/dclap/clap_text_model.onnx` — 478 MB,
+      vendored during the Phase 4 A/B and referenced nowhere in the source tree. DCLAP is
+      two encoders trained together into one shared 512-dim space; mira ran only the audio
+      one, so it could find audio-like-this-audio but never audio-like-these-words.
+
+      **Measured before building anything**, because two things could have killed it:
+      - *Is the space still shared after distillation?* The audio tower is a distilled
+        student, and distillation can drift the space, which would make text-vs-audio
+        comparison meaningless. It didn't drift.
+      - *Prompting.* This turned out to matter more than everything else. As a bare keyword
+        `strings` didn't reach a real strings stem until **rank 16**. Wrapped in the
+        caption-style sentence CLAP was trained on, every query tested — snare drum,
+        singing voice, brass, strings, bass guitar — put its first hit at **rank 1 or 2**.
+        So mira applies the template itself (`kPromptTemplate`); the gap is far too large
+        to leave as the user's problem.
+
+      **Built**: `analyze/ClapText.{h,cpp}` (text → 512-dim, L2-normalised into the same
+      space) and `analyze/RobertaTokenizer.{h,cpp}`. The tokenizer is the real work — the
+      text tower takes `input_ids`, not text. Hand-rolled byte-level BPE rather than
+      vendoring `tokenizers-cpp`, which would pull a Rust toolchain into a build that has
+      none, for one model's text input; `lab/export_roberta_tokenizer.py` flattens
+      HuggingFace's `tokenizer.json` to plain text so the CLI needs no JSON parser either.
+      New surface: `mira similar --text "<description>"`, which implies the DCLAP space
+      (effnet has no text side, so comparing across them would return confident nonsense).
+
+      **The tokenizer is checked exactly, because its failure mode is silent**: ids that are
+      subtly wrong still produce a confident 512-dim vector pointing somewhere meaningless,
+      and search would just quietly get worse. `tests/tokenizer_parity.cpp` asserts every
+      case against HuggingFace's own ids — real queries plus leading/trailing whitespace,
+      mixed case, hyphens, apostrophes, digits, accented characters, emoji and the empty
+      string. **16/16 exact.** Same discipline as `spike/05_dclap_parity` on the audio side.
+
+      **Verified on the real library** (the existing 172 DCLAP vectors, nothing re-analyzed):
+      `"a singing voice"` → 4/4 vocal stems, from three unrelated projects
+      (`Vocal 3.wav`, `VOX (UNPROCESSED).wav`, `EP6 VOCALS.wav`, `VOX-SOLO_1.wav`);
+      `"strings"` → STRINGS, STRINGS-HIGH, STRINGS LOW at 1–3; `"brass"` → BRASSS_1,
+      BRASS_1 at 1–2; `"snare drum"` → 3 of 4 literal snare one-shots. It matches audio,
+      not filenames. This is open-vocabulary: it is not limited to the taxonomy's genres or
+      instrument classes, which is something no other model in the pipeline can do.
+
+      **Then made opt-in**: `mira analyze --dclap`, off by default, plus an
+      "Text Search Index (DCLAP)" toggle in the UI's Analyze menu carrying its own cost
+      ("+27% per file"), alongside the existing chords/transcribe ones. Measured on a
+      60-second file: **6.35s default vs 8.40s with `--dclap`, 24% saved**. The cost of
+      leaving it off is honest and recoverable — those files are simply absent from the
+      DCLAP index until re-analyzed with the flag, and nothing else degrades.
+
+- [ ] **Decide which embedding space mira commits to** (raised by the user: "why are we
+      running two embeddings on music tracks - effnet is efficient with mix tracks then why
+      actually run Dclap on it"). The premise is the PRD's own (§4: "discogs-effnet... good
+      for tracks and loops"), and it is the *third* population where measurement has now
+      failed to find effnet's hypothesised edge.
+
+      **Coverage, whole library, by content type** (files with a stored effnet vector):
+      `track` 51/51, `loop` 7/7, `stem` 93/110, `one_shot` 0/4. DCLAP is 100% everywhere.
+      So effnet's coverage problem is entirely short files -- on full tracks it never
+      fails, and DCLAP's headline Phase 4 win (100% vs 68%) buys nothing *for tracks*.
+
+      **Quality on tracks, first measurement ever made on this content type** (n=2, small,
+      but consistent with Phase 4's larger loop result):
+      - `Fremen, Pt. 1`: DCLAP returned **`Fremen, Pt. 2`** in its top 6; effnet did not.
+        The companion piece is the obvious right answer and only one space found it.
+      - `Arrakeen`: effnet's top 6 leaked **two unrelated score stems** out of the album
+        (`EP6 TEXTURE.wav`, `HARMONIES_1.wav`); DCLAP's top 6 stayed 6/6 inside the album.
+        This is the same content-type bleed Phase 4 found on loops.
+
+      So on this evidence the question inverts: the one with no measured advantage anywhere
+      is **effnet**, and it costs 12% of every analysis. Dropping DCLAP instead would save
+      27% but give up the better space and all one-shot coverage.
+
+      **What must not be done: make it conditional on `content_type`.** A one-shot holding
+      only a DCLAP vector and a track holding only an effnet vector can never be compared
+      in either space, and PRD §4 makes cross-content-type comparison the point of the
+      feature. The decision is *which single space*, not *which space per type*.
+
+      Before deciding, run the A/B properly over all 51 tracks rather than 2, the way Phase
+      4 did for loops -- both vectors are already stored for every one of them, so this
+      costs queries, not re-analysis.
+
+- [x] *(built 2026-09-12; not yet checked on screen)* **The Status column marked the whole
+      batch "analyzing…", not the one file that was.**
+      This is the actual cause of "the status of analysis is not correct and its confusing".
+      `MainComponent::startNextAnalyzeIfIdle` seeds `activeAnalyzeBatch` with **every path
+      in the batch**, and `FileTableModel::statusText` renders anything in that set as
+      `analyzing…` in accent colour; a path only leaves the set when the CLI reports it
+      done. So at 5 of 38, thirty-three rows each claim to be analyzing — and at ~49 s a
+      file, nothing on screen changes for the better part of a minute at a time, which is
+      what "looks stuck" means.
+      The data needed to fix it is already arriving and already parsed: the CLI emits
+      `starting: N/M <path>` before the work and `progress: N/M <path>` after the database
+      write, and `AnalyzeJob::handleLine` handles both. Only the file named by the most
+      recent `starting:` is analyzing; everything else still in the batch is `queued`.
+      **Built**: `updateAnalysisState` now derives the analyzing set from
+      `analyzeCurrentPath` rather than from the whole batch, and `onAnalyzeFileStarted`
+      restates it on every `starting:`. Nothing reads as analyzing during the up-front
+      decode pass -- naming one row there would be a lie and pointing at each in turn
+      would only flicker -- so the batch shows as `queued` and the status bar names the
+      pass instead.
+- [x] *(built 2026-09-12; not yet checked on screen)* **A real analysis status line at the
+      bottom of the window** (user: "i need status at
+      the bottm ... showing what file is getting analysed and what going on -shouldnt look
+      like its stuck"). The pieces exist and are in the wrong place. `updateAnalyzeReadout`
+      already builds `Analyzing N/M · <file> · <stage>` and hands it to the *tab bar's*
+      right corner via `setScanStatusText`, where it is small, truncated ("Dune OST.wav ·
+      voice/inst…") and nowhere near where the eye is; `StatusBar`'s left text is a static
+      library count. Per-stage strings are already live (`stage: <name>` is emitted after
+      every pipeline stage), so a bottom status line can show real movement *inside* a
+      single ~49-second file rather than a counter that ticks once per file.
+      **Built**: `StatusBarComponent` went from two slots to three with fixed jobs --
+      folder / activity / selection -- because scan progress, the library count and the
+      analysis readout had all been writing the same left label and clearing each other.
+      `pushActivityText` is the single writer of the activity slot and gives analysis
+      priority over a concurrent scan (naming the scan at the end rather than dropping it).
+      Stage names are shortened for this width (`shortStageName`), with the two embeddings
+      kept distinct on purpose: they are the two most expensive stages and run back to
+      back, so one shared "embedding" label would sit unchanged for a sixth of the file and
+      read as stuck. A per-file elapsed clock ticks every second -- the one part of the
+      line that cannot stall while work is happening, which is what the request actually
+      asks for. The decode pass reads "Decoding… · <file>" instead of a stalled "0/38".
+- [x] *(built and verified on screen 2026-09-12)* **A folder summary: total files and
+      total duration** (user: "i need to get a status
+      of the folder sowhere in the ui visible total number of file total time ... ones
+      after the scann"). Nothing in the UI states what a folder contains. File count is
+      free. Total duration is not, and lands straight on the carried-over
+      `duration_seconds` item below: duration is only stored by analysis, and the file
+      table's Duration column is read per row from the file header at build time, so a
+      folder total today means either analyzing everything or re-reading every header.
+      **Built, and the prerequisite turned out not to be one.** Each row already reads its
+      own header for the Duration column, so the total is a sum over rows the table has
+      built anyway -- no scan, no analysis, no new column, and it is there the moment a
+      folder's rows land. `FileTableModel::getScopeSummary` sums `allRows` (the folder, not
+      the filter -- the filter bar answers "3 of 412" separately); headers that would not
+      read are counted as "(N unknown)" rather than folded in as zero. Fired on scope
+      change with the rows still empty, so a folder loading for half a second cannot show
+      the previous folder's totals as if they were this one's.
+      **Verified on screen** via the accessibility API on an isolated instance:
+      `DUNE_OST_SOUNDTRACK-TEST · 38 files · 4h 12m`, matching the 252.5 minutes summed
+      independently from the database.
+      `files.duration_seconds` stays open below, for the question this *cannot* answer: a
+      total across folders that are not open, without re-reading every header.
+- [x] *(fixed and verified 2026-09-12)* **`files.analyzed_at` was the run's start time,
+      not the file's completion time.**
+      Found while trying to measure the album's analysis rate from the database, and worth
+      recording before anyone else trusts that column: `main.cpp` takes
+      `analyzedAt = nowUnix()` once, above the loop, and stamps every file in the run with
+      it — all 24 Dune files finished by then share 1789219417. Rows are still written one
+      at a time (`applyAnalysis` is per file), so the UI loses nothing, but the database
+      cannot answer "how long did this file take" or "how far into this run are we" — which
+      is why the rate above is an average over the whole run and not a per-file breakdown.
+      **Fixed**: `update.analyzedAt` now calls the clock at the point the file is actually
+      done. The run-level timestamp stays in `provenance.analyzed_at`, where sharing one
+      value across the run is the point -- it identifies which build and which models
+      produced these rows.
+      **Verified**: re-analyzing two Dune tracks gave 1789225496 and 1789225505, nine
+      seconds apart for a 60-second file -- consistent with the 8.2x figure above, and
+      previously a single shared value. Per-file analysis time is now measurable from the
+      database, which is what an ETA would need.
+
+- [x] *(built 2026-09-12; not yet checked on screen)* **A distinct sidebar icon for each
+      of the four categories** (user: "so now if u have a differtn icon for music lets do
+      differnt icons for all the 4 categories will be nice"). Two things were wrong, not
+      one: both stem kinds shared the stacked-track glyph, and **SAMPLES was drawing the
+      generic mark** because the real library's SAMPLES group has no `category` stored at
+      all (it predates categories; `findOrCreateCategoryGroup` only adopts one when a
+      folder is added or re-categorised through it). `FolderGroupTreeItem::paintItem` now
+      resolves an effective category from the group's own name when none is stored --
+      display-level only, since nothing that routes analysis reads it, and the row still
+      self-heals the next time a folder is filed under it.
+      Score stems get the music-stem glyph **crossed by a cue marker** (full-height line
+      plus a small flag, drawn brighter so it reads as laid over the tracks) rather than an
+      unrelated picture: the two kinds are siblings, and the marker is precisely what makes
+      a score stem different -- a long reel carrying cues.
+
+### Carried over from Phase 5 — captions and caption surfaces
+
+From Phase 5's original PRD §9/§13 checklist. These are the last three caption outputs and
+the filter-bar UI that was built as plain text instead of chips.
+
+- [ ] ACE-Step JSON renderer
+- [ ] Remaining two caption registers
+- [ ] Segment slicing UI/export
+- [ ] Filter bar (stackable chips — SonikSearch-inspired, NOTES.md UI research) — the bar
+      is real now (free-text filtering over the listed rows — Phase 5's "Left over for next
+      session" section), but the *chip* UI — composing several named filters that stack — is still
+      not started.
+
+### Carried over from Phase 5 — cues, score stems, and the naming map
+
+From Phase 5's "Review round 6 — cues and the stem activity matrix" and "Review round 7".
+The cue workspace itself was built; these are the parts that were deferred in discussion
+rather than attempted, plus the two things nobody has looked at on screen.
+
+- [ ] **Nothing here is confirmed on screen.** Cue detection, persistence and the
+      edit-survival rule are verified against the real library at the data level; the
+      matrix, drag-editing and the cue menus compile and are wired but nobody has looked at
+      them. GUI automation proved unreliable across this whole session.
+- [ ] **The user could not verify the 21/24 cue count against the real session** (the EP9
+      project wasn't to hand). Until someone checks the boundaries against the actual cue
+      list, the detector is plausible, not validated.
+- [ ] **`mira similar` still searches whole files.** Agreed in discussion that the retrieval
+      unit should be the segment/cue — "what's the point of showing a 40 min similar file".
+      The blocker is narrow: `vec_embeddings` is keyed on `files.id`, one row per file.
+      Segments already store their own embedding inside `segment_analysis.machine`; they
+      just aren't in the searchable index.
+- [ ] **Per-cue tempo and key, and a range at file level.** Agreed (user: "range"), not
+      built. Score stems should show per-cue tempo/key; the file row should show the spread
+      rather than a single meaningless number. `tempo_unstable` / `tempo_range_bpm` are
+      already computed and still unused by the UI.
+- [ ] **FX stems should skip tempo/key entirely** (user: "yes fx stems skip"). Not built.
+- [ ] **Editable naming map** (user: "yes... we can keep adding to it as and when we get new
+      naming schemes"). The stem-name → instrument table is still compiled into
+      `Scanner.cpp`. It should be a file alongside `taxonomy/*.yaml`, with families
+      (percussion: drums/rhythm/beat/groove/hi-percs/…; strings: low/mid/high strings,
+      cello, double bass, viola, violin), register qualifiers as modifiers rather than
+      instruments, and **multi-label output** — the user's own "DBCELLO" is double bass
+      *and* cello, which a single label already gets wrong.
+
+- [ ] **TODO — real per-cue tempo and key.** The detail behind the "Per-cue tempo and key,
+      and a range at file level" item above — same work, recorded twice because the
+      investigation happened in a later round than the agreement. Deferred by the user
+      ("will need proper work will do it later"). What the investigation turned up, so it
+      doesn't have to be redone:
+      - **Tempo is nearly free.** Every stem already stores `machine.$.rhythm.beat_this_beats`
+        (STRINGS 390 beats, TEXTURE 833), so a cue's real tempo is the beat intervals falling
+        inside its range — no decoding, no re-analysis. Which stem's beat track to trust is
+        the open question; median across stems that have ≥3 beats in range is the obvious
+        first answer.
+      - **The data already says the whole-reel number is meaningless**: 6 of EP9's 15 stems
+        are flagged `tempo_unstable`, with `tempo_range_bpm` up to 58.
+      - **Key is real work.** `buildSegmentMachineJson` (main.cpp) deliberately computes DSP,
+        embeddings, mood, instrument and genre for a segment but **not** rhythm or key, so no
+        per-range key exists anywhere. Cues also get no `segment_analysis` row at all —
+        `addCueFromRange` and cue detection only ever call `createSegment`. So this needs
+        key detection added to segment analysis *and* an analysis pass that covers cues.
+        `mira::detectKey(mono, sampleRate)` already takes a buffer, so it slices fine; the
+        cost is the pipeline plumbing and a re-analysis run over the set.
+
+### Carried over from Phase 5 — scan-time metadata
+
+From Phase 5's "Review round 2". Now also the blocker for the folder-summary item above,
+which is a change of priority: it was recorded as "not urgent" when the only consumer was
+sibling grouping.
+
+- [ ] **Scan-time `duration_seconds` column** (deferred out of review round 2's
+      sibling-grouping fix, decided in review). Grouping can only see analyzed siblings because duration is only stored by
+      analysis. A `files.duration_seconds` populated by a header-only read during Scan
+      would let a whole folder group correctly with nothing analyzed at all. Needs a
+      header parser or a new dependency in `mira_core` (which has no decoder today —
+      Essentia's `AudioLoader` decodes in full, far too expensive for 13 × 37-minute
+      stems), plus a migration and a backfill pass over the existing 1,628 rows.
+      **Priority changed 2026-09-12**: recorded as "not urgent" when sibling grouping was
+      the only consumer, and review round 2's fix already covered that workflow. The
+      folder-summary item above now needs it, so it is the prerequisite for that rather
+      than an optimisation.
+
+### Carried over from Phase 5 — the music gate
+
+From Phase 5's "Analysis quality — investigated 2026-09-12 (EP9)". The gate's threshold
+work and the fixes that were made are recorded there; what follows is what that
+investigation left open. All three are false negatives of the gate, unfixed, with the
+evidence recorded rather than re-derived.
+
+- [ ] **`music_score` is not comparable across durations** (Phase 5's finding 2). 0.30 is
+      chosen to be safe at the short end, where the bias hurts most, but the underlying
+      length-dependence of max-pooling is untouched. The principled fixes, in rough order
+      of appeal: have a segment **inherit its parent file's** verdict (a slice of music is
+      music — also removes the 419 ms per-segment gate entirely); or normalise by chunk
+      count; or skip the gate for **declared** stems, where a human already answered "is
+      this music" by filing the folder as Score Stems.
+- [ ] **Real stems still failing at 0.30.** From the whole-library check:
+      `Paintball-BGM-StemMix.wav` 0.276 (top label "Siren"), `VOX-SOLO_1.wav` 0.227,
+      `Korean_Title_Track/SOLO.wav` 0.042 ("Siren"). A BGM stem *mix* failing a music gate
+      is plainly wrong. Most of the rest that still fail are drum one-shots
+      (`DRUM HITS/HATS/*`, `snare/*`) — the same isolated-percussion weakness that made
+      RHTM-2 read as organ, and arguably a category where "is this music" isn't a
+      meaningful question to ask at all.
+- [ ] **These fixes only reach existing rows on re-analysis.** Worth knowing before doing
+      that the hard way: the full 1280-d discogs-effnet embedding is already stored per
+      file *and* per segment (`machine.$.embedding.vector`), and five of the six gated
+      heads run from that vector in ~13 ms total. A `reclassify` that re-applies the gate
+      decision to a stored `music_score` and re-runs those heads from stored embeddings
+      would turn hours of re-analysis into seconds. Only `stem_instrument` (IRMAS) would
+      still need audio, since it runs on the signal rather than the embedding.
+
+### Carried over from Phase 5 — instrument accuracy
+
+From Phase 5's "Analysis quality" and "Review round 4" sections. This is the largest
+single piece of work left and the one the user has raised most often.
+
+- [ ] **Instrument accuracy to a basic working level** — "some places it detects vocals
+      but the accuracy is around 50%". The umbrella item; the specific misreads and the
+      model evaluation that would settle them are the list below.
+
 - [ ] **Open: should a multi-segment stem skip whole-file classification entirely?**
-      Single-segment stems no longer double-analyse (above). For stems with 2+ segments
+      Single-segment stems no longer double-analyse (fixed in Phase 5's "Analysis
+      quality" round). For stems with 2+ segments
       the file pass still runs its own heads. Removing it means the file's labels become
       an aggregate of its segments — and its similarity embedding would have to be
       aggregated too, which changes what Phase 4's search compares. Needs a decision.
@@ -2173,6 +2741,8 @@ voice head 98% vocal.
 - [ ] BPM octave error: the DKP_70 loop analyzed as 146 (beat_this beats ~0.4s apart);
       its filename token says 70. Reconcile half/double time against an explicit
       filename BPM token.
+
+---
 
 ---
 

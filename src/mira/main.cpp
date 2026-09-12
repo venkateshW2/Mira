@@ -5,6 +5,7 @@
 #include "analyze/Chords.h"
 #include "analyze/ContentGate.h"
 #include "analyze/Embedding.h"
+#include "analyze/ClapText.h"
 #include "analyze/DclapEmbedding.h"
 #include "analyze/EssentiaEngine.h"
 #include "analyze/Key.h"
@@ -92,8 +93,8 @@ void printUsage() {
         "  mira scan <dir>... [--db <path>] [--follow-symlinks] [--as stem]\n"
         "        index files, no analysis; --as stem declares them delivery stems (§12.3)\n"
         "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
-        "               [--paths-from <file>] [--chords] [--transcribe] [--recheck-tempo]\n"
-        "               [--verbose] [--progress-stages]\n"
+        "               [--paths-from <file>] [--dclap] [--chords] [--transcribe]\n"
+        "               [--recheck-tempo] [--verbose] [--progress-stages]\n"
         "        --paths-from <file>: analyze exactly the files listed (one path per\n"
         "        line), always re-analyzing regardless of analyzed_at, ignoring --force/\n"
         "        --content-type/--limit; a path not already scanned is skipped\n"
@@ -105,7 +106,10 @@ void printUsage() {
         "        mtg_jamendo_instrument's embedding is full-mix-trained and unreliable on\n"
         "        isolated stems, TASKS.md); rhythm defaults to beat_this_cpp only (the\n"
         "        more accurate of the two tempo estimators); --recheck-tempo also runs\n"
-        "        Essentia's RhythmExtractor2013 for comparison (bpm_ratio); --chords and\n"
+        "        Essentia's RhythmExtractor2013 for comparison (bpm_ratio); --dclap adds\n"
+        "        the second (DCLAP) embedding space, off by default because it is 27% of a\n"
+        "        file's analysis and feeds only `mira similar --embedding dclap`/--text,\n"
+        "        never a caption or a label; --chords and\n"
         "        --transcribe are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone\n"
         "        — see TASKS.md); --content-type requires --force; --progress-stages\n"
         "        prints machine-readable `starting:`/`stage:` lines to stdout (what\n"
@@ -114,10 +118,13 @@ void printUsage() {
         "        per-stage timing to stderr, per file\n"
         "  mira inspect <file|id> [--db <path>]\n"
         "        human-readable report; flags low-confidence tempo/key, active_ratio\n"
-        "  mira similar <file|id> [--db <path>] [--n N]\n"
-        "        exact brute-force KNN over the discogs-effnet embedding (sqlite-vec, no\n"
-        "        ANN index — PRD §3); only files already in the library are supported for\n"
-        "        now, and only the overall embedding (--by/--filter not yet implemented)\n"
+        "  mira similar <file|id> | --text \"<description>\" [--db <path>] [--n N]\n"
+        "               [--embedding effnet|dclap] [--by overall|timbre|rhythm|spectrum]\n"
+        "        exact brute-force KNN (sqlite-vec, no ANN index — PRD §3). By example:\n"
+        "        pass a file already in the library. By description: --text \"brass swell\"\n"
+        "        searches the DCLAP space directly with the CLAP text tower — open\n"
+        "        vocabulary, so it is not limited to the taxonomy's genres/instruments.\n"
+        "        --text only finds files analyzed with `analyze --dclap`.\n"
         "  mira search --filter \"...\" [--db <path>]\n"
         "        comma-separated conditions, ANDed: field OP value (bpm>120, duration<180)\n"
         "        or tag:value (genre:Flamenco, instrument:guitar); fields: content_type,\n"
@@ -394,6 +401,7 @@ int runAnalyze(const std::vector<std::string>& args) {
     // material) and, on the same song, running it costs 9.2s vs Essentia's 2.7s, so
     // Essentia is an opt-in recheck (--recheck-tempo) for comparing the two, not a
     // default-on second opinion.
+    bool runDclap = false;   // --dclap, see the call site for why this is opt-in
     bool runChords = false;
     bool runTranscription = false;
     bool progressStages = false;
@@ -418,6 +426,8 @@ int runAnalyze(const std::vector<std::string>& args) {
             verbose = true;
         } else if (arg == "--progress-stages") {
             progressStages = true;
+        } else if (arg == "--dclap") {
+            runDclap = true;
         } else if (arg == "--chords") {
             runChords = true;
         } else if (arg == "--transcribe") {
@@ -552,6 +562,16 @@ int runAnalyze(const std::vector<std::string>& args) {
         }
     }
 
+    // The *run's* timestamp. It identifies this invocation -- which model versions and
+    // which mira build produced these rows -- so it belongs in `provenance` below, where
+    // it is shared by every file in the run on purpose.
+    //
+    // It is deliberately NOT what goes into `files.analyzed_at` any more. That column used
+    // to be stamped with this same run-start value for every file, which meant the database
+    // could not answer "how long did this file take" or "how far into this run are we" at
+    // all -- a 38-file album analyzed over 31 minutes landed as 38 rows sharing one second.
+    // `applyAnalysis` already writes one row at a time, so a real per-file completion time
+    // costs nothing beyond calling the clock again at the point the file is actually done.
     int64_t analyzedAt = nowUnix();
     std::map<std::string, int> counts;
     int completedCount = 0; // mira_ui's AnalyzeJob parses the "progress: " line below for its own progress readout
@@ -712,14 +732,31 @@ int runAnalyze(const std::vector<std::string>& args) {
             if (embedding.ok) machine << ",\"embedding\":" << mira::toJson(embedding);
             timer.mark("embedding (discogs-effnet)");
 
-            // Second embedding space (TASKS.md Phase 4 "Embedding A/B", PRD §4, §14.5) —
-            // not content-type-gated either, same reasoning as discogs-effnet above: the
-            // whole point is comparing across content types to see which space actually
-            // separates them better, so both run on every file unconditionally.
-            auto dclapEmbedding = mira::computeDclapEmbedding(*mono, c.audio.sampleRate,
-                                                                MIRA_DCLAP_AUDIO_MODEL);
-            if (dclapEmbedding.ok) machine << ",\"dclap_embedding\":" << mira::toJson(dclapEmbedding);
-            timer.mark("embedding (dclap)");
+            // Second embedding space (TASKS.md Phase 4 "Embedding A/B", PRD §4, §14.5).
+            //
+            // Opt-in (--dclap), and the only stage here that is opt-in for its *cost*
+            // rather than its runtime: measured at 8.1s on a 4:05 track, 27% of that
+            // file's entire analysis -- the most expensive single stage, tied with
+            // beat_this. It used to run on every file unconditionally, on the reasoning
+            // that comparing across content types needs every file in both spaces.
+            //
+            // What changed is what it buys. This vector feeds nothing mira shows: no
+            // caption field, no label, nothing in the UI. Its only readers are
+            // `mira similar --embedding dclap` and `--text`, neither of them the default.
+            // Paying 27% of every analysis for a search space most libraries will never
+            // query is the wrong default; paying it deliberately, when text search is
+            // wanted, is not. Turn it on for the folders that should be text-searchable.
+            //
+            // The cost of leaving it off is honest and recoverable: those files are absent
+            // from the DCLAP index, so --text and --embedding dclap won't find them until
+            // they are re-analyzed with the flag. Nothing else degrades.
+            std::optional<mira::DclapEmbeddingResult> dclapEmbedding;
+            if (runDclap) {
+                dclapEmbedding = mira::computeDclapEmbedding(*mono, c.audio.sampleRate,
+                                                              MIRA_DCLAP_AUDIO_MODEL);
+                if (dclapEmbedding->ok) machine << ",\"dclap_embedding\":" << mira::toJson(*dclapEmbedding);
+                timer.mark("embedding (dclap)");
+            }
 
             auto contentGate = mira::runContentGate(*mono, c.audio.sampleRate, MIRA_CED_MODEL);
             if (contentGate.ok) machine << ",\"content_gate\":" << mira::toJson(contentGate);
@@ -857,15 +894,16 @@ int runAnalyze(const std::vector<std::string>& args) {
 
             machine << "}";
             update.machineJson = machine.str();
-            update.analyzedAt = analyzedAt;
+            // Per file, not the run's start time -- see the `analyzedAt` comment above.
+            update.analyzedAt = nowUnix();
             db.applyAnalysis(update);
             if (embedding.ok) {
                 std::vector<float> embeddingF(embedding.vector.begin(), embedding.vector.end());
                 db.upsertEmbedding(c.record.id, embeddingF);
             }
-            if (dclapEmbedding.ok) {
-                std::vector<float> dclapEmbeddingF(dclapEmbedding.vector.begin(),
-                                                    dclapEmbedding.vector.end());
+            if (dclapEmbedding && dclapEmbedding->ok) {
+                std::vector<float> dclapEmbeddingF(dclapEmbedding->vector.begin(),
+                                                    dclapEmbedding->vector.end());
                 db.upsertDclapEmbedding(c.record.id, dclapEmbeddingF);
             }
             // Per-dimension similarity (TASKS.md Phase 4, PRD §12 item 5, `mira similar
@@ -1884,6 +1922,7 @@ int runSimilar(const std::vector<std::string>& args) {
     int topN = 10;
     std::string embeddingSpace = "effnet";
     std::string by = "overall";
+    std::string textQuery; // --text "<words>" -- a description instead of a file
     std::vector<std::string> positional;
 
     for (size_t i = 0; i < args.size(); ++i) {
@@ -1891,6 +1930,7 @@ int runSimilar(const std::vector<std::string>& args) {
         else if (args[i] == "--n" && i + 1 < args.size()) topN = std::stoi(args[++i]);
         else if (args[i] == "--embedding" && i + 1 < args.size()) embeddingSpace = args[++i];
         else if (args[i] == "--by" && i + 1 < args.size()) by = args[++i];
+        else if (args[i] == "--text" && i + 1 < args.size()) textQuery = args[++i];
         else positional.push_back(args[i]);
     }
 
@@ -1905,8 +1945,46 @@ int runSimilar(const std::vector<std::string>& args) {
         return 1;
     }
 
+    // --text searches by description instead of by example. It only means anything in the
+    // DCLAP space: the text tower was trained jointly with the DCLAP audio tower and lands
+    // in that same 512-dim space, while discogs-effnet's space has no text side at all.
+    // So --text implies --embedding dclap rather than silently comparing across two
+    // unrelated spaces, which would return confident nonsense.
+    if (!textQuery.empty()) {
+        if (by != "overall") {
+            std::cerr << "mira similar: --text only works with --by overall (the default); "
+                         "timbre/rhythm/spectrum are measured from audio and have no text side"
+                      << std::endl;
+            return 1;
+        }
+        mira::Database textDb(dbPath);
+        auto text = mira::computeTextEmbedding(textQuery, MIRA_DCLAP_TEXT_MODEL,
+                                                MIRA_DCLAP_TEXT_VOCAB, MIRA_DCLAP_TEXT_MERGES);
+        if (!text.ok) {
+            std::cerr << "mira similar: " << text.error << std::endl;
+            return 1;
+        }
+        auto textMatches = textDb.findSimilarDclap(text.vector, topN, /*excludeId=*/-1);
+        if (textMatches.empty()) {
+            std::cerr << "mira similar: nothing in the DCLAP index yet — text search only "
+                         "finds files analyzed with --dclap (it is off by default; see "
+                         "`mira analyze --help`)"
+                      << std::endl;
+            return 1;
+        }
+        std::cout << "similar to \"" << textQuery << "\" (--text, dclap):" << std::endl;
+        for (const auto& m : textMatches) {
+            auto matchRecord = textDb.findById(m.id);
+            std::cout << "  " << std::fixed << std::setprecision(4) << m.distance << "  "
+                      << (matchRecord ? matchRecord->path : "(id " + std::to_string(m.id) + ", not found)")
+                      << std::endl;
+        }
+        return 0;
+    }
+
     if (positional.empty()) {
-        std::cerr << "mira similar: a file path or numeric id is required" << std::endl;
+        std::cerr << "mira similar: a file path or numeric id is required "
+                     "(or --text \"<description>\")" << std::endl;
         return 1;
     }
     const std::string& target = positional[0];
@@ -2107,6 +2185,12 @@ int runModels(const std::vector<std::string>& args) {
         {"discogs-effnet (embedding)", MIRA_EFFNET_MODEL, "scripts/fetch-vendor.sh"},
         {"DCLAP audio encoder (embedding, TASKS.md Phase 4)", MIRA_DCLAP_AUDIO_MODEL,
          "gh release download v1 --repo NeptuneHub/AudioMuse-AI-DCLAP -D models/similarity-embeddings/dclap"},
+        {"DCLAP text tower (`similar --text`, TASKS.md Phase 6)", MIRA_DCLAP_TEXT_MODEL,
+         "gh release download v1 --repo NeptuneHub/AudioMuse-AI-DCLAP -D models/similarity-embeddings/dclap"},
+        {"RoBERTa vocab for the text tower", MIRA_DCLAP_TEXT_VOCAB,
+         "lab/export_roberta_tokenizer.py"},
+        {"RoBERTa merges for the text tower", MIRA_DCLAP_TEXT_MERGES,
+         "lab/export_roberta_tokenizer.py"},
         {"CED-small (content gate)", MIRA_CED_MODEL, "scripts/fetch-vendor.sh"},
         {"mtg_jamendo_moodtheme", MIRA_MOODTHEME_MODEL, "scripts/fetch-vendor.sh"},
         {"mtg_jamendo_instrument", MIRA_INSTRUMENT_MODEL, "scripts/fetch-vendor.sh"},

@@ -330,20 +330,60 @@ void FolderGroupTreeItem::paintItem(juce::Graphics& g, int width, int height)
     auto iconY = (height - iconH) * 0.5f;
     g.setColour(neutral);
 
-    if (category.startsWith("stems"))
+    // A group created before categories existed (or before this one's category was added)
+    // has none stored -- the real library's SAMPLES group is exactly that, which is why it
+    // drew the generic mark while MUSIC drew a note. Fall back to the built-in's own name
+    // so it still gets its glyph, rather than migrating the row from inside a paint call.
+    // Display-level only: nothing that routes analysis reads this.
+    auto effectiveCategory = category;
+    if (effectiveCategory.isEmpty())
     {
-        // Both "stems_score" and "stems_music" get the same stacked-track glyph -- the
-        // distinction between the two is behavioural (segment markers vs not, TASKS.md
-        // Phase 5), not visual; the name label already says which one this group is.
-        // Three parallel horizontal bars of different lengths -- separate stacked
-        // tracks, the whole idea of a stem set.
+        auto lowered = name.toLowerCase();
+        if (lowered == "score stems") effectiveCategory = "stems_score";
+        else if (lowered == "music stems") effectiveCategory = "stems_music";
+        else if (lowered == "samples") effectiveCategory = "samples";
+        else if (lowered == "music") effectiveCategory = "music";
+    }
+
+    // "so now if u have a differtn icon for music lets do differnt icons for all the 4
+    // categories will be nice" -- all four built-ins are now visually distinct. They were
+    // not: both stem kinds shared one glyph, and SAMPLES fell through to the generic mark
+    // entirely (see effectiveCategory above).
+    if (effectiveCategory == "stems_music")
+    {
+        // Three parallel horizontal bars of different lengths -- separate stacked tracks,
+        // the whole idea of a stem set. This is the plain stem glyph; score stems below
+        // are this plus what makes them different.
         float barH = iconH * 0.22f;
         float widths[3] = { 15.0f, 10.0f, 13.0f };
         for (int i = 0; i < 3; ++i)
             g.fillRoundedRectangle(4.0f, iconY + static_cast<float>(i) * (barH + 2.0f), widths[static_cast<size_t>(i)],
                                     barH, 1.0f);
     }
-    else if (category == "samples")
+    else if (effectiveCategory.startsWith("stems"))
+    {
+        // Score stems ("stems_score", or the legacy "stems" the SCORE STEMS group is
+        // still stored under -- see MainComponent's isStemPath note). Same stacked tracks
+        // as music stems, crossed by a cue marker: the difference between the two kinds is
+        // that a score stem is a long reel carrying cues and segment markers, which is
+        // exactly what the extra line says. Built from the music-stem glyph rather than a
+        // wholly separate picture so the two still read as siblings.
+        float barH = iconH * 0.22f;
+        float widths[3] = { 13.0f, 9.0f, 11.0f };
+        for (int i = 0; i < 3; ++i)
+            g.fillRoundedRectangle(3.0f, iconY + static_cast<float>(i) * (barH + 2.0f), widths[static_cast<size_t>(i)],
+                                    barH, 1.0f);
+        // The marker itself: a full-height vertical line with a small flag at the top,
+        // drawn brighter than the bars so it reads as laid *over* the tracks.
+        g.setColour(MiraLookAndFeel::text);
+        float markerX = 15.5f;
+        g.fillRect(markerX, iconY - 1.0f, 1.4f, iconH + 2.0f);
+        juce::Path flag;
+        flag.addTriangle(markerX + 1.4f, iconY - 1.0f, markerX + 5.0f, iconY + 1.0f, markerX + 1.4f, iconY + 3.0f);
+        g.fillPath(flag);
+        g.setColour(neutral);
+    }
+    else if (effectiveCategory == "samples")
     {
         // A 2x2 grid of small pads -- the common "sample pack" visual shorthand.
         float padSize = iconH * 0.42f;
@@ -353,7 +393,7 @@ void FolderGroupTreeItem::paintItem(juce::Graphics& g, int width, int height)
                 g.fillRoundedRectangle(4.0f + static_cast<float>(col) * (padSize + gap),
                                         iconY + static_cast<float>(row) * (padSize + gap), padSize, padSize, 1.5f);
     }
-    else if (category == "music")
+    else if (effectiveCategory == "music")
     {
         // A single flat eighth-note glyph: oval head + stem + flag.
         juce::Path note;

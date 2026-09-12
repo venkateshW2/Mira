@@ -38,7 +38,7 @@ int GroupActivityView::preferredHeight() const
 {
     if (stems.empty()) return 0;
     return static_cast<int>(stems.size()) * rowHeight + kDensityHeight + 6
-           + (showRuler ? kRulerHeight : 0);
+           + (showRuler ? kRulerHeight + kCueLaneHeight : 0);
 }
 
 void GroupActivityView::setRowHeight(int height)
@@ -67,10 +67,19 @@ juce::Rectangle<int> GroupActivityView::rulerBounds() const
     return getLocalBounds().removeFromTop(kRulerHeight).withTrimmedLeft(kGutterWidth);
 }
 
+juce::Rectangle<int> GroupActivityView::cueLaneBounds() const
+{
+    if (!showCueLane()) return {};
+    auto bounds = getLocalBounds();
+    bounds.removeFromTop(kRulerHeight);
+    return bounds.removeFromTop(kCueLaneHeight).withTrimmedLeft(kGutterWidth);
+}
+
 juce::Rectangle<int> GroupActivityView::matrixBounds() const
 {
     auto bounds = getLocalBounds().withTrimmedBottom(kDensityHeight);
     if (showRuler) bounds.removeFromTop(kRulerHeight);
+    if (showCueLane()) bounds.removeFromTop(kCueLaneHeight);
     return bounds.withTrimmedLeft(kGutterWidth);
 }
 
@@ -94,17 +103,23 @@ double GroupActivityView::xToSeconds(int x, juce::Rectangle<int> area) const
     return juce::jlimit(0.0, reelSeconds, frac * reelSeconds);
 }
 
-std::optional<size_t> GroupActivityView::cueBoundaryNear(int x) const
+std::optional<GroupActivityView::BoundaryHit> GroupActivityView::cueBoundaryNear(int x) const
 {
     auto area = matrixBounds();
+    // Starts first, across every cue, so a shared boundary (one cue ending exactly where
+    // the next begins) resolves to the START -- that is the two-neighbour drag round 6
+    // describes, and grabbing it as an "end" would move only one side.
+    //
+    // The first cue's start used to be excluded, on the grounds that there is no cue before
+    // it to hand the other half of the drag to. That confused "has no neighbour" with "must
+    // not move": it is still this cue's own beginning, and there was no other way to change
+    // it.
     for (size_t i = 0; i < cues.size(); ++i)
-    {
-        // The first cue's start is the reel's own beginning, not a boundary between two
-        // cues -- dragging it would mean nothing to the cue before it, because there isn't
-        // one. Left alone deliberately.
-        if (i == 0) continue;
-        if (std::abs(secondsToX(cues[i].startSeconds, area) - x) <= kBoundaryGrabPixels) return i;
-    }
+        if (std::abs(secondsToX(cues[i].startSeconds, area) - x) <= kBoundaryGrabPixels)
+            return BoundaryHit { i, Edge::start };
+    for (size_t i = 0; i < cues.size(); ++i)
+        if (std::abs(secondsToX(cues[i].endSeconds, area) - x) <= kBoundaryGrabPixels)
+            return BoundaryHit { i, Edge::end };
     return std::nullopt;
 }
 
@@ -154,6 +169,55 @@ void GroupActivityView::paint(juce::Graphics& g)
     }
     double viewStart = viewStartFrac * reelSeconds;
     double viewEnd = juce::jmin(reelSeconds, (viewStartFrac + windowFrac) * reelSeconds);
+
+    // --- The numbered cue lane ----------------------------------------------------------
+    // "Can't tell where cues are", and "start and end cue not understanding some have some
+    // dont". Both had the same cause: the only thing drawn per cue was a single vertical
+    // line at its START. A cue whose neighbour began somewhere else -- which is every cue
+    // with silence after it -- therefore had a visible beginning and no visible end, so
+    // half of them looked like boundaries and half like ranges.
+    //
+    // A cue is a RANGE, so it is now drawn as a bar that occupies its range, numbered with
+    // the same number the cue list on the right uses. That number is what ties the two
+    // together: "9" in the list is the bar labelled 9, and the timings beside it are that
+    // bar's start and length.
+    if (auto lane = cueLaneBounds(); !lane.isEmpty())
+    {
+        g.setColour(MiraLookAndFeel::surface2);
+        g.fillRect(getLocalBounds().withTrimmedTop(kRulerHeight).removeFromTop(kCueLaneHeight));
+        for (size_t i = 0; i < cues.size(); ++i)
+        {
+            const auto& cue = cues[i];
+            if (cue.endSeconds < viewStart || cue.startSeconds > viewEnd) continue;
+            int x0 = secondsToX(juce::jmax(cue.startSeconds, viewStart), lane);
+            int x1 = secondsToX(juce::jmin(cue.endSeconds, viewEnd), lane);
+            // Floored at 3px so a degenerate cue still shows up as something to click and
+            // delete, rather than vanishing and looking like the list is lying.
+            int width = juce::jmax(3, x1 - x0);
+            auto colour = cue.edited ? MiraLookAndFeel::good : MiraLookAndFeel::accent;
+
+            auto bar = juce::Rectangle<int>(x0, lane.getY() + 2, width, lane.getHeight() - 4);
+            g.setColour(colour.withAlpha(cue.edited ? 0.42f : 0.22f));
+            g.fillRect(bar);
+            g.setColour(colour);
+            g.drawRect(bar, 1); // a closed box on all four sides, whatever its neighbours do
+
+            // Number always; name too when the bar is wide enough to hold it. The number is
+            // the point -- it is what makes the cue list navigable.
+            auto text = juce::String(i + 1);
+            if (cue.label.isNotEmpty() && width > 64) text += "  " + cue.label;
+            if (width > 14)
+            {
+                g.setColour(MiraLookAndFeel::text);
+                g.setFont(juce::Font(juce::FontOptions(9.5f)));
+                g.drawText(text, bar.reduced(3, 0), juce::Justification::centredLeft, false);
+            }
+        }
+        g.setColour(MiraLookAndFeel::textFaint);
+        g.setFont(juce::Font(juce::FontOptions(9.0f)));
+        g.drawText("CUES", 6, lane.getY(), kGutterWidth - 10, lane.getHeight(),
+                    juce::Justification::centredLeft, false);
+    }
 
     // --- Cue bands, painted first so the activity blocks sit on top of them -------------
     // Alternating tint rather than a line per boundary: a band says "this stretch is one
@@ -230,16 +294,45 @@ void GroupActivityView::paint(juce::Graphics& g)
     for (size_t i = 0; i < cues.size(); ++i)
     {
         const auto& cue = cues[i];
-        if (cue.startSeconds < viewStart || cue.startSeconds > viewEnd) continue;
-        bool dragging = draggingBoundary && *draggingBoundary == i;
+        if (cue.endSeconds < viewStart || cue.startSeconds > viewEnd) continue;
+        bool draggingStart = draggingBoundary && draggingBoundary->index == i
+                              && draggingBoundary->edge == Edge::start;
+        bool draggingEnd = draggingBoundary && draggingBoundary->index == i
+                            && draggingBoundary->edge == Edge::end;
+        bool dragging = draggingStart;
+        bool startVisible = cue.startSeconds >= viewStart && cue.startSeconds <= viewEnd;
         double at = dragging ? dragSeconds : cue.startSeconds;
         int x = secondsToX(at, area);
-        g.setColour(dragging ? MiraLookAndFeel::text
-                             : (cue.edited ? MiraLookAndFeel::good : MiraLookAndFeel::accent));
-        g.drawLine(static_cast<float>(x), static_cast<float>(area.getY()), static_cast<float>(x),
-                   static_cast<float>(density.getBottom()), dragging ? 2.0f : 1.0f);
+        if (startVisible || dragging)
+        {
+            g.setColour(dragging ? MiraLookAndFeel::text
+                                 : (cue.edited ? MiraLookAndFeel::good : MiraLookAndFeel::accent));
+            g.drawLine(static_cast<float>(x), static_cast<float>(area.getY()), static_cast<float>(x),
+                       static_cast<float>(density.getBottom()), dragging ? 2.0f : 1.0f);
+        }
 
-        if (cue.label.isNotEmpty())
+        // The END edge, drawn exactly like the start. It was dashed, and skipped entirely
+        // where the next cue began at the same instant -- the reasoning being that a shared
+        // boundary shouldn't be drawn twice. On screen that produced "so 12, 14 has start
+        // and end cue line why does 16 and 17 not have": cues butted against a neighbour
+        // looked closed on both sides (the neighbour's start supplied the second line),
+        // while cues with silence after them looked open. Same object, two appearances,
+        // for a reason nobody can see. Both edges are solid now; a shared boundary drawing
+        // twice at the same x is invisible anyway.
+        bool endIsNextStart = i + 1 < cues.size()
+                               && std::abs(cues[i + 1].startSeconds - cue.endSeconds) < 0.5;
+        double endAt = draggingEnd ? dragSeconds : cue.endSeconds;
+        if ((!endIsNextStart || draggingEnd) && endAt >= viewStart && endAt <= viewEnd)
+        {
+            int xEnd = secondsToX(endAt, area);
+            g.setColour(draggingEnd ? MiraLookAndFeel::text
+                                     : (cue.edited ? MiraLookAndFeel::good : MiraLookAndFeel::accent));
+            g.drawLine(static_cast<float>(xEnd), static_cast<float>(area.getY()),
+                       static_cast<float>(xEnd), static_cast<float>(density.getBottom()),
+                       draggingEnd ? 2.0f : 1.0f);
+        }
+
+        if (cue.label.isNotEmpty() && startVisible)
         {
             int x1 = secondsToX(cue.endSeconds, area);
             if (x1 - x > 40)
@@ -272,22 +365,89 @@ void GroupActivityView::paint(juce::Graphics& g)
     g.drawVerticalLine(kGutterWidth - 1, static_cast<float>(bounds.getY()), static_cast<float>(bounds.getBottom()));
 }
 
+juce::Rectangle<int> GroupActivityView::cueBarBounds(int64_t cueId) const
+{
+    auto lane = cueLaneBounds();
+    if (lane.isEmpty()) return {};
+    double windowFrac = 1.0 / zoomFactor;
+    double viewStart = viewStartFrac * reelSeconds;
+    double viewEnd = juce::jmin(reelSeconds, (viewStartFrac + windowFrac) * reelSeconds);
+    for (const auto& cue : cues)
+    {
+        if (cue.id != cueId) continue;
+        if (cue.endSeconds < viewStart || cue.startSeconds > viewEnd) return {};
+        int x0 = secondsToX(juce::jmax(cue.startSeconds, viewStart), lane);
+        int x1 = secondsToX(juce::jmin(cue.endSeconds, viewEnd), lane);
+        return { x0, lane.getY() + 2, juce::jmax(3, x1 - x0), lane.getHeight() - 4 };
+    }
+    return {};
+}
+
+void GroupActivityView::mouseDoubleClick(const juce::MouseEvent& e)
+{
+    auto lane = cueLaneBounds();
+    if (lane.isEmpty() || !lane.contains(e.x, e.y)) return;
+    double t = xToSeconds(e.x, lane);
+    for (const auto& cue : cues)
+        if (t >= cue.startSeconds && t <= cue.endSeconds)
+        {
+            if (onCueRenameRequested) onCueRenameRequested(cue.id, cueBarBounds(cue.id));
+            return;
+        }
+}
+
 void GroupActivityView::mouseMove(const juce::MouseEvent& e)
 {
-    setMouseCursor(cueBoundaryNear(e.x) ? juce::MouseCursor::LeftRightResizeCursor
-                                         : juce::MouseCursor::NormalCursor);
+    if (cueBoundaryNear(e.x)) { setMouseCursor(juce::MouseCursor::LeftRightResizeCursor); return; }
+    // An I-beam over the cue lane: the bars are renameable in place, and a cursor is the
+    // only thing that says so before someone tries.
+    auto lane = cueLaneBounds();
+    setMouseCursor(!lane.isEmpty() && lane.contains(e.x, e.y) ? juce::MouseCursor::IBeamCursor
+                                                              : juce::MouseCursor::NormalCursor);
 }
 
 void GroupActivityView::mouseDown(const juce::MouseEvent& e)
 {
+    // The gutter is the stem list, and clicking a name in it selects that file -- which is
+    // what makes the waveform, the details sidebar and the segment list all follow
+    // ("i cant select a track /file so idont know the segemetn names"). Handled before
+    // anything else because the gutter is outside matrixBounds(): a sweep started here
+    // would map to a nonsense time anyway.
+    if (e.x < kGutterWidth)
+    {
+        auto area = matrixBounds();
+        if (rowHeight > 0 && e.y >= area.getY())
+        {
+            int index = (e.y - area.getY()) / rowHeight;
+            if (index >= 0 && index < static_cast<int>(stems.size()) && onStemClicked)
+                onStemClicked(index);
+        }
+        return;
+    }
+
     draggingBoundary = cueBoundaryNear(e.x);
     if (draggingBoundary)
     {
-        dragSeconds = cues[*draggingBoundary].startSeconds;
+        const auto& cue = cues[draggingBoundary->index];
+        dragSeconds = draggingBoundary->edge == Edge::start ? cue.startSeconds : cue.endSeconds;
         return;
     }
 
     auto t = xToSeconds(e.x, matrixBounds());
+
+    // A click in the cue lane is a click on that cue, not the start of a sweep -- the lane
+    // is the cue index, so sweeping a new range across it would be the wrong gesture there.
+    if (auto lane = cueLaneBounds(); !lane.isEmpty() && lane.contains(e.x, e.y))
+    {
+        for (const auto& cue : cues)
+            if (t >= cue.startSeconds && t <= cue.endSeconds)
+            {
+                if (e.mods.isPopupMenu()) { if (onCueRightClicked) onCueRightClicked(cue.id); }
+                else if (onCueClicked) onCueClicked(cue.id);
+                return;
+            }
+        return;
+    }
 
     // A right-click inside a cue is that cue's menu; a left press starts a sweep, which
     // becomes a click if it never moves (handled in mouseUp).
@@ -318,11 +478,28 @@ void GroupActivityView::mouseDrag(const juce::MouseEvent& e)
     }
     if (!draggingBoundary) return;
 
-    // Clamped to stay inside its two neighbours: a boundary that crosses the next one would
-    // invert a cue, and a zero-length cue is not a thing anyone means to create.
-    size_t i = *draggingBoundary;
-    double lower = cues[i - 1].startSeconds + 1.0;
-    double upper = (i + 1 < cues.size() ? cues[i + 1].startSeconds : reelSeconds) - 1.0;
+    // Clamped so neither the cue being dragged nor the neighbour sharing the boundary can
+    // be inverted or collapsed. A zero-length cue is not a thing anyone means to create --
+    // and five of them are sitting in the user's library because an earlier version of this
+    // had no clamp at all.
+    size_t i = draggingBoundary->index;
+    double lower = 0.0, upper = reelSeconds;
+    if (draggingBoundary->edge == Edge::start)
+    {
+        // Can't pass the previous cue's start, and can't reach this cue's own end.
+        lower = i > 0 ? cues[i - 1].startSeconds + 1.0 : 0.0;
+        upper = cues[i].endSeconds - 1.0;
+    }
+    else
+    {
+        // Can't reach this cue's own start; can't pass the next cue's end when the two are
+        // adjacent (dragging the shared edge carries that cue's start along with it).
+        lower = cues[i].startSeconds + 1.0;
+        bool adjacent = i + 1 < cues.size()
+                         && std::abs(cues[i + 1].startSeconds - cues[i].endSeconds) < 0.5;
+        upper = adjacent ? cues[i + 1].endSeconds - 1.0
+                         : (i + 1 < cues.size() ? cues[i + 1].startSeconds : reelSeconds);
+    }
     dragSeconds = juce::jlimit(lower, juce::jmax(lower, upper), xToSeconds(e.x, matrixBounds()));
 
     // Snap to a nearby stem edge. At fit zoom on a 41-minute reel one pixel is about 1.7
@@ -375,12 +552,12 @@ void GroupActivityView::mouseUp(const juce::MouseEvent& e)
         return;
     }
     if (!draggingBoundary) return;
-    size_t i = *draggingBoundary;
-    auto id = cues[i].id;
+    auto hit = *draggingBoundary;
+    auto id = cues[hit.index].id;
     auto seconds = dragSeconds;
     draggingBoundary.reset();
     // One write on release, not one per mouse move.
-    if (onCueBoundaryMoved) onCueBoundaryMoved(id, seconds);
+    if (onCueBoundaryMoved) onCueBoundaryMoved(id, hit.edge, seconds);
 }
 
 void GroupActivityView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)

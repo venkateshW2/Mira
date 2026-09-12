@@ -957,6 +957,27 @@ else
 fi
 
 echo
+echo
+echo "== test: RoBERTa tokenizer parity (analyze/RobertaTokenizer.cpp vs HuggingFace) =="
+echo "   The CLAP text tower takes token ids, not text -- ids that are subtly wrong still"
+echo "   produce a confident vector, just a meaningless one, so this is checked exactly."
+DCLAP_DIR="$ROOT/models/similarity-embeddings/dclap"
+if [[ -f "$DCLAP_DIR/roberta-vocab.tsv" && -f "$DCLAP_DIR/roberta-parity.tsv" ]]; then
+    TOKBIN="$(mktemp -t mira_tokparity_XXXXXX)"
+    if c++ -std=c++17 -O1 -o "$TOKBIN" "$ROOT/tests/tokenizer_parity.cpp" \
+            "$ROOT/src/mira/analyze/RobertaTokenizer.cpp" 2>/dev/null; then
+        OUT_TOK=$("$TOKBIN" "$DCLAP_DIR/roberta-vocab.tsv" "$DCLAP_DIR/roberta-merges.txt" \
+                             "$DCLAP_DIR/roberta-parity.tsv" 2>&1)
+        CODE_TOK=$?
+        echo "$OUT_TOK"
+        assert_eq "every tokenizer parity case matches HuggingFace" "0" "$CODE_TOK"
+    else
+        fail "tokenizer_parity.cpp did not compile"
+    fi
+    rm -f "$TOKBIN"
+else
+    echo "  SKIP: tokenizer tables not present (run lab/export_roberta_tokenizer.py)"
+fi
 echo "======================================"
 echo "  $PASS passed, $FAIL failed"
 echo "======================================"
