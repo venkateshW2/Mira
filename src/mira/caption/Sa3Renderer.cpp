@@ -173,6 +173,13 @@ std::vector<std::pair<std::string, std::string>> renderSa3Tags(const CaptionFiel
         tags.emplace_back("instruments", joinLabels(fields.instruments, fields.instruments.size()));
     if (!fields.moods.empty()) tags.emplace_back("moods", joinLabels(fields.moods, fields.moods.size()));
     if (!fields.keywords.empty()) tags.emplace_back("keywords", joinStrings(fields.keywords));
+    // Shape fields (CaptionFields.h). Emitted as their own tag keys rather than folded
+    // into `moods` so underfit's tag-pill UI shows them as independent dials the training
+    // prompts can drop or keep per sample -- the whole point is that they vary
+    // independently of mood, which is what makes them learnable.
+    if (fields.rhythm) tags.emplace_back("rhythm", *fields.rhythm);
+    if (fields.dynamics) tags.emplace_back("dynamics", *fields.dynamics);
+    if (fields.texture) tags.emplace_back("texture", *fields.texture);
     if (fields.bpm) tags.emplace_back("bpm", formatRounded(*fields.bpm));
     if (fields.keyScale) tags.emplace_back("keyscale", *fields.keyScale);
     // Not underfit's `seconds_total` (that's computed independently, straight off the

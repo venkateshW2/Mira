@@ -50,6 +50,8 @@ target_sources(mira_ui PRIVATE
   Source/GroupActivityView.cpp
   Source/ThumbnailStore.cpp
   Source/FileDetailsWindow.cpp
+  Source/Sa3Worker.cpp
+  Source/GenerateWindow.cpp
   Source/NativeBlur.mm
   Source/NativeWindowChrome.mm
 )

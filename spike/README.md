@@ -205,6 +205,23 @@ All five day 1-5 exit criteria from PRD §9 are met, including the manual one:
 **Phase 0 is complete.** Every item in PRD §10's risk table that Phase 0 was meant to
 retire has been retired; none of the documented fallbacks were needed.
 
+## 06_embedded_python — 2026-09-13, PASSED
+
+Added after Phase 0, on the same pass/fail basis. Proves a standalone CPython + MLX can be
+embedded in a signed `.app`, reach the GPU as a child process, and keep a valid code
+signature — the unknown blocking [PACKAGING.md](../sa3-studio/PACKAGING.md) option B.
+
+```bash
+cd 06_embedded_python && ./build.sh
+```
+
+Needs no entitlements and no weakening of library validation. Found one trap: a bundled
+interpreter writes `__pycache__` into the sealed bundle on first run and breaks its own
+signature — fixed with `PYTHONDONTWRITEBYTECODE=1`, with a regression guard in `build.sh`.
+
+Ad-hoc signed; real Developer ID notarisation is still untested (0 signing identities on
+this machine). See [06_embedded_python/README.md](06_embedded_python/README.md).
+
 Three real bugs found and fixed along the way (Essentia/ffmpeg 7.1 API removal,
 `beat_this_cpp` header/impl mismatch, `beat_this_cpp`'s broken `find_package(onnxruntime)`
 path) — all in vendored, gitignored code, documented above so they can be reapplied or

@@ -7,6 +7,11 @@ effort estimates — those are judgement, not measurements.
 Companion to [RUNBOOK-dune-lora.md](RUNBOOK-dune-lora.md), which is the actual step-by-step
 for the first training run.
 
+> **Partly superseded by [PACKAGING.md](PACKAGING.md) (2026-09-13.)** The Tier 2 line counts
+> here were measured for sm-music, not the medium model in use, and the packaging case for
+> the C++ port does not survive measurement. PACKAGING.md recommends embedding a Python
+> runtime instead. Everything else in this document still holds.
+
 ---
 
 ## The question this answers
@@ -130,12 +135,39 @@ drag into the DAW.
   together is cheaper than doing either alone.
 - Gives you LoRA strength, audio2audio and inpainting immediately — all already flags on
   `sa3_mlx.py`.
-- Catch: requires Python + the MLX venv present. Fine locally, awkward to ship to others.
+- Catch: requires Python + the MLX venv present. Fine locally, awkward to ship to others —
+  and the venv **has** broken once already (`uv run` downgrading safetensors mid-run).
+  [PACKAGING.md](PACKAGING.md) option B fixes that by shipping the interpreter inside the
+  app bundle, and adds the persistent-worker design that avoids paying the 44 s model load
+  on every generation.
 
 ### Tier 2 — native C++ inference inside mira
 Port the MLX Python model definitions to C++ against `libmlx`.
 
-What sm-music inference needs:
+> **Superseded 2026-09-13 — see [PACKAGING.md](PACKAGING.md) §5.** The figures below were
+> for **sm-music**. The model actually in use is **medium**, which resolves to different
+> files, and the `lora_merge.py` claim is wrong. Corrected table follows; the original is
+> kept beneath it for the record. PACKAGING.md also reaches a *different recommendation* —
+> embed Python rather than port — because porting inference does not remove the Python
+> dependency that local pre-encoding requires.
+
+What **medium** inference needs (`sa3_mlx.py:83-99` selects these):
+
+| File | Lines |
+|---|---|
+| `models/defs/dit_mlx_medium.py` | 485 |
+| `models/defs/t5gemma_mlx.py` | 313 |
+| `models/defs/same_l_decoder.py` | 345 |
+| `models/defs/sa3_pipeline.py` | 207 |
+| `models/defs/lora_merge.py` | 823 |
+| **Total** | **2,173** |
+
+`lora_merge.py` **cannot be skipped.** Merging the LoRA into the base weights offline
+removes the runtime strength slider and multi-slot A/B — the features that distinguish this
+from Stability's commercial plugin, which has no LoRA support at all. Runtime LoRA is the
+product.
+
+<details><summary>Original (sm-music) figures, superseded</summary>
 
 | File | Lines |
 |---|---|
@@ -148,15 +180,19 @@ What sm-music inference needs:
 `models/defs/lora_merge.py` (823 lines) can be skipped by merging the LoRA into the base
 weights offline, once, in Python.
 
+</details>
+
 - **Rough effort: a month, realistically more.**
 - **The real risk is silent wrongness.** A numerical port doesn't crash when it's wrong —
   it just sounds subtly off. Stability shipped `scripts/parity_forward_torch.py` and
   `scripts/parity_forward_mlx.py` to prove their own torch→MLX port matched; an
   MLX-Python→C++ port needs the same harness. Precedent exists in this repo: the Phase 0
   spike matched the ONNX embedding pipeline to ~1e-4.
-- **It would NOT be faster.** MLX runs the same Metal kernels either way. The gain is
-  "ships as one app, no Python dependency" — a packaging win, not a capability or speed
-  win.
+- **It would NOT be faster.** MLX runs the same Metal kernels either way.
+- **The packaging gain is ~2%, not the win it sounds like.** Measured 2026-09-13: weights
+  are 4.8 GB and MLX ships a 136 MB `.metallib` from either language, so dropping Python
+  removes ~90 MB from a ~5 GB payload. And it does not remove Python at all, since
+  `pre_encode_mlx.py` still runs locally for training. See [PACKAGING.md](PACKAGING.md).
 
 ### Tier 3 — a VST/AU plugin with LoRA support
 The actual gap in the commercial SA3 plugin.
@@ -177,5 +213,6 @@ The actual gap in the commercial SA3 plugin.
    building tooling around them.
 2. **Then:** B + Tier 1 together, since they share their plumbing. That is the whole
    "one button → LoRA → generate with it" loop, with underfit kept only for monitoring.
-3. **Only if mira becomes something other people install:** Tier 2.
+3. **For packaging:** embed a Python runtime rather than porting — see
+   [PACKAGING.md](PACKAGING.md). Tier 2 is deferred, not scheduled.
 4. **Only after the captions are proven:** Tier 3.

@@ -44,6 +44,23 @@ struct CaptionFields {
     std::optional<std::string> keyScale;   // e.g. "F minor" -- already gated by the analyzer's
                                             // own harmonicity check (Key.cpp), nothing further here
     std::optional<bool> isInstrumental;    // from voice_instrumental.voice_probability, thresholded
+
+    // Shape fields (sa3-studio/PACKAGING.md's caption work, 2026-09-13). Three worded
+    // buckets over DSP mira already measures but never captioned. They exist because the
+    // existing fields are all *song* descriptors -- genre, mood, instruments, BPM -- and
+    // none of them separates score-like music from song-like music, which is what a film
+    // score LoRA is actually trained to learn.
+    //
+    // Measured on this library's 171 analysed track+stem files before being picked (see
+    // the threshold block below). Deliberately NOT included: harmonicity (Dune 0.939 vs
+    // other tracks 0.944 -- no separation at all, so the tag would be pure prompt noise),
+    // spectral_centroid (r=0.91 with spectral_flatness, same axis twice) and crest_factor
+    // (r=0.44 with loudness_range -- partly redundant with `dynamics`). Fewer fields that
+    // genuinely discriminate beat more fields that correlate; that is the same reasoning
+    // the per-head thresholds above use, applied to DSP.
+    std::optional<std::string> rhythm;    // sparse | moderate | driving      (onset_rate)
+    std::optional<std::string> dynamics;  // wide | moderate | compressed     (loudness_range_lu)
+    std::optional<std::string> texture;   // tonal | mixed | noisy            (spectral_flatness)
 };
 
 // Confidence-gate thresholds and top-k caps. Originally first-pass/unmeasured; TASKS.md
@@ -77,6 +94,29 @@ constexpr int kCaptionMaxGenre = 3;
 constexpr int kCaptionMaxInstruments = 8;
 constexpr int kCaptionMaxMood = 3;
 constexpr int kCaptionMaxKeywords = 8; // safety cap on human.keywords -- see CaptionFields.cpp
+
+// Shape-field bucket boundaries, calibrated the same way Phase 4 calibrated the heads:
+// by measuring, not by guessing. Tertiles over the 171 analysed track+stem files in a
+// real library, then rounded to interpretable numbers and re-checked for balance --
+// onset_rate landed 61/56/54 across the three buckets, near-perfectly even.
+//
+// The check that matters is that a tag VARIES WITHIN a corpus, not just between corpora:
+// a field that reads the same on every training file teaches the model nothing (that is
+// what makes "epic" useless on a set where everything is epic). onset_rate spans
+// 0.1-3.04 across the 38 Dune tracks alone -- a 30x spread, landing 20 sparse /
+// 15 moderate / 3 driving -- so it is real signal a LoRA can attach to a word.
+//
+// Measured tertiles: onset p33=0.75 p66=1.93 | lra p33=3.6 p66=13.2 | flat p33=0.031
+// p66=0.062. These are first-pass numbers from ONE library, unlike the head thresholds
+// which were checked against ground truth -- they will need re-checking on a second
+// score corpus (Mad Max is the intended test: it should sit far above Dune's 0.95 mean
+// onset_rate, and if it does not, this field is not measuring what it claims to).
+constexpr double kCaptionRhythmSparseMax = 0.8;      // onset_rate
+constexpr double kCaptionRhythmDrivingMin = 2.0;
+constexpr double kCaptionDynamicsCompressedMax = 4.0; // loudness_range_lu
+constexpr double kCaptionDynamicsWideMin = 13.0;
+constexpr double kCaptionTextureTonalMax = 0.03;      // spectral_flatness
+constexpr double kCaptionTextureNoisyMin = 0.06;
 
 // Reads `record.machine` into a CaptionFields document, then layers `record.human`
 // overrides on top (PRD §11: "human field always wins on conflict"). See

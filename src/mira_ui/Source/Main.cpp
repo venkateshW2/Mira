@@ -23,6 +23,9 @@
 #include "NativeWindowChrome.h"
 #include "FilterBar.h"
 #include "CueEditor.h"
+#include "mira/caption/CaptionFields.h"
+#include "mira/caption/Sa3Renderer.h"
+#include "GenerateWindow.h"
 #include "LogView.h"
 
 #include <cstdlib>
@@ -808,6 +811,11 @@ public:
                                              : "Edit " + juce::String(static_cast<int>(selectedIds.size()))
                                                    + " Selected...";
             menu.addItem(detailsLabel, [this, selectedIds] { openFileDetails(selectedIds); });
+            if (selectedIds.size() == 1 && onSendCaptionToGenerate)
+            {
+                const auto id = selectedIds.front();
+                menu.addItem("Use Caption in SA3 Generate", [this, id] { onSendCaptionToGenerate(id); });
+            }
 
             // Organising files that are already in the library, as opposed to Add
             // Files... which indexes new ones -- both end in the same place.
@@ -999,6 +1007,11 @@ public:
     void setScanStatusText(const juce::String& text) { tabBar.setStatusText(text); }
 
     std::function<void(std::vector<juce::String>)> onAnalyzeRequested;
+    // Sends one file's SA3 caption straight into the generate window's prompt box.
+    // Typing these by hand is how prompt/training mismatches creep in -- underfit
+    // capitalises tag names before the text encoder sees them, so "moods:" and "Moods:"
+    // are different tokens, and a spell checker would never catch it.
+    std::function<void(int64_t)> onSendCaptionToGenerate;
     // Owned by MainComponent (the Analyze menu's sticky toggles) -- the file list just
     // reads it so its own Analyze item says what it's actually about to run.
     std::function<juce::String()> getAnalyzeOptionsSuffix;
@@ -1256,6 +1269,30 @@ public:
         });
         fileList->onViewModeChanged = [this](bool cueActive) { setCueViewActive(cueActive); };
         fileList->onAnalyzeRequested = [this](std::vector<juce::String> paths) { enqueueAnalyze(std::move(paths)); };
+        fileList->onSendCaptionToGenerate = [this](int64_t fileId) {
+            auto record = database->findById(fileId);
+            if (!record) return;
+            // Rendered by the SAME code the sidecars use, so what you generate with is
+            // exactly what a LoRA trained on this file would have seen.
+            const auto fields = mira::extractCaptionFields(*database, *record);
+            // The TAG form, not renderSa3Prose: underfit builds training prompts from the
+            // individual tag keys as "Label: value, Label: value" (latent_dataset.py's
+            // _build_tag_prompt), capitalising the label first. The prose string is a
+            // separate `prompt` key most datasets never point at. Matching the tag form
+            // is what makes a prompt here look like what the LoRA was trained on.
+            juce::StringArray parts;
+            for (const auto& [key, value] : mira::renderSa3Tags(fields, {}))
+            {
+                const juce::String k(key), v(value);
+                if (v.isEmpty() || k == "prompt" || k == "length_seconds") continue;
+                juce::String label = k == "bpm" ? "BPM"
+                                    : k.substring(0, 1).toUpperCase() + k.substring(1);
+                parts.add(label + ": " + v);
+            }
+            showGenerateWindow();
+            if (generateWindow != nullptr)
+                generateWindow->setPrompt(parts.joinIntoString(", "));
+        };
         // The selection handler above has already loaded the parent file by the time
         // this runs (FileTableModel::selectedRowsChanged calls it first).
         fileList->setOnSegmentSelected([this](const mira::FileRecord&, int64_t segmentId, double start, double end) {
@@ -2394,6 +2431,7 @@ public:
         kExportSegments,
         kDeleteSegment,
         kShowLog, // referenced by MiraMenuBarModel's Window menu
+        kShowGenerate, // SA3 generate/pre-encode window (GenerateWindow.h)
         kDetectCues,
         kToggleActivityMatrix,
         kClearCues,
@@ -2542,6 +2580,7 @@ public:
                 }
                 return;
             case kShowLog: showLogWindow(); return;
+            case kShowGenerate: showGenerateWindow(); return;
             case kOpenCueEditor: showCueEditor(); return;
             case kDetectCues: detectCuesForSelection(); return;
             case kToggleActivityMatrix:
@@ -2841,6 +2880,33 @@ public:
         });
         reloadSegmentsForSelection();
         fileList->refresh();
+    }
+
+    // sa3-studio/ sits beside the repo root. Resolved from the executable rather than
+    // hardcoded so a built app that has been moved still finds it -- and when it does not,
+    // GenerateContent reports the missing interpreter instead of failing silently.
+    juce::File findStudioRoot() const
+    {
+        auto dir = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        // 12, not 8: the built bundle sits nine levels down from the repo root
+        // (build/src/mira_ui/mira_ui_artefacts/<config>/mira.app/Contents/MacOS/MIRA),
+        // so a smaller budget gives up one directory short of sa3-studio.
+        for (int i = 0; i < 12 && dir.exists(); ++i)
+        {
+            auto candidate = dir.getChildFile("sa3-studio");
+            if (candidate.isDirectory()) return candidate;
+            dir = dir.getParentDirectory();
+        }
+        return juce::File::getCurrentWorkingDirectory().getChildFile("sa3-studio");
+    }
+
+    void showGenerateWindow()
+    {
+        if (generateWindow != nullptr) { generateWindow->toFront(true); return; }
+        generateWindow = std::make_unique<GenerateWindow>(laf, findStudioRoot(), *database);
+        generateWindow->onClosed = [this] {
+            juce::MessageManager::callAsync([this] { generateWindow.reset(); });
+        };
     }
 
     void showLogWindow()
@@ -3949,6 +4015,7 @@ private:
     // rather than as a global so it dies with the component that owns the jobs feeding it.
     LogStore logStore;
     std::unique_ptr<LogWindow> logWindow;
+    std::unique_ptr<GenerateWindow> generateWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;
     // The in-window Cues view. Owned here (it needs the database through this class's
     // callbacks) and merely positioned by FileTableComponent.
@@ -4168,6 +4235,8 @@ public:
         {
             // Audio Settings lives here rather than in its own one-item top-level menu now
             // that there is a Window menu to hold it and the log.
+            menu.addItem(MainComponent::kShowGenerate, "SA3 Generate...");
+            menu.addSeparator();
             menu.addItem(MainComponent::kShowLog, "Log...");
             menu.addSeparator();
             menu.addItem(3, "Audio Settings...");
@@ -4238,6 +4307,7 @@ public:
         menuModel.buildViewMenu = [this](juce::PopupMenu& menu) {
             mainWindow->getMainComponent().buildViewMenu(menu);
         };
+        // (wired below, next to the other table callbacks)
         menuModel.onAction = [this](int actionId) { mainWindow->getMainComponent().performMenuAction(actionId); };
         mainWindow->getMainComponent().onMenuStateChanged = [this] { menuModel.menuItemsChanged(); };
         menuModel.getAnalyzeOptions = [this] { return mainWindow->getMainComponent().getAnalyzeOptions(); };

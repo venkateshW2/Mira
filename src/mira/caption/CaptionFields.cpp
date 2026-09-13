@@ -190,6 +190,46 @@ std::optional<std::vector<std::string>> readHumanStringArray(Database& db, const
 // file, but the keys inside it mean the same thing. genre/instruments/moods/bpm/key/
 // is_instrumental each *replace* the current value wholesale when present; keywords is
 // additive (see its own comment below) and capped, not score-gated.
+// Three-way bucket for the shape fields. `lowLabel` is returned below `lowMax`,
+// `highLabel` at or above `highMin`, `midLabel` between. Returns nullopt when the
+// descriptor is absent, so an unmeasured file omits the field instead of claiming the
+// middle bucket -- PRD 12.6's "never assert what wasn't measured", the same rule bpm and
+// keyScale follow.
+std::optional<std::string> bucketed(const std::optional<double>& value, double lowMax,
+                                     double highMin, const char* lowLabel,
+                                     const char* midLabel, const char* highLabel) {
+    if (!value) return std::nullopt;
+    if (*value < lowMax) return std::string(lowLabel);
+    if (*value >= highMin) return std::string(highLabel);
+    return std::string(midLabel);
+}
+
+// Shape fields from a machine JSON blob. Shared by whole-file and segment extraction so
+// the two can never drift, the same reason applyHumanOverrides is shared.
+//
+// `includeRhythm` is false for segments: onset_rate is a TOP-LEVEL whole-file key and
+// buildSegmentMachineJson (main.cpp) writes only "dsp" plus the embeddings/heads, so a
+// segment has no onset_rate of its own to read. Rhythm therefore stays inherited from
+// the file across a segment, exactly as bpm and keyScale already do -- a documented
+// scope boundary, not an oversight.
+void applyShapeFields(Database& db, const std::string& machine, CaptionFields& f,
+                       bool includeRhythm) {
+    if (includeRhythm) {
+        if (auto r = bucketed(db.jsonExtractDouble(machine, "$.onset_rate"),
+                              kCaptionRhythmSparseMax, kCaptionRhythmDrivingMin,
+                              "sparse", "moderate", "driving"))
+            f.rhythm = *r;
+    }
+    if (auto d = bucketed(db.jsonExtractDouble(machine, "$.dsp.loudness_range_lu"),
+                          kCaptionDynamicsCompressedMax, kCaptionDynamicsWideMin,
+                          "compressed", "moderate", "wide"))
+        f.dynamics = *d;
+    if (auto t = bucketed(db.jsonExtractDouble(machine, "$.dsp.spectral_flatness"),
+                          kCaptionTextureTonalMax, kCaptionTextureNoisyMin,
+                          "tonal", "mixed", "noisy"))
+        f.texture = *t;
+}
+
 void applyHumanOverrides(Database& db, const std::string& human, CaptionFields& f) {
     if (human == "{}") return;
 
@@ -205,6 +245,9 @@ void applyHumanOverrides(Database& db, const std::string& human, CaptionFields& 
         f.moods.clear();
         for (auto& m : *moodArr) f.moods.push_back({m, 1.0});
     }
+    if (auto rhythm = db.jsonExtractString(human, "$.rhythm")) f.rhythm = *rhythm;
+    if (auto dynamics = db.jsonExtractString(human, "$.dynamics")) f.dynamics = *dynamics;
+    if (auto texture = db.jsonExtractString(human, "$.texture")) f.texture = *texture;
     if (auto bpm = db.jsonExtractDouble(human, "$.bpm")) f.bpm = *bpm;
     if (auto key = db.jsonExtractString(human, "$.key")) f.keyScale = *key;
     if (auto isInstrumentalVal = db.jsonExtractDouble(human, "$.is_instrumental"))
@@ -250,6 +293,9 @@ void applySegmentMachine(Database& db, const std::string& segMachine, CaptionFie
     if (auto voiceProb = db.jsonExtractDouble(segMachine, "$.voice_instrumental.voice_probability")) {
         f.isInstrumental = (*voiceProb < kCaptionVoiceThreshold);
     }
+    // Dynamics and texture are genuinely per-segment (segment analysis computes its own
+    // DSP block); rhythm is not, and stays the file's -- see applyShapeFields.
+    applyShapeFields(db, segMachine, f, /*includeRhythm=*/false);
 }
 
 } // namespace
@@ -288,6 +334,12 @@ CaptionFields extractCaptionFields(Database& db, const FileRecord& record) {
     }
 
     if (auto key = db.jsonExtractString(record.machine, "$.key.key")) f.keyScale = *key;
+
+    // Shape fields. Skipped for one-shots on the same grounds bpm is: onset rate and
+    // loudness range over a sub-second clip describe the clip's envelope, not its
+    // musical character.
+    if (record.contentType != "one_shot")
+        applyShapeFields(db, record.machine, f, /*includeRhythm=*/true);
 
     if (auto voiceProb = db.jsonExtractDouble(record.machine, "$.voice_instrumental.voice_probability")) {
         f.isInstrumental = (*voiceProb < kCaptionVoiceThreshold);

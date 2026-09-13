@@ -10,6 +10,7 @@ Read this first; the other docs are detail.
 | [COLAB-CLI-TUTORIAL.md](COLAB-CLI-TUTORIAL.md) | driving Colab from a terminal |
 | [RUNBOOK-dune-lora.md](RUNBOOK-dune-lora.md) | the original local-Mac run |
 | [SA3-INFERENCE-AND-TRAINING.md](SA3-INFERENCE-AND-TRAINING.md) | mira/underfit/SA3 architecture options |
+| [PACKAGING.md](PACKAGING.md) | shipping SA3 inside mira — embed Python vs port to C++ |
 
 ---
 
