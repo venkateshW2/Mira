@@ -50,3 +50,7 @@ embeddings.npy
 .DS_Store
 .idea/
 .vscode/
+
+# SA3 training artifacts — too large / not source
+sa3-studio/*.zip
+sa3-studio/Screenshot*.png
