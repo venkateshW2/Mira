@@ -400,6 +400,64 @@ that one starts sounding like your dataset, the LoRA is bleeding into the base m
 
 Never Base demos (need ~50 steps each) and never Steps 2 (renders mush, looks like a broken LoRA).
 
+### Two strategies — and we have been running a hybrid
+
+underfit's own README recommends **20,000 steps** (*"a reasonable LoRA lands around 10k —
+that's where it creatively underfits: still varied on new prompts, not yet memorising"*).
+That is 769 epochs on the 52-track Mad Max set, against the ~50 this doc targets. The gap
+is not a contradiction — it is a different strategy, and it hinges on **latent length**:
+
+> **"Latent length is the underrated knob.** Lowering it to ~47 s or ~12 s (with
+> random_crop on) is often the cleanest way to learn a style *without* memorisation. The
+> model only ever sees patterns at that timescale and never sees full songs, so it can't
+> memorise structure."
+
+| | long-window (what we ran) | short-crop (underfit's advice) |
+|---|---|---|
+| Latent seq | 2048 (190 s) | 512 (~48 s) or 128 (~12 s) |
+| Steps | ~500-750 | 10,000 |
+| Sees | whole cues | fragments only |
+| Learns | structure **and** style | style, texture, orchestration |
+| Fails by | memorising cues early | never learning structure |
+
+2048 was chosen to minimise padding — 27 of 38 Dune tracks fit *whole*. That is precisely
+what lets it memorise, and it is the likeliest reason the Dune elbow appeared as early as
+~50 epochs. **For score-ness — orchestration, texture, harmonic language — the short-crop
+path is the better theoretical fit**, because you want the vocabulary, not the cues.
+
+Neither has been measured against the other. That comparison is the open question.
+
+### Batch size is a creative parameter, not just throughput
+
+> *"batch_size=1 learns something different (focuses on one song at a time, sharper
+> imprint) from batch_size=4 (averages gradients across songs, smoother fit)."*
+
+So the Dune run 2 was **undertrained at equal step count**, not categorically wrong.
+Batch 4 remains right for a smooth style LoRA; batch 1 is a legitimate different character.
+
+### Measured on the A30 (2026-09-14)
+
+**3.17 s/step** at 2048 / batch 4 — **2.1x faster than Colab's L4** (6.74 s/step). A
+2500-step run is ~2.2 h ~= Rs 87. Short-crop runs should be materially faster per step;
+read the real rate off the log in the first minute rather than trusting an estimate.
+
+### Run 2 — the short-crop experiment, ready to enter
+
+Same Mad Max dataset, same pills, same trigger. Only these differ:
+
+| Field | Run 1 (baseline) | **Run 2 (short-crop)** |
+|---|---|---|
+| Run name | `xyr` | `xyr-short` |
+| Latent seq length | 2048 (190 s) | **512 (~48 s)** |
+| Max steps | 2500 | **10000** |
+| Ckpt every | 250 | **1000** |
+| Demo every | 250 | **1000** |
+| Batch size | 4 | 4 |
+| Everything else | | unchanged |
+
+Plus **a fifth demo the baseline lacks** — see below. Do not use Clone Settings without
+redoing the tag pills; it resets them to all-on.
+
 ---
 
 ## 5. Reading a run
@@ -411,6 +469,33 @@ Never Base demos (need ~50 steps each) and never Steps 2 (renders mush, looks li
 | LoRA magnitude | 🟡 drifts off start = learning. Flat = not. Spiking = LR too high |
 | Smoothed loss | ⚪ nearly useless — dominated by which noise level got sampled |
 | Unconditional demo | should NOT sound like your dataset |
+
+### The stop signals underfit's author actually uses
+
+1. **The loss elbow** — *"where the loss stops being initially flat and begins to drop
+   tends to be the most creatively underfit checkpoint."* Note this is where loss **starts
+   falling**, not where it flattens. Earlier revisions of this doc dismissed the loss curve
+   as useless; that applies to the smoothed value drifting, not to locating the elbow.
+
+2. **The CFG crossover — the clearest signal, and our demos cannot show it.**
+   *"Base RF demos (CFG~7) light up first… Then CFG=7 over-cooks and CFG=1 takes over. If
+   CFG=1 sounds good and CFG=7 doesn't, that's a sign the LoRA has internalised the style."*
+
+   Every demo in the run-1 config is **ARC at CFG 1**, so only half that signal is visible.
+   The "never Base demos" rule in this doc was a Colab compute-unit economy, and Colab is
+   gone. **Add a fifth demo: Base, RF, CFG 7, ~50 steps**, reusing one of the ARC prompts.
+
+3. **ARC lags then wins** — *"ARC demos take a few thousand more steps to catch up to base
+   RF, but final quality is usually better."* An all-ARC demo set therefore looks worse
+   than reality early, which biases you toward over-training.
+
+4. **Conditional -> unconditional crossover** — when the empty-prompt demo starts sounding
+   like the dataset, the style has been absorbed into the base.
+
+**A memorised checkpoint is not a failed one.** Lower **LoRA strength to 0.6-0.8** at
+inference, or use **LoRA interval (skip first step)** so the base model sets song structure
+and the LoRA only supplies style — that alone prevents most regurgitation. Memorised
+checkpoints also hit harder for audio2audio style transfer. Keep every checkpoint.
 
 **The best checkpoint is often not the last one** — but make sure you are comparing
 equal training, not equal step numbers. On 38 tracks at batch 4, 2500 steps is ~250
