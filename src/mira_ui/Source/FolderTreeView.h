@@ -178,6 +178,10 @@ public:
     // those TreeViewItems (which don't own any state themselves) can reach them via
     // `owner`, same pattern onFolderSelected already uses.
     void showRootContextMenu(const juce::File& folder);
+    // CAPTION-TAGGING.md: the four things no analyzer can measure, chosen once per folder
+    // and applied to every file under it. Vocabularies come from caption/TagVocabulary.h,
+    // shared with `mira tag-folder` so the two can never offer different words.
+    void promptTagFolder(const juce::File& folder);
     void showSubfolderContextMenu(const juce::File& folder);
     void showGroupContextMenu(int64_t groupId, const juce::String& currentName);
     void showCollectionContextMenu(int64_t collectionId, const juce::String& currentName);

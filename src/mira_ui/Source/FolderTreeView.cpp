@@ -1,6 +1,7 @@
 #include "FolderTreeView.h"
 
 #include "mira/scan/Scanner.h"
+#include "mira/caption/TagVocabulary.h"
 
 #include <algorithm>
 
@@ -822,12 +823,88 @@ void FolderTreeView::promptForCollectionThen(std::vector<juce::String> paths)
                      });
 }
 
+void FolderTreeView::promptTagFolder(const juce::File& folder)
+{
+    // AlertWindow's own combo boxes rather than a bespoke dialog: four dropdowns is
+    // exactly what it is for, and it keeps the same anchoring/lifetime shape as
+    // promptForText above. Its doc comment warns that more than about 3 BUTTONS may
+    // silently fail -- Save/Clear/Cancel is three, deliberately.
+    auto aw = std::make_shared<juce::AlertWindow>(
+        "Tag Folder", "Applies to every file under \"" + folder.getFileName() +
+        "\".\nA file's own tags still win over these.",
+        juce::MessageBoxIconType::NoIcon, this);
+
+    // "(none)" is index 0 in every list so a folder can leave any axis unset. Leaving one
+    // unset is a real answer -- asserting "score" on a folder you haven't listened to is
+    // worse than saying nothing, the same reason the measured fields omit rather than
+    // guess a middle bucket.
+    auto vocabItems = [](const char* const* v, size_t n) {
+        juce::StringArray items;
+        items.add("(none)");
+        for (size_t i = 0; i < n; ++i) items.add(v[i]);
+        return items;
+    };
+
+    aw->addComboBox("material", vocabItems(mira::kMaterialVocab, mira::kMaterialVocabCount), "Material");
+    aw->addComboBox("world1", vocabItems(mira::kWorldVocab, mira::kWorldVocabCount), "World");
+    aw->addComboBox("world2", vocabItems(mira::kWorldVocab, mira::kWorldVocabCount), "World (2nd, optional)");
+    aw->addComboBox("harmonic", vocabItems(mira::kHarmonicVocab, mira::kHarmonicVocabCount), "Harmonic language");
+    aw->addComboBox("signature", vocabItems(mira::kSignatureVocab, mira::kSignatureVocabCount), "Signature");
+
+    aw->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    aw->addButton("Clear", 2);
+    aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    const std::string folderPath = folder.getFullPathName().toStdString();
+    aw->enterModalState(
+        true,
+        juce::ModalCallbackFunction::create([this, aw, folderPath](int result) {
+            if (result == 0) return;
+            if (result == 2) {
+                database.clearFolderDefault(folderPath);
+                return;
+            }
+
+            auto chosen = [&aw](const char* box) -> juce::String {
+                auto* cb = aw->getComboBoxComponent(box);
+                if (cb == nullptr || cb->getSelectedItemIndex() <= 0) return {};
+                return cb->getText();
+            };
+
+            juce::StringArray words;
+            for (const char* box : {"material", "world1", "world2", "harmonic", "signature"})
+            {
+                auto v = chosen(box);
+                // The two world boxes can name the same world; store it once.
+                if (v.isNotEmpty() && !words.contains(v)) words.add(v);
+            }
+
+            // Nothing chosen means "clear", not "write an empty list" -- otherwise a
+            // Save on an all-(none) dialog would leave an empty keywords array behind
+            // that reads as a tagged folder with no tags.
+            if (words.isEmpty()) {
+                database.clearFolderDefault(folderPath);
+                return;
+            }
+
+            juce::String json = "[";
+            for (int i = 0; i < words.size(); ++i) {
+                if (i) json += ",";
+                json += "\"" + words[i].replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+            }
+            json += "]";
+            database.setFolderDefaultField(folderPath, "$.keywords", json.toStdString());
+        }),
+        false);
+}
+
 void FolderTreeView::showSubfolderContextMenu(const juce::File& folder)
 {
     juce::PopupMenu menu;
     menu.addItem("Analyze Folder", [this, folder] {
         if (onAnalyzeFolderRequested) onAnalyzeFolderRequested(folder);
     });
+    menu.addItem("Tag Folder...", [this, folder] { promptTagFolder(folder); });
     menu.addSeparator();
     // The way to "remove" a subfolder is to add it as a root in its own right and then
     // remove that -- said here rather than left to be discovered, since the absence of a
@@ -843,6 +920,7 @@ void FolderTreeView::showRootContextMenu(const juce::File& folder)
     // group list at click time, which reads more naturally as a second top-level menu.
     juce::PopupMenu menu;
     menu.addItem("Rename...", [this, folder] { promptRenameRoot(folder); });
+    menu.addItem("Tag Folder...", [this, folder] { promptTagFolder(folder); });
     // "we put it stems while loading and then regroup or change the group what happens
     // -- the type of folder should be marked" -- a quick re-run of the same Stems/
     // Samples/Music choice Add Folder shows, for a root that's already been added (its

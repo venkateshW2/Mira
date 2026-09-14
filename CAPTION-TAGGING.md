@@ -9,12 +9,17 @@ measuring what actually separates them; implemented the same day.
 | `timing` (measured) | **built** — `CaptionFields`, calibrated over 317 files |
 | four human vocabularies | **built** — validated flags on `mira tag-folder` |
 | folder-level defaults | **already existed** — `folder_defaults` + `findFolderDefaultsForPath` |
-| UI dropdowns | **not built** — CLI only so far |
+| UI dropdowns | **built** — right-click a folder in mira_ui -> Tag Folder... |
 
 ```bash
 mira tag-folder "/path/to/LOTR" --material score --world fantasy --harmonic heroic
 # -> keywords: score, fantasy, heroic   palette: acoustic   timing: loose
 ```
+
+Or in mira_ui: right-click the folder -> **Tag Folder...** -> five dropdowns
+(material, world, second world, harmonic, signature) -> Save. Both read the same
+vocabularies from `src/mira/caption/TagVocabulary.h`, so the CLI and the UI can never
+offer different words.
 
 The question this answers: *Lord of the Rings and Dune are both film score, but one is
 fantasy epic and the other sci-fi. How does a caption say that?*

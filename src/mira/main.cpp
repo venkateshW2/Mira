@@ -21,6 +21,7 @@
 #include "analyze/VoiceInstrumental.h"
 #include "taxonomy/Taxonomy.h"
 #include "caption/CaptionFields.h"
+#include "caption/TagVocabulary.h"
 #include "caption/Sa3Renderer.h"
 #include "export/AudioWriter.h"
 #include "analyze/Router.h"
@@ -1441,36 +1442,12 @@ int runTag(const std::vector<std::string>& args) {
 // All four land in `keywords`, which CaptionFields.h already documents as existing
 // "purely so a person can hand-label what genre/instrument/mood classifiers can't" and
 // which "only ever comes from `human`". They need no new field and no renderer change.
-const char* const kMaterialVocab[] = {"score", "song", "beat", "sound-design", "live-set"};
-const char* const kWorldVocab[] = {
-    // film
-    "fantasy", "sci-fi", "noir", "heist", "chase", "horror", "western", "war",
-    "post-apocalyptic", "superhero", "survival",
-    // music
-    "club", "basement", "arena", "lo-fi", "industrial", "psychedelic", "spiritual",
-};
-// Each value names the chord shape it stands for, so the word is a musical instruction
-// rather than a vibe: heroic = major/Mixolydian/Lydian with open fifths; lament =
-// minor with a descending bass; menace = Phrygian, tritones, semitone clusters; alien =
-// whole-tone/octatonic drones with no clear tonic.
-const char* const kHarmonicVocab[] = {
-    "heroic", "lament", "menace", "alien", "static-drone", "modal-folk",
-    "blues-pentatonic", "jazz-extended", "atonal",
-};
-// Names one person's habit rather than a genre -- the slot that makes an individual
-// producer's style trainable next to an orchestral score. Expected to grow as artists
-// are added; still a list, so the same habit is always spelled the same way.
-const char* const kSignatureVocab[] = {
-    "glitch-swing", "boom-bap", "broken-beat", "wall-of-noise", "wide-rubato",
-};
-
-template <size_t N>
-bool validateVocab(const char* flag, const std::string& value, const char* const (&vocab)[N]) {
-    for (size_t i = 0; i < N; ++i)
-        if (value == vocab[i]) return true;
-    std::cerr << "mira tag-folder: '" << value << "' is not a valid " << flag << ". One of:";
-    for (size_t i = 0; i < N; ++i) std::cerr << (i ? ", " : " ") << vocab[i];
-    std::cerr << std::endl;
+// Thin CLI wrapper over TagVocabulary.h's shared lists -- the vocabularies themselves
+// live there because mira_ui's folder context menu offers the same choices.
+bool validateVocab(const char* flag, const std::string& value, const char* const* vocab, size_t count) {
+    if (mira::inVocab(value, vocab, count)) return true;
+    std::cerr << "mira tag-folder: '" << value << "' is not a valid " << flag << ". One of: "
+              << mira::vocabList(vocab, count) << std::endl;
     return false;
 }
 
@@ -1554,26 +1531,26 @@ int runTagFolder(const std::vector<std::string>& args) {
     // silently teaching a LoRA a misspelled word.
     std::vector<std::string> vocabWords;
     if (material) {
-        if (!validateVocab("--material", *material, kMaterialVocab)) return 1;
+        if (!validateVocab("--material", *material, mira::kMaterialVocab, mira::kMaterialVocabCount)) return 1;
         vocabWords.push_back(*material);
     }
     if (world) {
         auto worlds = splitCommaList(*world);
-        if (worlds.empty() || worlds.size() > 2) {
+        if (worlds.empty() || worlds.size() > mira::kMaxWorldsPerFolder) {
             std::cerr << "mira tag-folder: --world takes one or two comma-separated values" << std::endl;
             return 1;
         }
         for (const auto& w : worlds) {
-            if (!validateVocab("--world", w, kWorldVocab)) return 1;
+            if (!validateVocab("--world", w, mira::kWorldVocab, mira::kWorldVocabCount)) return 1;
             vocabWords.push_back(w);
         }
     }
     if (harmonic) {
-        if (!validateVocab("--harmonic", *harmonic, kHarmonicVocab)) return 1;
+        if (!validateVocab("--harmonic", *harmonic, mira::kHarmonicVocab, mira::kHarmonicVocabCount)) return 1;
         vocabWords.push_back(*harmonic);
     }
     if (signature) {
-        if (!validateVocab("--signature", *signature, kSignatureVocab)) return 1;
+        if (!validateVocab("--signature", *signature, mira::kSignatureVocab, mira::kSignatureVocabCount)) return 1;
         vocabWords.push_back(*signature);
     }
     // --keywords stays usable alongside them; the vocabulary words go first so the
