@@ -441,6 +441,52 @@ Batch 4 remains right for a smooth style LoRA; batch 1 is a legitimate different
 2500-step run is ~2.2 h ~= Rs 87. Short-crop runs should be materially faster per step;
 read the real rate off the log in the first minute rather than trusting an estimate.
 
+### The LR warmup is ~1000 steps long — short runs are mostly warmup
+
+Read from a live run's config (`state/runs/<id>_model.json`):
+
+```
+AdamW lr=1e-4, betas=[0.9, 0.95], weight_decay=0.01
+InverseLR: inv_gamma=1000000, power=0.5, warmup=0.995
+```
+
+`InverseLR` gives `lr = base * (1 - 0.995^(step+1)) * (1 + step/inv_gamma)^-0.5`. With
+`inv_gamma` at 1e6 the decay term is ~1.0 for any run under 10k steps, so **LR is
+effectively `1e-4 x (1 - 0.995^step)` — pure warmup, then flat.** Verified against the
+2026-09-14 Mad Max log: step 227 -> 6.811e-5, step 468 -> 9.047e-5, both exact.
+
+| step | % of target LR |
+|---|---|
+| 138 | 50% |
+| 250 | **72%** |
+| 459 | 90% |
+| 919 | 99% |
+
+**The first 250 steps average only ~43% of full LR.** That is a large part of why an early
+checkpoint looks undertrained — it is not just fewer steps, it is weaker ones.
+
+Consequences:
+
+- A **2500-step run spends ~40% of itself warming up.** A 10,000-step run spends 10%.
+  This is an independent argument for longer runs, separate from the crop-length one.
+- **No decay to design around.** After warmup the LR sits at 1e-4 essentially forever, so
+  long runs keep learning at full rate rather than annealing to nothing.
+- A **resumed** run restarts `last_epoch` at 0 and re-walks the whole warmup ramp from
+  zero — which is why resuming needs `--lr-scheduler none`.
+
+### Why the loss curve looks flat — and what to read instead
+
+Total training loss bounces without trend (0.48-0.73 across steps 325-468 on Mad Max,
+no direction). **This is normal and not a fault.** Diffusion loss is dominated by which
+noise level got sampled that step, so it drowns out the learning signal. Read instead:
+
+- **Loss by Noise Level** — the per-band panel. High-noise bands trending down is the
+  style being learned. The raw data is in `demos/loss_by_timestep.bin`.
+- **`lora_magnitude`** — should drift steadily off its start. On Mad Max it moves
+  monotonically 2287.84 -> 2287.57 over 143 steps: small in relative terms, but consistent,
+  which is the point. Flat would be the alarm.
+- **The demos.** Still the only real test.
+
 ### Run 2 — the short-crop experiment, ready to enter
 
 Same Mad Max dataset, same pills, same trigger. Only these differ:
