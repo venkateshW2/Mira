@@ -26,6 +26,7 @@
 #include "mira/caption/CaptionFields.h"
 #include "mira/caption/Sa3Renderer.h"
 #include "GenerateWindow.h"
+#include "PrepareWindow.h"
 #include "LogView.h"
 
 #include <cstdlib>
@@ -1217,6 +1218,9 @@ public:
         // recursive walk of the real files on disk, same audio-extension filtering
         // FileTableModel::rebuild already uses, not a DB query (a never-scanned file
         // still gets analyzed here the same way Scan already tolerates it).
+        folderTree->onPrepareFolderRequested = [this](const juce::File& folder) {
+            showPrepareWindow(folder);
+        };
         folderTree->onAnalyzeFolderRequested = [this](const juce::File& folder) {
             std::vector<juce::String> paths;
             for (const auto& entry : juce::RangedDirectoryIterator(folder, true, "*", juce::File::findFiles))
@@ -2432,6 +2436,7 @@ public:
         kDeleteSegment,
         kShowLog, // referenced by MiraMenuBarModel's Window menu
         kShowGenerate, // SA3 generate/pre-encode window (GenerateWindow.h)
+        kShowPrepare,  // caption/encode/push a folder for training (PrepareWindow.h)
         kDetectCues,
         kToggleActivityMatrix,
         kClearCues,
@@ -2581,6 +2586,7 @@ public:
                 return;
             case kShowLog: showLogWindow(); return;
             case kShowGenerate: showGenerateWindow(); return;
+            case kShowPrepare: showPrepareWindow({}); return;
             case kOpenCueEditor: showCueEditor(); return;
             case kDetectCues: detectCuesForSelection(); return;
             case kToggleActivityMatrix:
@@ -2898,6 +2904,21 @@ public:
             dir = dir.getParentDirectory();
         }
         return juce::File::getCurrentWorkingDirectory().getChildFile("sa3-studio");
+    }
+
+    // `folder` empty opens the window unaimed (the Window menu route); the folder tree
+    // passes the row that was right-clicked so it opens already pointed at it.
+    void showPrepareWindow(const juce::File& folder)
+    {
+        if (prepareWindow == nullptr)
+        {
+            prepareWindow = std::make_unique<PrepareWindow>(laf, findStudioRoot(), *database);
+            prepareWindow->onClosed = [this] {
+                juce::MessageManager::callAsync([this] { prepareWindow.reset(); });
+            };
+        }
+        if (folder.isDirectory()) prepareWindow->setFolder(folder);
+        prepareWindow->toFront(true);
     }
 
     void showGenerateWindow()
@@ -4016,6 +4037,7 @@ private:
     LogStore logStore;
     std::unique_ptr<LogWindow> logWindow;
     std::unique_ptr<GenerateWindow> generateWindow;
+    std::unique_ptr<PrepareWindow> prepareWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;
     // The in-window Cues view. Owned here (it needs the database through this class's
     // callbacks) and merely positioned by FileTableComponent.
@@ -4236,6 +4258,7 @@ public:
             // Audio Settings lives here rather than in its own one-item top-level menu now
             // that there is a Window menu to hold it and the log.
             menu.addItem(MainComponent::kShowGenerate, "SA3 Generate...");
+            menu.addItem(MainComponent::kShowPrepare, "Prepare for Training...");
             menu.addSeparator();
             menu.addItem(MainComponent::kShowLog, "Log...");
             menu.addSeparator();

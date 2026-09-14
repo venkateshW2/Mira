@@ -64,6 +64,7 @@ target_sources(mira_ui PRIVATE
   Source/FileDetailsWindow.cpp
   Source/Sa3Worker.cpp
   Source/GenerateWindow.cpp
+  Source/PrepareWindow.cpp
   Source/NativeBlur.mm
   Source/NativeWindowChrome.mm
 )

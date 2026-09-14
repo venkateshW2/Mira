@@ -953,6 +953,9 @@ void FolderTreeView::showSubfolderContextMenu(const juce::File& folder)
         if (onAnalyzeFolderRequested) onAnalyzeFolderRequested(folder);
     });
     menu.addItem("Tag Folder...", [this, folder] { promptTagFolder(folder); });
+    menu.addItem("Prepare for Training...", [this, folder] {
+        if (onPrepareFolderRequested) onPrepareFolderRequested(folder);
+    });
     menu.addSeparator();
     // The way to "remove" a subfolder is to add it as a root in its own right and then
     // remove that -- said here rather than left to be discovered, since the absence of a
@@ -969,6 +972,9 @@ void FolderTreeView::showRootContextMenu(const juce::File& folder)
     juce::PopupMenu menu;
     menu.addItem("Rename...", [this, folder] { promptRenameRoot(folder); });
     menu.addItem("Tag Folder...", [this, folder] { promptTagFolder(folder); });
+    menu.addItem("Prepare for Training...", [this, folder] {
+        if (onPrepareFolderRequested) onPrepareFolderRequested(folder);
+    });
     // "we put it stems while loading and then regroup or change the group what happens
     // -- the type of folder should be marked" -- a quick re-run of the same Stems/
     // Samples/Music choice Add Folder shows, for a root that's already been added (its

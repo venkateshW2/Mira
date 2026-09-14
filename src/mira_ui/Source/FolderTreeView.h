@@ -167,6 +167,8 @@ public:
     // analysis" — MainComponent walks the folder for audio files and enqueues them; this
     // class has no analyze-queue concept of its own.
     std::function<void(const juce::File&)> onAnalyzeFolderRequested;
+    // Opens the Prepare for Training window aimed at this folder (PrepareWindow.h).
+    std::function<void(const juce::File&)> onPrepareFolderRequested;
 
     // Live per-root scan status, driven by MainComponent's scan orchestrator — updates
     // the little badge paintItem draws next to a root's name and repaints the tree.
