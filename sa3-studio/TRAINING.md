@@ -102,12 +102,25 @@ the torch trainer's `--base_precision bf16`. The UI hides the memory levers.
 **Batch 4 × 2500 steps = batch 1 × 10,000 steps.** Same samples seen. Leaving steps at
 10,000 with batch 4 would be 4× the training, not faster.
 
-### VRAM — why 24 GB, not 16
+### VRAM — batch size barely moves it
 
-The often-quoted **6.9 GB peak was at batch 1**. Activations scale with batch while
-weights and optimizer state don't, so batch 4 lands around **15–17 GB**.
-**A 16 GB card is not enough for the config that works.** Earlier versions of this
-doc said otherwise; that line was measured on the run we no longer use.
+underfit's own estimator (`_estimateTrainingVram`) and the `sa3-medium` registry give
+the real shape:
+
+```
+activation_mb = act_per_latent_mb x seq_len x batch     # 0.005 x 2048 x 4 = 41 MB
+total ~= base_fp16_mb + lora_mb + activation_mb         # 6670 + ~36 + 41 ~= 6.7 GB
+```
+
+**Model weights dominate; activations are noise.** Batch 4 costs ~31 MB more than
+batch 1, so the measured 6.9 GB at batch 1 and the UI's ~7.0 GB at batch 4 agree.
+
+A 16 GB card is therefore fine for medium at 2048, at any batch size that fits the
+step-time budget. An earlier revision of this doc claimed batch 4 needed 15-17 GB —
+that was an assumption that activations scale into gigabytes, and it is wrong.
+
+On JarvisLabs this changes nothing in practice: the A30 24 GB is already the cheapest
+GPU on offer (Rs 38.88/hr), so there is no smaller, cheaper tier to drop to.
 
 ---
 
@@ -239,6 +252,52 @@ Registered on this box:
 Check `num_files` per dataset after importing. If one set shows the sum of all of them,
 you pointed at the parent.
 
+### Pre-encoded latents have no tag pills — and that silently discards every caption
+
+**The most dangerous trap in the whole pipeline.** The tag UI discovers keys by walking
+the dataset's `input_dir` for *audio* (`server.py` `_scan_audio_tags`); `.json` files are
+only used as a stem-keyed lookup against audio it finds. A latents-only dataset has no
+audio, so the screen reads *"No files with tags found"*, no pills render, and the modal
+posts `tag_keys: []`. Downstream `_build_tag_prompt` iterates that empty list and returns
+`""` — **every prompt collapses to the trigger token and all of mira's captions are
+thrown away.** Training runs, checkpoints appear, demos render. Nothing looks wrong.
+
+Three things fix it, and all three are needed:
+
+1. **Placeholder `.wav` files beside the sidecars.** underfit needs a recognised
+   `AUDIO_EXTS` suffix and **≥ 4096 bytes**; it never reads them for training, which
+   reads latents. 8 KB of silence per track is enough — 93 placeholders cost ~800 KB.
+   Do **not** upload the real audio for this: 4.6 GB was uploaded on 2026-09-14 before
+   this doc was re-read, then replaced with placeholders for identical results.
+
+   ```bash
+   python3 - <<'EOF'
+   import wave
+   from pathlib import Path
+   SIL = b"\x00\x00" * 4096          # 8 KB of PCM
+   for stem in Path("/home/workspace/datasets/MadMAx").glob("*.npy"):
+       with wave.open(str(stem.with_suffix(".wav")), "wb") as o:
+           o.setnchannels(1); o.setsampwidth(2); o.setframerate(44100)
+           o.writeframes(SIL)
+   EOF
+   ```
+
+2. **Delete the stale tag cache.** `state/datasets/<ds_id>_tags.json` is written on first
+   view. If it was written while the scan returned 0 files it keeps serving empty results
+   forever, no matter what you add. `rm state/datasets/*_tags.json`, then reload.
+
+3. **Copy `details.json` into the shadow `latent_dir`.** The import symlinks the `.npy`
+   files but not `details.json`, so the dataset flips back to `error` on every dashboard
+   restart — and patching `status` in `datasets.json` appears to work, then reverts.
+
+Verify before launching: the `/files` endpoint should report `total_files` equal to the
+dataset size and the payload should carry tag keys.
+
+```bash
+curl -s http://127.0.0.1:8787/api/datasets/<id>/files \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["total_files"], len({k for f in d["files"] if f.get("tags") for k in f["tags"]}))'
+```
+
 ### Daily use
 
 ```bash
@@ -302,16 +361,25 @@ over 13 Batman files is not the exposure 50 over 38 Dune files was.
 | Setting | Value |
 |---|---|
 | Use fixed prompt | ❌ OFF |
-| Prepend to prompt | ✅ trigger, 80% |
+| Prepend to prompt | ✅ **the trigger** (`xyr`), 80% — not the dataset name |
 | Use tags | ✅ ON |
 | shuffle | ✅ ON |
 | Balance bar | **Tags 100%** |
 
-**ON — exactly 7:** `TrackType` `VocalType` `genre` `instruments` `moods` `bpm` `keyscale`
+**ON — 10:** `TrackType` `VocalType` `genre` `instruments` `moods` `bpm` `keyscale`
+`dynamics` `rhythm` `texture`
 
-**OFF — 15:** `audio_samples` `length_seconds` `path` `prompt` `relpath` `seconds_total`
-`src_relpath` `trigger` `audio_dir` `codec` `count` `max_duration` `max_samples`
-`pad_modulo` `sample_rate`
+**OFF — 8:** `audio_samples` `length_seconds` `path` `prompt` `relpath` `seconds_total`
+`src_relpath` `trigger`
+
+`dynamics`, `rhythm` and `texture` are newer mira fields — present in the 2026-09-14
+Mad Max / Dark Knight / Batman exports, absent from the older Dune set. Turning them on
+is a deliberate difference from the run-1 Dune config; they are real musical descriptors,
+and these are new LoRAs rather than a Dune reproduction.
+
+Earlier revisions listed 15 OFF keys. Seven of those (`audio_dir` `codec` `count`
+`max_duration` `max_samples` `pad_modulo` `sample_rate`) come from `details.json`, whose
+stem matches no track, so they never reach the pills. The live set is 18 keys.
 
 Three traps on this one screen:
 
