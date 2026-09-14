@@ -218,6 +218,70 @@ Two landmines both scripts encode:
 19 GB of headroom is enough for checkpoints at 36.5 MB each, but not for another
 film's latents without checking `df` first.
 
+### Getting a dataset onto the box
+
+**The audio never travels.** Encoding happens on the Mac, on Apple Silicon via MLX; what
+goes up is already-compressed latents. Dark Knight is 1.6 GB of source audio and 97 MB of
+latents — about 16x smaller, and the reason the whole Mad Max + Dark Knight + Batman
+upload took 20 seconds over the IN2 region.
+
+The whole chain is one command:
+
+```bash
+./prepare-lora.sh "/Volumes/T7 Shield 1/TO-TRAIN/LOTR" lrt --push root@<ip>
+```
+
+which runs captions -> pre-encode -> stand-ins -> verify -> zip -> rsync + register.
+Drop `--push` to stop at the zip and upload by hand.
+
+#### Doing it by hand
+
+```bash
+# 1. captions beside each source file (loop; mira caption takes one file)
+mira caption "<file>.wav" --trigger lrt --emit-sidecar
+
+# 2. encode on the Mac. --codec same-l pairs with sa3-medium; same-s is for sm-music,
+#    and the wrong codec produces latents the trainer cannot use.
+MLX=stable-audio-3/optimized/mlx
+$MLX/.venv/bin/python $MLX/scripts/pre_encode_mlx.py \
+  --audio-dir "/Volumes/T7 Shield 1/TO-TRAIN/LOTR" \
+  --output-dir latents/LOTR --codec same-l --max-duration 600
+
+# 3. upload. -a preserves structure; rsync skips unchanged files, which is why a re-tag
+#    moves only the .json and leaves the .npy alone.
+rsync -a -e "ssh -F /dev/null -i ~/.ssh/id_ed25519" \
+  latents/LOTR/ root@<ip>:/home/workspace/datasets/LOTR/
+
+# 4. register, and clear the scan cache (see the import trap below)
+ssh -F /dev/null -i ~/.ssh/id_ed25519 root@<ip> \
+  "rm -f /home/workspace/underfit/state/datasets/*_tags.json && \
+   curl -s -X POST http://127.0.0.1:8787/api/datasets/import \
+     -H 'Content-Type: application/json' \
+     -d '{\"path\":\"/home/workspace/datasets/LOTR\",\"name\":\"lotr-lrt\",
+          \"mode\":\"preencoded_import\",\"model\":\"sa3-medium\"}'"
+```
+
+`-F /dev/null` is not decoration: a `RemoteCommand` in the local `~/.ssh/config` makes
+every non-interactive ssh fail with *"Cannot execute command-line and remote command."*,
+which is also why `jl exec` and `jl ssh` do not work from this Mac.
+
+#### Other upload routes, and why rsync wins
+
+| route | verdict |
+|---|---|
+| **rsync over ssh** | **use this.** Skips unchanged files, so a re-tag moves only the JSON |
+| JupyterLab drag-and-drop | works; fine for one file, tedious for 56 |
+| `jl run . --on <id>` | uploads a project dir; no incremental skip |
+| cloud bucket / HF dataset | worth it only if you re-provision instances often |
+
+#### Why mira itself does not do this
+
+`mira` is a local audio-understanding tool. Teaching the C++ binary to hold SSH
+credentials and rsync to a rented GPU would put deployment plumbing inside the analysis
+engine, and every new host or transport would mean a rebuild. `prepare-lora.sh` is the
+seam: mira produces captions, MLX produces latents, the shell script moves them. Changing
+provider is then a flag, not a release.
+
 ### Datasets — one per LoRA, and the import trap
 
 **underfit registers the folder you point it at as a single dataset.** Unzipping all
