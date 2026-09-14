@@ -651,10 +651,141 @@ supports 3 LoRA slots, and it is the thing being built.
 
 ---
 
-## 7. Next
+## 7. Learnings — measured on real runs, 2026-09-14
 
-1. **Train the three film LoRAs** at batch 4, stopping each near ~50 epochs.
-2. **Compare checkpoints by epoch**, at the same prompt and seed.
+Everything in this section came out of four completed 10,000-step runs on the same
+config (512 latent seq / 47.55 s random crop, batch 4, DoRA-rows r16/a16, LR 1e-4).
+It supersedes the "stop near ~50 epochs" guidance this doc used to carry in §8 Next.
+
+### 7.1 Count exposures per cue, not steps and not epochs
+
+A flat step count means nothing across datasets, and **epochs are almost as
+misleading**. The number that predicts overfit is how many times the trainer drew
+each individual cue:
+
+```
+exposures per cue  =  max_steps / steps_per_epoch      (steps_per_epoch = ceil(files / batch))
+```
+
+Measured:
+
+| run | files | steps/epoch | 10,000 steps = | exposures/cue | verdict |
+|---|---|---|---|---|---|
+| `xyr-short` Mad Max | 52 | 13 | epoch 769 | **769x** | best LoRA trained to date |
+| `dkt` Dark Knight | 28 | 7 | epoch 1428 | **1,428x** | memorised — "plays straight-out Dark Knight" |
+
+Same settings, same step count. The only difference is that Dark Knight's dataset is
+half the size, so every cue was shown 1.9x more often. `dkt` is good through step
+7,000-8,000 (1,000-1,142 exposures) and gone by 10,000.
+
+**Working target: 700-900 exposures per cue.** Then choose inside that range by ear.
+
+Worked examples at batch 4:
+
+| dataset | files | steps for ~770 exposures |
+|---|---|---|
+| Dark Knight | 28 | ~5,400 |
+| LOTR / Last of Us | 56 / 58 | ~10,800 |
+| NIN | 183 | ~35,400 |
+
+NIN at 10,000 steps would see each track only **217 times** — nowhere near trained.
+A big dataset needs a proportionally bigger step budget; this is the single most
+common way to under-train a run by accident.
+
+### 7.2 Crop length changes the safe window
+
+Dune's best checkpoint was step 500 = **epoch 49**; `dkt`'s was ~epoch 1,000. A 20x
+discrepancy that only resolves by looking at crop length:
+
+- **Dune run 1** used a 2048 latent seq — near whole-file. Every epoch replayed the
+  same audio, so 49 epochs was 49 genuine repeats.
+- **`dkt`** used 512 (47.55 s) random crops from ~5-minute cues — roughly 6
+  non-overlapping views per file, effectively unlimited overlapping ones. The same
+  epoch count is far less actual repetition.
+
+**Short crops buy a much longer safe training window.** They are free augmentation.
+This is the strongest argument for the short-crop strategy in §4.
+
+### 7.3 Total loss cannot grade a LoRA — the band gap can
+
+`dkt` (memorised) finished at smoothed loss **0.51**. `xyr-short` (the good one)
+finished at **0.53**. *The memorised run has the better loss number.* Anyone picking
+a checkpoint by loss picks wrong.
+
+The chart that does separate them is **Loss by Noise Level** — specifically the gap
+between the low-noise band (0.2-0.4, which measures **fine detail and timbre**) and
+the high-noise band (0.8-1.0, which measures **broad structure**):
+
+| run | low-noise band | high-noise band | final gap |
+|---|---|---|---|
+| `dkt` (memorised) | 0.72 -> ~0.56 | 0.60 -> ~0.54 | **~0.02 — merged** |
+| `xyr-short` (good) | 0.71 -> ~0.60 | 0.57 -> ~0.55 | **~0.05 — separated** |
+
+**Why.** Low-noise loss measures how exactly the model reproduces fine detail. There
+are two ways to get good at that: learn the style (generalises), or recall the
+specific file (does not). Recall drives the metric harder. So when the low-noise band
+dives to *meet* the high-noise band, the model has stopped generalising and started
+remembering. That is what "plays the film back at you" looks like on a graph.
+
+**Watch the gap, not any single line.** Persisting = healthy. Closing = memorising.
+
+Caveat, stated honestly: this is **n=2** — one memorised run and one good one, where
+the band gap is the only chart that distinguishes them. It is a mechanistically
+sensible hypothesis, not an established law. `lrt` (56 files) is the live test.
+
+### 7.4 What the other charts are actually for
+
+| chart | reads on | use it for | ignore it for |
+|---|---|---|---|
+| **Loss** | flat, noisy, 0.3-0.8 swings | spotting divergence or collapse to ~0 | anything about quality |
+| **Loss by Noise Level** | bands separated | the memorisation signal above | absolute values across datasets |
+| **Grad Norm** | 0.005 -> ~0.085, spiky | stability; 10x jumps mean lower the LR | quality |
+| **LoRA Magnitude** | ~2.3K, drifting gently *down* | a health light only | it gave zero warning on `dkt` |
+| **Learning Rate** | matches the §4 warmup curve | confirming the schedule ran | — |
+
+The total Loss curve is flat because each step samples a **random noise level**, and
+difficulty is dominated by which level got drawn rather than by model skill. You are
+looking at a lottery, not a skill curve (see §4's "Why the loss curve looks flat").
+
+Grad-norm spike size tracks **dataset diversity**, not trouble: `xyr-short` (52 Mad
+Max cues) spiked to 0.51 where `dkt` (28 cues) reached 0.29, while both smoothed to
+~0.085.
+
+### 7.5 The stop checklist
+
+| check | where | meaning |
+|---|---|---|
+| exposures/cue past ~1,000 | `max_steps / steps_per_epoch` | past the danger line |
+| low-noise band closing on high-noise | Loss by Noise Level | approaching memorisation |
+| the **unconditional** demo sounds like the film | `demo_3`, empty prompt | already memorised |
+
+The unconditional demo is the best single canary: when the model produces the style
+*without being asked for it*, the adapter has bled into the base behaviour.
+
+Checkpoint every 1,000 steps and keep them all — they are 37 MB each, and the
+usable window can be as narrow as `dkt`'s (fine at 8,000, gone by 10,000).
+
+### 7.6 cfg has never been exposed in mira's generate window
+
+`sa3_worker.py` accepts `cfg`, `apg`, `negative_prompt` and `sigma_max`;
+`GenerateWindow.cpp` sends none of them, so every generation from mira to date ran at
+the default **`cfg = 1.0` — classifier-free guidance effectively off**. That is the
+standing explanation for "same prompt, same seed gives almost the same output across
+all the LoRAs": nothing amplifies the gap between what the prompt asks for and what
+the base model would do anyway, so every adapter lands near the base.
+
+underfit's own `demo_4` renders at **cfg 7**, which is why its demos can sound more
+locked-on than anything generated locally at the same checkpoint. See
+`sa3-studio/GENERATE-UI.md` for the full list of controls to add.
+
+---
+
+## 8. Next
+
+1. **Train the film LoRAs** at batch 4, sizing `max_steps` for ~700-900 exposures
+   per cue (§7.1) rather than a fixed step count.
+2. **Compare checkpoints at the same prompt and a locked seed** — and judge by ear,
+   not by loss (§7.3).
 3. **Dune vs Dark Knight** is the widest contrast available (mean onset_rate 0.90 vs
    2.25) — the pair for one clean inference experiment. Batman is the weak set: 13
    files, 1.2 h, and 11 of 13 in one rhythm bucket.
