@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# prepare-lora.sh — one film folder -> a zip ready to upload to RunPod/Colab.
+# prepare-lora.sh — one film folder -> a zip ready to upload to JarvisLabs.
 #
 #   ./prepare-lora.sh "/Volumes/T7 Shield 1/TO-TRAIN/MadMAx" xyr
 #   ./prepare-lora.sh <folder> <trigger> [max_duration]

@@ -1,13 +1,14 @@
 # TRAINING — the SA3 LoRA pipeline, end to end
 
-**Entry point for this whole area.** Written 2026-09-13, after the first working run.
-Read this first; the other docs are detail.
+**Entry point for this whole area.** Written 2026-09-13 after the first working run;
+rewritten 2026-09-14 when the platform moved to JarvisLabs and the first run's real
+config was recovered. Read this first; the other docs are detail.
 
 | Doc | What it is |
 |---|---|
-| **TRAINING.md** (this) | the map — platforms, costs, decisions, status |
-| [COLAB-TRAINING.md](COLAB-TRAINING.md) | every Colab bug found, with code references |
-| [COLAB-CLI-TUTORIAL.md](COLAB-CLI-TUTORIAL.md) | driving Colab from a terminal |
+| **TRAINING.md** (this) | the map — platform, setup, settings, costs |
+| [COLAB-TRAINING.md](COLAB-TRAINING.md) | every Colab bug found, with code references. Colab is gone, the trainer bugs are not |
+| [COLAB-CLI-TUTORIAL.md](COLAB-CLI-TUTORIAL.md) | driving Colab from a terminal — historical |
 | [RUNBOOK-dune-lora.md](RUNBOOK-dune-lora.md) | the original local-Mac run |
 | [SA3-INFERENCE-AND-TRAINING.md](SA3-INFERENCE-AND-TRAINING.md) | mira/underfit/SA3 architecture options |
 | [PACKAGING.md](PACKAGING.md) | shipping SA3 inside mira — embed Python vs port to C++ |
@@ -18,15 +19,30 @@ Read this first; the other docs are detail.
 
 **Proven on 2026-09-13.** A LoRA trained from mira's captions responds to prompts:
 
-- 38 Dune OST tracks → mira captions → MLX pre-encode (Mac) → torch training (Colab L4)
-- At **step 500**, demos matched their prompts. Different prompts gave different,
-  appropriate audio — so the individual tag dials work, not just the trigger token.
-- Checkpoint: `dune-zvq-medium-03-step=500-epoch=49.safetensors` (36.5 MB)
+- 38 Dune OST tracks → mira captions → MLX pre-encode (Mac) → torch training → local MLX inference
+- Different prompts gave different, appropriate audio — so the individual tag dials
+  work, not just the trigger token.
+- Best checkpoint: **`dune-zvq-medium-03-step=500-epoch=49.safetensors`** (36.5 MB),
+  from the **batch-4** run.
 
-**The open question this answered:** do mira's captions train a usable LoRA? Yes.
+### The batch-size trap — read this before anything else
 
-**Still unknown:** what a *fully* trained run sounds like (2500 steps), and where the
-overfitting elbow is on a 38-track set.
+Two Dune runs exist and they are not comparable. The filenames give it away on a
+38-track set:
+
+| run | checkpoint | steps/epoch implied | batch |
+|---|---|---|---|
+| **run 1** (`dune-zvq-medium-03`) | `step=500-epoch=49` | 500/50 = 10 = ceil(38/4) | **4** |
+| run 2 (`zvq`) | `step=500-epoch=13`, `1000/26`, `1500/39` | 38 | **1** |
+
+Run 2's step-1500 checkpoint is *worse* than run 1's step-500 — not because it
+overfit, but because it was **undertrained**. Count samples, not steps:
+
+- run 1 @ step 500 = 500 × 4 = **2,000 samples** (≈50 epochs)
+- run 2 @ step 1500 = 1500 × 1 = **1,500 samples** (39 epochs)
+
+Run 1's "early" checkpoint had seen more data in a third of the steps.
+**Train at batch 4, and read epochs, not steps.**
 
 ### The dataset
 
@@ -36,31 +52,32 @@ overfitting elbow is on a 38-track set.
 | Captions | mira, `--trigger zvq --emit-sidecar` |
 | Latents | SAME-L (sa3-medium), 125 MB zip, captions embedded |
 | Trigger | `zvq` |
-| On Drive | `Colab Notebooks/dune-ost-latents-same-l.zip` |
+
+Three more sets are built and uploaded: Mad Max `xyr` (52), Dark Knight `qsk` (28),
+Batman v Superman `vzx` (13).
 
 ---
 
 ## 2. Where to run it
 
-Three places, each with a real role. **This is the key decision table.**
-
-| | Mac M1 Pro 16 GB | Colab Pro | RunPod |
-|---|---|---|---|
-| **Train sm-music** | ✅ w/ `--grad-checkpoint` | ✅ | ✅ |
-| **Train medium** | ❌ OOM | ✅ | ✅ |
-| **Inference (any)** | ✅ comfortable | ✅ | ✅ |
-| Storage survives | ✅ | ❌ wiped | ✅ network volume |
-| Cost | £0 | $11.79/mo, 100 units | ~$0.07/GB/mo + hourly |
-| Setup pain | done | done | one script |
-
-### The architecture that fell out of this
-
 > **Train remote. Generate local.**
 
-Medium *inference* needs only ~5 GB and runs fine on the 16 GB Mac
-(repo benchmarks: 3.8 GB at 10 s, 5.2 GB at 120 s, on an **8 GB** M1). Only *training*
-doesn't fit. And `lora_merge.py` reads underfit/PEFT torch safetensors directly — no
-conversion — so a Colab/RunPod-trained LoRA drops straight into local MLX inference.
+Medium *inference* needs only ~5 GB and runs fine on the 16 GB Mac (repo benchmarks:
+3.8 GB at 10 s, 5.2 GB at 120 s, on an **8 GB** M1). Only *training* doesn't fit.
+And `lora_merge.py` reads underfit/PEFT torch safetensors directly — no conversion —
+so a remotely-trained LoRA drops straight into local MLX inference.
+
+| | Mac M1 Pro 16 GB | JarvisLabs A30 |
+|---|---|---|
+| **Train sm-music** | ✅ w/ `--grad-checkpoint` | ✅ |
+| **Train medium** | ❌ OOM | ✅ |
+| **Inference (any)** | ✅ comfortable | ✅ |
+| Storage survives | ✅ | ✅ `/home` survives pause |
+| Cost | ₹0 | ₹39.53/hr running, ₹467/mo parked |
+
+**Colab Pro was cancelled on 2026-09-13** after two runs were lost to runtime
+recycling (480 and 980 steps). Its trainer-level findings still apply and live in
+[COLAB-TRAINING.md](COLAB-TRAINING.md) — especially §7, the tag-pill trap.
 
 ### What 16 GB actually measured
 
@@ -82,94 +99,160 @@ the torch trainer's `--base_precision bf16`. The UI hides the memory levers.
 | 1 | 2.29 | 2.29 s | ~6.4 h |
 | **4** | **6.74** | **1.69 s** | **~4.7 h** |
 
-Batch 4 is ~26% faster per sample — real but less than hoped. VRAM at batch 1 was 6.9 GB
-of 22.5, so the GPU was badly underfed; it was less underfed than that suggested.
+**Batch 4 × 2500 steps = batch 1 × 10,000 steps.** Same samples seen. Leaving steps at
+10,000 with batch 4 would be 4× the training, not faster.
 
-**Batch 4 x 2500 steps = batch 1 x 10,000 steps.** Same samples seen. Leaving steps at
-10,000 with batch 4 would be 4x the training, not faster.
+### VRAM — why 24 GB, not 16
 
----
-
-## 3. Colab Pro — what it is and isn't
-
-$11.79/mo, **100 compute units**, not unlimited hours. Units burn faster on bigger GPUs;
-start on L4, not A100.
-
-**It does not guarantee a machine.** Pro buys faster GPUs and longer sessions. Runtimes are
-still recycled — idle tab, network blip, or Google reclaiming capacity. **This cost one run
-(~45 min of GPU) on day one.**
-
-**Mitigation: [SA3-LoRA-Training-v3-autosave.ipynb](https://colab.research.google.com/drive/1WheOmsnKFlzqCw-i8voNe7mn7s1nybMQ)**
-— cell 10 starts a background watcher that copies every checkpoint and demo to Drive within
-60 s (only once the file size stops changing, so never a half-written file). With that, a
-recycled runtime costs ~10 min of re-setup instead of hours of training.
-
-**Use the v3 notebook. Run cell 10 before launching.**
-
-> Colab also re-downloads the 24 GB of weights every session. That's deliberate — VM local
-> disk reads at ~500 MB/s vs Drive's ~30 MB/s — but it's 5 min of every session.
+The often-quoted **6.9 GB peak was at batch 1**. Activations scale with batch while
+weights and optimizer state don't, so batch 4 lands around **15–17 GB**.
+**A 16 GB card is not enough for the config that works.** Earlier versions of this
+doc said otherwise; that line was measured on the run we no longer use.
 
 ---
 
-## 4. RunPod — the persistent option
+## 3. JarvisLabs — the platform
 
-**Not chosen because it's cheaper. Chosen because storage survives.** That is the single
-feature Colab lacks, and the one that bit us.
+**Chosen 2026-09-14** on India pricing: A30 24 GB at ₹38.88/hr against ~₹62.8/hr for
+an equivalent 24 GB card from a USD-billed provider. INR billing with a GST invoice
+(input credit if registered), no forex markup, and an India region — the 363 MB latent
+upload took **20 seconds**.
 
-### Costs (from RunPod's pricing page, 2026-09-13 — re-check before committing)
+### The machine
+
+```
+jl create --gpu A30 --region IN2 --storage 50 --http-ports 8787 -n sa3
+```
 
 | | |
 |---|---|
-| **Network Storage** (Standard, <1 TB) | **$0.07/GB/mo** |
-| 50 GB volume (24 GB models + latents + checkpoints + venvs) | **$3.50/mo** |
-| 24 GB GPU — L4 / A5000 / 3090 | $0.69/hr |
-| 16 GB GPU — A4000 / A4500 | $0.58/hr ← **also enough**, the run peaked ~7 GB |
-| 24 GB 4090 | $1.10/hr |
-| 48 GB A6000 / A40 | $1.22/hr |
+| GPU | A30, **24 GB VRAM** (`nvidia-smi`: 24576 MiB) |
+| RAM / vCPU | 64 GB / 16 — the pricing page's 112 GB is wrong, `jl gpus` is right |
+| Region | IN2 |
+| Type | container, `pytorch` template (not `--vm`) |
+| Storage | 50 GB custom tier · **cannot be reduced after creation** |
+| Ports | 8787. **8889, 6006, 7007 and 22 are reserved** by JarvisLabs |
+| Cost | ₹38.88/hr GPU + ₹0.648/hr storage = **₹39.53/hr**, and ₹467/month parked |
 
-A 2500-step run took 4.7 h on Colab's L4; a 3090 should do it in **~3 h ≈ $2**.
+**Why A30 over L4** — same 24 GB and cheaper (L4 is ₹41.31), and A30's HBM2 bandwidth
+is ~3× L4's. Training at 2048 latent seq is bandwidth-bound. L4's 124 GB RAM is
+irrelevant here.
 
-> ⚠️ **Use Network Storage ($0.07/GB/mo), not Volume Disk.** Volume Disk bills **$0.20/GB/mo
-> while idle** — double its running rate. That is the trap that makes "monies just fly".
+**Why on-demand, not spot** — spot is ₹27.54 and saves ~₹34 across the whole job. An
+interruption mid-run is the exact Colab failure this move was meant to end.
 
-**~$10/month = persistent storage + 2–3 full runs.**
+### `/home` is the only persistent path
 
-### Setup — a script, not Docker
+`/root` and everything else is **wiped on pause or destroy**. That is why the entire
+install — repos, venv, HF cache, datasets — lives under `/home/workspace`, and why
+system packages can't be relied on.
 
-Docker means rebuilding and pushing an image on every change. A setup script run **once**
-onto the network volume is simpler, and the volume is what makes it stick.
-
-Two scripts live here:
-
-- **`runpod-setup.sh`** — one time. uv, both repos, underfit deps, the safetensors pin, and
-  the 24 GB of weights — all under `/workspace`.
-- **`runpod-start.sh`** — every pod start. Dashboard on 8787 via `.venv/bin/python`.
+### Setup, once
 
 ```bash
-# 1. create a Network Volume, 50 GB
-# 2. deploy a pod: RunPod PyTorch template, volume mounted at /workspace, 24 GB GPU
-# 3. in the pod terminal:
-export HF_TOKEN=hf_...
-curl -sL https://raw.githubusercontent.com/venkateshW2/Mira/main/sa3-studio/runpod-setup.sh | bash
-
-# 4. expose HTTP port 8787 in the pod config, then every time you start a pod:
-bash /workspace/runpod-start.sh
+# local, once
+uv tool install jarvislabs      # provides `jl`
+jl setup                        # writes the API token to config
+jl ssh-key add ~/.ssh/id_ed25519.pub -n <name>
 ```
 
-**Untested on RunPod** — it is today's working sequence transcribed. Expect one or two
-small fixes on first run.
+> ⚠️ **Register the SSH key BEFORE `jl create`.** Keys are injected at boot only. An
+> instance created first comes up with `ssh_command: ""` and is unreachable — it has to
+> be destroyed and recreated. This cost one instance on 2026-09-14.
 
-### Why not the others
+Then create the instance and run the setup script on it:
 
-- **Paperspace** — Pro is $8/mo but **15 GB storage**. The models alone are 24 GB. Ruled out.
-- **AWS** — not cheaper, needs GPU quota tickets, bills until you stop it (EBS bills even
-  when stopped), and spot instances get preempted — the exact failure we're avoiding.
-- **Vast.ai** — cheapest per hour, but interruptible. Wrong for long unattended runs.
-- **Kaggle** — free 30 h/week, but same ephemeral-storage problem as Colab.
+```bash
+scp -F /dev/null -i ~/.ssh/id_ed25519 jarvis-setup.sh jarvis-start.sh root@<ip>:/root/
+ssh -F /dev/null -i ~/.ssh/id_ed25519 root@<ip> 'umask 077; cat > /root/.hf_token' \
+    < ~/.cache/huggingface/token
+ssh -F /dev/null -i ~/.ssh/id_ed25519 root@<ip> \
+    'nohup bash /root/run-setup.sh > /home/workspace/setup.log 2>&1 &'
+```
+
+> ⚠️ **`jl exec` and `jl ssh` fail on this Mac** — the local `~/.ssh/config` sets a
+> `RemoteCommand`, and ssh then refuses with *"Cannot execute command-line and remote
+> command."* Use plain `ssh -F /dev/null` as above.
+
+The HF token goes to a 0600 file rather than an env var on the command line, so it
+never lands in `ps` output. `/root` is wiped on pause, which is the right place for it.
+
+### The two scripts
+
+- **[`jarvis-setup.sh`](jarvis-setup.sh)** — one time. Checks VRAM ≥ 20 GB and bails
+  early rather than OOM-ing hours in; installs uv, clones underfit + stable-audio-3,
+  runs `install.sh --no-setup`, pins safetensors, pulls sa3-medium. Everything under
+  `/home/workspace`.
+- **[`jarvis-start.sh`](jarvis-start.sh)** — every `jl resume`. Reinstalls ffmpeg
+  (apt lives outside `/home`, so a pause eats it — it is *optional*, without it demos
+  fall back to WAV), then launches the dashboard on 8787.
+
+Two landmines both scripts encode:
+
+1. **Pin safetensors AFTER `install.sh`.** `uv run` re-syncs the venv to underfit's
+   lockfile and downgrades safetensors to 0.7.0, which breaks transformers at model build.
+2. **Launch the dashboard with `.venv/bin/python`, never `uv run`** — same reason.
+
+### Measured, 2026-09-14
+
+| | |
+|---|---|
+| Setup wall-clock | under 10 min, including the 24 GB weight pull |
+| Disk after setup | **31 G used, 19 G free** of 50 G |
+| Latent upload | 363 MB in **20 s** (~18 MB/s) |
+| Dashboard | HTTP 200 on the port-8787 endpoint |
+
+19 GB of headroom is enough for checkpoints at 36.5 MB each, but not for another
+film's latents without checking `df` first.
+
+### Datasets — one per LoRA, and the import trap
+
+**underfit registers the folder you point it at as a single dataset.** Unzipping all
+four films under one parent got them imported as one 131-file set (52+28+13+38) — the
+dashboard showed exactly one dataset named `datasets`. Three separate LoRAs need three
+separate dataset records.
+
+Import each film's folder individually. The dashboard's Import button does this; the
+API does it without clicking:
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/api/datasets/import \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/home/workspace/datasets/MadMAx","name":"madmax-xyr",
+       "mode":"preencoded_import","model":"sa3-medium"}'
+```
+
+`mode` is `preencoded_import` for latents made elsewhere (mira's MLX pre-encode), which
+**symlinks** a shadow under `state/datasets/<name>/latents/<model>/` — no extra disk.
+`underfit_native_import` registers in place; `bare_import` is for raw latents with no
+sidecars. Delete a bad record with `POST /api/datasets/<id>/delete`.
+
+Registered on this box:
+
+| dataset | files |
+|---|---|
+| `madmax-xyr` | 52 |
+| `dune-zvq` | 38 |
+| `darkknight-qsk` | 28 |
+| `batman-vzx` | 13 |
+
+Check `num_files` per dataset after importing. If one set shows the sum of all of them,
+you pointed at the parent.
+
+### Daily use
+
+```bash
+jl pause 505855      # stops GPU billing, /home survives, storage still bills
+jl resume 505855     # then: bash /home/workspace/jarvis-start.sh
+jl destroy 505855    # permanent — do this once the LoRAs are downloaded
+```
+
+Storage bills at ₹467/month whether the instance runs or is paused. For gaps of
+months, `destroy` and re-run setup (~10 min) beats parking.
 
 ---
 
-## 5. Settings that work
+## 4. Settings that work
 
 ### Finetune
 
@@ -181,12 +264,16 @@ small fixes on first run.
 | LoRA type | DoRA-rows |
 | Rank / Alpha | 16 / = rank |
 | LR | 1e-4 |
-| Batch size | **4** |
+| Batch size | **4** ← the field that ruined run 2 |
 | Max steps | **2500** |
-| Ckpt / Demo every | 500 / 500 |
+| Ckpt / Demo every | **250** |
 
-**Why 2048, not medium's native 4096:** 4096 = 380 s, but most cues are shorter, so ~29% of
-every step would be padding. 2048 fits 27 of 38 tracks fully.
+`--checkpoint-every 250`, not 500: two Colab recycles cost 480 and 980 steps. A resumed
+run also needs `--lr-scheduler none`, because the LR schedule otherwise restarts from
+the bottom of its warmup ramp.
+
+**Why 2048, not medium's native 4096:** 4096 = 380 s, but most cues are shorter, so ~29%
+of every step would be padding. 2048 fits 27 of 38 tracks fully.
 
 | Latent seq | Duration | Files that fill it | Real audio per crop |
 |---|---|---|---|
@@ -194,12 +281,28 @@ every step would be padding. 2048 fits 27 of 38 tracks fully.
 | **2048** | **190 s** | **27/38** | **91%** |
 | 1300 | 121 s | 34/38 | 98% |
 
+### Steps per film — a flat step count means different things
+
+The good Dune checkpoint sat at **~50 epochs**. At batch 4 that is a different step
+count for every set:
+
+| film | files | steps/epoch | ~50 epochs |
+|---|---|---|---|
+| Mad Max `xyr` | 52 | 13 | **~650** |
+| Dune `zvq` | 38 | 10 | **~500** |
+| Dark Knight `qsk` | 28 | 7 | **~350** |
+| Batman `vzx` | 13 | 4 | **~200** |
+
+Checkpoint every 250 and **select the checkpoint whose `epoch=` is nearest 50** — the
+filename already carries it. Treat ~50 as the centre of a bracket, not a law: 50 epochs
+over 13 Batman files is not the exposure 50 over 38 Dune files was.
+
 ### Dataset Text Prompts — the screen that silently ruins runs
 
 | Setting | Value |
 |---|---|
 | Use fixed prompt | ❌ OFF |
-| Prepend to prompt | ✅ `zvq`, 80% |
+| Prepend to prompt | ✅ trigger, 80% |
 | Use tags | ✅ ON |
 | shuffle | ✅ ON |
 | Balance bar | **Tags 100%** |
@@ -223,15 +326,15 @@ Three traps on this one screen:
 
 ### Demos
 
-Preset **Four**, all **ARC**, **CFG 1**, **Steps 8**, **2048**, different seeds. Three `zvq`
-prompts of varying specificity plus **one empty** — the unconditional control. If that one
-starts sounding like your dataset, the LoRA is bleeding into the base model.
+Preset **Four**, all **ARC**, **CFG 1**, **Steps 8**, **2048**, different seeds. Three
+trigger prompts of varying specificity plus **one empty** — the unconditional control. If
+that one starts sounding like your dataset, the LoRA is bleeding into the base model.
 
 Never Base demos (need ~50 steps each) and never Steps 2 (renders mush, looks like a broken LoRA).
 
 ---
 
-## 6. Reading a run
+## 5. Reading a run
 
 | Signal | Meaning |
 |---|---|
@@ -241,22 +344,23 @@ Never Base demos (need ~50 steps each) and never Steps 2 (renders mush, looks li
 | Smoothed loss | ⚪ nearly useless — dominated by which noise level got sampled |
 | Unconditional demo | should NOT sound like your dataset |
 
-**The best checkpoint is often not the last one.** On 38 tracks, 2500 steps is ~249 epochs;
-random crop mitigates repetition but the elbow can come early. Keep all five and compare at
-the same prompt and seed.
+**The best checkpoint is often not the last one** — but make sure you are comparing
+equal training, not equal step numbers. On 38 tracks at batch 4, 2500 steps is ~250
+epochs; random crop mitigates repetition but the elbow came at ~50. Keep every
+checkpoint and compare at the same prompt and seed.
 
 ---
 
-## 7. Local inference — the payoff
+## 6. Local inference — the payoff
 
-Runs on the Mac, no cloud, no units.
+Runs on the Mac, no cloud, no hourly rate.
 
 **UI** (LoRA strength sliders, seed, steps, audio2audio, inpainting):
 
 ```bash
 cd sa3-studio/stable-audio-3/optimized/mlx
 .venv/bin/python scripts/sa3_gradio.py --dit medium \
-  --lora ~/Downloads/dune-zvq-medium-03-step=500-epoch=49.safetensors \
+  --lora ~/Downloads/500chekpoint-1run/dune-zvq-medium-03-step=500-epoch=49.safetensors \
   --default-seconds 120 --default-steps 8 --no-share
 ```
 
@@ -264,22 +368,32 @@ cd sa3-studio/stable-audio-3/optimized/mlx
 
 ```bash
 .venv/bin/python scripts/sa3_mlx.py --dit medium \
-  --lora ~/Downloads/dune-zvq.safetensors --lora-strength 0.7 \
+  --lora ~/Downloads/500chekpoint-1run/dune-zvq-medium-03-step=500-epoch=49.safetensors \
+  --lora-strength 0.7 \
   --prompt 'zvq, TrackType: Music, Moods: dark, epic, Instruments: strings, low brass' \
   --seconds 120 --out dune-test.wav
 ```
 
 Try `--lora-strength` 0.5 / 0.7 / 0.9 to hear how hard the style is applied.
 
+Prefer mira's own generate window over these scripts where it covers the job — it
+supports 3 LoRA slots, and it is the thing being built.
+
 ---
 
-## 8. Next
+## 7. Next
 
-1. **Finish a full 2500-step run** — hear what fully trained sounds like, find the elbow.
-2. **Compare all five checkpoints** at the same prompt and seed.
-3. **Stand up RunPod** so long runs stop depending on Colab's mood.
+1. **Train the three film LoRAs** at batch 4, stopping each near ~50 epochs.
+2. **Compare checkpoints by epoch**, at the same prompt and seed.
+3. **Dune vs Dark Knight** is the widest contrast available (mean onset_rate 0.90 vs
+   2.25) — the pair for one clean inference experiment. Batman is the weak set: 13
+   files, 1.2 h, and 11 of 13 in one rhythm bucket.
 4. **Then tune the captions.** The pipeline is proven; the next gains are in what mira
    writes, not in the training setup.
+
+Untried idea: instead of one LoRA per film, train them together with a shared
+score-ness token plus a per-film token, so every new film reinforces the shared one and
+styles can be blended at inference.
 
 ### Open items
 
@@ -290,3 +404,5 @@ Try `--lora-strength` 0.5 / 0.7 / 0.9 to hear how hard the style is applied.
 - mira's content-type router called two full cues `stem`; their sidecars were hand-corrected.
   Re-running `mira caption --emit-sidecar` on those two undoes the fix. mira has no
   "declare this a track" command — worth adding.
+- `flash_attn` is not installed; attention falls back to FlexAttention (compiled). Its
+  gain is largest at batch > 1, so it may be worth installing now that batch 4 is standard.
