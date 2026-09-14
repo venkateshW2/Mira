@@ -1,7 +1,10 @@
 #include "CaptionFields.h"
 
 #include <algorithm>
+#include <cmath>
+#include <iterator>
 #include <sstream>
+#include <vector>
 
 #include "../analyze/GenreLabels.h"
 #include "../scan/Scanner.h" // instrumentFromFilename -- a stem's name names its instrument
@@ -204,6 +207,87 @@ std::optional<std::string> bucketed(const std::optional<double>& value, double l
     return std::string(midLabel);
 }
 
+// The two halves of `palette`. Raw mtg_jamendo_instrument class names (the keys under
+// "$.instrument"), not the normalized terms -- this reads the head's own output.
+//
+// The split is "made by synthesis" vs "made by moving air", and the judgement calls are
+// deliberate. `pad`, `rhodes` and `electricpiano` count as electronic because they are
+// synthesised or electro-mechanical timbres a score would use *as* colour. Five labels
+// are counted in NEITHER set, on purpose:
+//
+//   bass, beat   -- say nothing about how the sound was made
+//   guitar       -- the taxonomy's explicit generic/unspecified bucket
+//   electricguitar, organ -- amplified or electro-mechanical, but played, and both are
+//                    ordinary members of an acoustic score's palette (Mad Max's Doof
+//                    Warrior is electric guitar, and it is not a synth record)
+//
+// Counting a label in neither set is not the same as scoring it zero: it is excluded from
+// both numerator and denominator, so an ambiguous instrument cannot drag the ratio either
+// way. That is why the denominator is (electronic + acoustic), not the total mass.
+const char* const kPaletteElectronic[] = {
+    "synthesizer", "drummachine", "sampler", "computer", "pad", "electricpiano",
+    "rhodes", "keyboard",
+};
+const char* const kPaletteAcoustic[] = {
+    "accordion", "acousticbassguitar", "acousticguitar", "bell", "bongo", "brass",
+    "cello", "clarinet", "classicalguitar", "doublebass", "drums", "flute", "harmonica",
+    "harp", "horn", "oboe", "orchestra", "percussion", "piano", "pipeorgan", "saxophone",
+    "strings", "trombone", "trumpet", "viola", "violin", "voice",
+};
+
+bool inLabelSet(const std::string& name, const char* const* set, size_t count) {
+    for (size_t i = 0; i < count; ++i)
+        if (name == set[i]) return true;
+    return false;
+}
+
+// Electronic share of the instrument head's mass. nullopt when the head found almost
+// nothing (see kCaptionPaletteMinMass) -- an unmeasured file omits the field rather than
+// claiming the middle bucket, the same rule bucketed() follows.
+std::optional<double> electronicShare(Database& db, const std::string& machine) {
+    double elec = 0.0, acou = 0.0;
+    for (const auto& [name, score] :
+         db.jsonObjectEntries(machine, "$.instrument", kCaptionMaxInstruments * 8)) {
+        if (inLabelSet(name, kPaletteElectronic, std::size(kPaletteElectronic))) elec += score;
+        else if (inLabelSet(name, kPaletteAcoustic, std::size(kPaletteAcoustic))) acou += score;
+    }
+    const double mass = elec + acou;
+    if (mass <= kCaptionPaletteMinMass) return std::nullopt;
+    return elec / mass;
+}
+
+// Beat-grid jitter: stdev of the inter-beat intervals over their mean, so it is a
+// tempo-independent measure of how evenly the pulse is spaced. A quantised beat sits near
+// 0; an orchestral cue with rubato sits high.
+//
+// Reads `rhythm.beat_this_beats`, the beat-tick timeline already stored for every
+// analysed file -- no re-analysis, and nothing new to compute at analysis time.
+std::optional<double> beatJitter(Database& db, const std::string& machine) {
+    const auto beats = db.jsonDoubleArray(machine, "$.rhythm.beat_this_beats");
+    if (static_cast<int>(beats.size()) < kCaptionTimingMinBeats) return std::nullopt;
+
+    double sum = 0.0;
+    std::vector<double> ibi;
+    ibi.reserve(beats.size() - 1);
+    for (size_t i = 1; i < beats.size(); ++i) {
+        const double d = beats[i] - beats[i - 1];
+        if (d <= 0.0) return std::nullopt;   // non-monotonic ticks: a broken track, not a feel
+        ibi.push_back(d);
+        sum += d;
+    }
+    const double mean = sum / static_cast<double>(ibi.size());
+    if (mean <= 0.0) return std::nullopt;
+
+    double sq = 0.0;
+    for (double d : ibi) sq += (d - mean) * (d - mean);
+    const double jitter = std::sqrt(sq / static_cast<double>(ibi.size())) / mean;
+
+    // Past this the detector failed rather than the player being loose -- see
+    // kCaptionTimingJitterSane.
+    if (jitter > kCaptionTimingJitterSane) return std::nullopt;
+    return jitter;
+}
+
 // Shape fields from a machine JSON blob. Shared by whole-file and segment extraction so
 // the two can never drift, the same reason applyHumanOverrides is shared.
 //
@@ -228,6 +312,20 @@ void applyShapeFields(Database& db, const std::string& machine, CaptionFields& f
                           kCaptionTextureTonalMax, kCaptionTextureNoisyMin,
                           "tonal", "mixed", "noisy"))
         f.texture = *t;
+    if (auto p = bucketed(electronicShare(db, machine),
+                          kCaptionPaletteAcousticMax, kCaptionPaletteElectronicMin,
+                          "acoustic", "hybrid", "electronic"))
+        f.palette = *p;
+    // Gated on includeRhythm for the same reason rhythm is: `rhythm.beat_this_beats` is a
+    // TOP-LEVEL whole-file key, and buildSegmentMachineJson writes only "dsp" plus the
+    // embeddings/heads, so a segment has no beat track of its own. Timing stays inherited
+    // from the file across a segment, exactly as rhythm, bpm and keyScale already do.
+    if (includeRhythm) {
+        if (auto tm = bucketed(beatJitter(db, machine),
+                               kCaptionTimingTightMax, kCaptionTimingLooseMin,
+                               "tight", "human", "loose"))
+            f.timing = *tm;
+    }
 }
 
 void applyHumanOverrides(Database& db, const std::string& human, CaptionFields& f) {
@@ -248,6 +346,8 @@ void applyHumanOverrides(Database& db, const std::string& human, CaptionFields& 
     if (auto rhythm = db.jsonExtractString(human, "$.rhythm")) f.rhythm = *rhythm;
     if (auto dynamics = db.jsonExtractString(human, "$.dynamics")) f.dynamics = *dynamics;
     if (auto texture = db.jsonExtractString(human, "$.texture")) f.texture = *texture;
+    if (auto palette = db.jsonExtractString(human, "$.palette")) f.palette = *palette;
+    if (auto timing = db.jsonExtractString(human, "$.timing")) f.timing = *timing;
     if (auto bpm = db.jsonExtractDouble(human, "$.bpm")) f.bpm = *bpm;
     if (auto key = db.jsonExtractString(human, "$.key")) f.keyScale = *key;
     if (auto isInstrumentalVal = db.jsonExtractDouble(human, "$.is_instrumental"))

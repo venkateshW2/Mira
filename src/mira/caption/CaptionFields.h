@@ -61,6 +61,36 @@ struct CaptionFields {
     std::optional<std::string> rhythm;    // sparse | moderate | driving      (onset_rate)
     std::optional<std::string> dynamics;  // wide | moderate | compressed     (loudness_range_lu)
     std::optional<std::string> texture;   // tonal | mixed | noisy            (spectral_flatness)
+
+    // Two more shape fields (CAPTION-TAGGING.md, 2026-09-14), added for the same reason
+    // the three above were: the existing fields describe a *sound* but not the two things
+    // that most separate one score corpus from another.
+    //
+    // `palette` is what the music is MADE OF. Measured across five film scores it is the
+    // single strongest discriminator in the library: Lord of the Rings is 56/56 acoustic
+    // (mean electronic share 0.047) while Dune is 0.389. genre and instruments already
+    // carry this implicitly, spread across a list; this states it as one word a prompt
+    // can set.
+    //
+    // `timing` is HOW TIGHT the pulse is -- the rubato/quantised axis. It is the field
+    // that makes beat-based material trainable next to orchestral score: an orchestral
+    // cue reads `loose`, a quantised beat reads `tight`, and a producer who plays behind
+    // the grid reads `human`. Correlation with onset_rate (the existing `rhythm` field)
+    // is only -0.19 over 317 files, so it is a genuinely separate axis and not `rhythm`
+    // measured twice.
+    //
+    // Deliberately NOT included, for the same "fewer fields that discriminate" reason the
+    // block above rejected spectral_centroid and crest_factor:
+    //   - tempo drift (|mean(first half) - mean(second half)| / mean of the inter-beat
+    //     intervals): r=0.79 with the jitter that `timing` already uses. Same axis twice.
+    //   - swing (alternating inter-beat ratio): every decile in this library sits between
+    //     1.000 and 1.023, i.e. there is no swung material here to calibrate a threshold
+    //     against, and the tail is corrupt (max 128.07 from failed beat tracking). The
+    //     measurement is implemented and sound; the corpus cannot yet say where the line
+    //     goes. Revisit when a real beat corpus lands -- and note that `beat_this_beats`
+    //     holds BEATS, so 8th/16th-note swing is invisible to it regardless.
+    std::optional<std::string> palette;   // acoustic | hybrid | electronic   (instrument head)
+    std::optional<std::string> timing;    // tight | human | loose            (beat-tick jitter)
 };
 
 // Confidence-gate thresholds and top-k caps. Originally first-pass/unmeasured; TASKS.md
@@ -117,6 +147,34 @@ constexpr double kCaptionDynamicsCompressedMax = 4.0; // loudness_range_lu
 constexpr double kCaptionDynamicsWideMin = 13.0;
 constexpr double kCaptionTextureTonalMax = 0.03;      // spectral_flatness
 constexpr double kCaptionTextureNoisyMin = 0.06;
+
+// `palette` and `timing` boundaries, calibrated the same way: tertiles over every
+// analysed file in a real library (341 with usable instrument scores, 317 with usable
+// beat tracks), then rounded to interpretable numbers and re-checked for balance.
+//
+//   palette 0.15 / 0.35 -> 108 acoustic / 114 hybrid / 119 electronic
+//   timing  0.08 / 0.20 -> 103 tight    / 108 human  / 106 loose
+//
+// Both land near-perfectly even, and palette sorts the five known corpora the way a
+// listener would: LOTR 0.047 acoustic, BvS 0.166 / DarkKnight 0.226 / MadMax 0.266
+// hybrid, Dune 0.389 electronic.
+//
+// Measured p33/p66 before rounding: palette 0.155/0.363, timing 0.084/0.204.
+constexpr double kCaptionPaletteAcousticMax = 0.15;   // electronic share of instrument mass
+constexpr double kCaptionPaletteElectronicMin = 0.35;
+constexpr double kCaptionTimingTightMax = 0.08;       // stdev(inter-beat) / mean(inter-beat)
+constexpr double kCaptionTimingLooseMin = 0.20;
+
+// Above this, the beat track is not rubato -- it is broken. Measured max in this library
+// is 11.67, which is not a tempo, it is a failed detection; dropping those is what makes
+// the tertiles above meaningful. `timing` is omitted rather than guessed for such a file,
+// the same rule bpm and keyScale follow.
+constexpr double kCaptionTimingJitterSane = 2.0;
+// A beat track shorter than this cannot support a jitter estimate worth captioning.
+constexpr int kCaptionTimingMinBeats = 16;
+// Instrument mass below this means the head found essentially nothing -- palette would be
+// a ratio of noise to noise, so it is omitted instead.
+constexpr double kCaptionPaletteMinMass = 0.05;
 
 // Reads `record.machine` into a CaptionFields document, then layers `record.human`
 // overrides on top (PRD §11: "human field always wins on conflict"). See

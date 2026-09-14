@@ -1429,10 +1429,71 @@ int runTag(const std::vector<std::string>& args) {
 // be written the same way (relative vs absolute) the target files were actually scanned
 // with -- this command only checks the folder exists on disk as a sanity check, it
 // doesn't normalize the string used for matching.
+// The folder-tag vocabularies (CAPTION-TAGGING.md, 2026-09-14). Fixed lists, never free
+// text: a LoRA learns whatever mapping it is fed, so a vocabulary that drifts between
+// folders teaches the model nothing. These four are the things no analyzer can measure --
+// mira has no head that knows a score is "fantasy" rather than "sci-fi", and none can be
+// trained to, because the answer is about the film and not the audio. Everything that
+// CAN be measured (palette, timing, rhythm, dynamics, texture, bpm, key, instruments,
+// genre, moods) is derived in CaptionFields.cpp and is deliberately absent here: never
+// ask a person for something the machine already knows.
+//
+// All four land in `keywords`, which CaptionFields.h already documents as existing
+// "purely so a person can hand-label what genre/instrument/mood classifiers can't" and
+// which "only ever comes from `human`". They need no new field and no renderer change.
+const char* const kMaterialVocab[] = {"score", "song", "beat", "sound-design", "live-set"};
+const char* const kWorldVocab[] = {
+    // film
+    "fantasy", "sci-fi", "noir", "heist", "chase", "horror", "western", "war",
+    "post-apocalyptic", "superhero", "survival",
+    // music
+    "club", "basement", "arena", "lo-fi", "industrial", "psychedelic", "spiritual",
+};
+// Each value names the chord shape it stands for, so the word is a musical instruction
+// rather than a vibe: heroic = major/Mixolydian/Lydian with open fifths; lament =
+// minor with a descending bass; menace = Phrygian, tritones, semitone clusters; alien =
+// whole-tone/octatonic drones with no clear tonic.
+const char* const kHarmonicVocab[] = {
+    "heroic", "lament", "menace", "alien", "static-drone", "modal-folk",
+    "blues-pentatonic", "jazz-extended", "atonal",
+};
+// Names one person's habit rather than a genre -- the slot that makes an individual
+// producer's style trainable next to an orchestral score. Expected to grow as artists
+// are added; still a list, so the same habit is always spelled the same way.
+const char* const kSignatureVocab[] = {
+    "glitch-swing", "boom-bap", "broken-beat", "wall-of-noise", "wide-rubato",
+};
+
+template <size_t N>
+bool validateVocab(const char* flag, const std::string& value, const char* const (&vocab)[N]) {
+    for (size_t i = 0; i < N; ++i)
+        if (value == vocab[i]) return true;
+    std::cerr << "mira tag-folder: '" << value << "' is not a valid " << flag << ". One of:";
+    for (size_t i = 0; i < N; ++i) std::cerr << (i ? ", " : " ") << vocab[i];
+    std::cerr << std::endl;
+    return false;
+}
+
+// `--world` takes one or two, comma-separated. Two is the cap because a folder that needs
+// three worlds is not one style, and splitting it into two folders will caption better
+// than blurring it into one.
+std::vector<std::string> splitCommaList(const std::string& s) {
+    std::vector<std::string> out;
+    std::stringstream ss(s);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        while (!item.empty() && item.front() == ' ') item.erase(item.begin());
+        while (!item.empty() && item.back() == ' ') item.pop_back();
+        if (!item.empty()) out.push_back(item);
+    }
+    return out;
+}
+
 int runTagFolder(const std::vector<std::string>& args) {
     std::string dbPath = defaultDbPath();
     std::vector<std::string> positional;
     std::optional<std::string> genre, instruments, moods, keywords, key;
+    std::optional<std::string> material, world, harmonic, signature;
     std::optional<double> bpm;
     std::optional<bool> isInstrumental;
     bool clear = false;
@@ -1443,6 +1504,10 @@ int runTagFolder(const std::vector<std::string>& args) {
         else if (args[i] == "--instruments" && i + 1 < args.size()) instruments = args[++i];
         else if (args[i] == "--moods" && i + 1 < args.size()) moods = args[++i];
         else if (args[i] == "--keywords" && i + 1 < args.size()) keywords = args[++i];
+        else if (args[i] == "--material" && i + 1 < args.size()) material = args[++i];
+        else if (args[i] == "--world" && i + 1 < args.size()) world = args[++i];
+        else if (args[i] == "--harmonic" && i + 1 < args.size()) harmonic = args[++i];
+        else if (args[i] == "--signature" && i + 1 < args.size()) signature = args[++i];
         else if (args[i] == "--bpm" && i + 1 < args.size()) bpm = std::stod(args[++i]);
         else if (args[i] == "--key" && i + 1 < args.size()) key = args[++i];
         else if (args[i] == "--is-instrumental" && i + 1 < args.size()) {
@@ -1475,17 +1540,58 @@ int runTagFolder(const std::vector<std::string>& args) {
         return 0;
     }
 
-    if (!genre && !instruments && !moods && !keywords && !bpm && !key && !isInstrumental) {
+    if (!genre && !instruments && !moods && !keywords && !bpm && !key && !isInstrumental
+        && !material && !world && !harmonic && !signature) {
         std::cerr << "mira tag-folder: nothing to set -- pass at least one of --genre / --instruments / "
-                     "--moods / --keywords / --bpm / --key / --is-instrumental, or --clear"
+                     "--moods / --keywords / --material / --world / --harmonic / --signature / "
+                     "--bpm / --key / --is-instrumental, or --clear"
                   << std::endl;
         return 1;
     }
 
+    // The four vocabulary flags all fold into one `keywords` list. Validated before any
+    // write so a typo fails the whole command rather than half-tagging a folder and
+    // silently teaching a LoRA a misspelled word.
+    std::vector<std::string> vocabWords;
+    if (material) {
+        if (!validateVocab("--material", *material, kMaterialVocab)) return 1;
+        vocabWords.push_back(*material);
+    }
+    if (world) {
+        auto worlds = splitCommaList(*world);
+        if (worlds.empty() || worlds.size() > 2) {
+            std::cerr << "mira tag-folder: --world takes one or two comma-separated values" << std::endl;
+            return 1;
+        }
+        for (const auto& w : worlds) {
+            if (!validateVocab("--world", w, kWorldVocab)) return 1;
+            vocabWords.push_back(w);
+        }
+    }
+    if (harmonic) {
+        if (!validateVocab("--harmonic", *harmonic, kHarmonicVocab)) return 1;
+        vocabWords.push_back(*harmonic);
+    }
+    if (signature) {
+        if (!validateVocab("--signature", *signature, kSignatureVocab)) return 1;
+        vocabWords.push_back(*signature);
+    }
+    // --keywords stays usable alongside them; the vocabulary words go first so the
+    // renderer's word-budget trim drops a free-form extra before a controlled term.
+    if (keywords)
+        for (const auto& k : splitCommaList(*keywords)) vocabWords.push_back(k);
+
     if (genre) db.setFolderDefaultField(folderPath, "$.genre", jsonStringArrayLiteral(*genre));
     if (instruments) db.setFolderDefaultField(folderPath, "$.instruments", jsonStringArrayLiteral(*instruments));
     if (moods) db.setFolderDefaultField(folderPath, "$.moods", jsonStringArrayLiteral(*moods));
-    if (keywords) db.setFolderDefaultField(folderPath, "$.keywords", jsonStringArrayLiteral(*keywords));
+    if (!vocabWords.empty()) {
+        std::string joined;
+        for (size_t i = 0; i < vocabWords.size(); ++i) {
+            if (i) joined += ",";
+            joined += vocabWords[i];
+        }
+        db.setFolderDefaultField(folderPath, "$.keywords", jsonStringArrayLiteral(joined));
+    }
     if (bpm) db.setFolderDefaultField(folderPath, "$.bpm", std::to_string(*bpm));
     if (key) db.setFolderDefaultField(folderPath, "$.key", "\"" + jsonEscapeForTag(*key) + "\"");
     if (isInstrumental)

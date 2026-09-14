@@ -908,6 +908,52 @@ NOT_FOLDER_GENRE=$(echo "$OUT_CAPTION_OVERRIDE" | grep -c "Folder Genre" || true
 assert_eq "folder-default genre no longer shows once overridden" "0" "$NOT_FOLDER_GENRE"
 assert_contains "folder-default keywords still applies (field wasn't overridden)" "$OUT_CAPTION_OVERRIDE" "score-cue"
 
+# CAPTION-TAGGING.md: the four controlled vocabularies. Fixed lists exist so a LoRA is
+# never taught two spellings of the same idea, which means a typo has to fail the whole
+# command rather than half-tagging a folder.
+OUT_VOCAB_BAD=$("$MIRA" tag-folder "$ROOT/fixtures" --db "$FOLDDB" --world "fantsy" 2>&1)
+CODE_VOCAB_BAD=$?
+assert_eq "exit code non-zero for a value outside the vocabulary" "1" "$CODE_VOCAB_BAD"
+assert_contains "names the offending value" "$OUT_VOCAB_BAD" "fantsy"
+assert_contains "lists the valid values" "$OUT_VOCAB_BAD" "post-apocalyptic"
+
+OUT_VOCAB_3WORLD=$("$MIRA" tag-folder "$ROOT/fixtures" --db "$FOLDDB" --world "fantasy,noir,horror" 2>&1)
+CODE_VOCAB_3WORLD=$?
+assert_eq "exit code non-zero for more than two worlds" "1" "$CODE_VOCAB_3WORLD"
+
+# A rejected command must not have written anything -- validation runs before the first
+# setFolderDefaultField call.
+OUT_CAPTION_NOWRITE=$("$MIRA" caption "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" 2>&1)
+NOT_PARTIAL=$(echo "$OUT_CAPTION_NOWRITE" | grep -c "fantasy" || true)
+assert_eq "a rejected tag-folder wrote nothing" "0" "$NOT_PARTIAL"
+
+"$MIRA" tag-folder "$ROOT/fixtures" --db "$FOLDDB" --material score --world "fantasy,noir" \
+    --harmonic heroic --signature wide-rubato >/dev/null 2>&1
+OUT_CAPTION_VOCAB=$("$MIRA" caption "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" 2>&1)
+assert_contains "material lands in keywords" "$OUT_CAPTION_VOCAB" "score"
+assert_contains "both worlds land in keywords" "$OUT_CAPTION_VOCAB" "noir"
+assert_contains "harmonic lands in keywords" "$OUT_CAPTION_VOCAB" "heroic"
+assert_contains "signature lands in keywords" "$OUT_CAPTION_VOCAB" "wide-rubato"
+
+# The two measured shape fields (CAPTION-TAGGING.md). They are legitimately ABSENT on a
+# file with too little instrument mass or fewer than 16 beats -- PRD 12.6's "never assert
+# what wasn't measured" -- so this checks the value is always from the bucket set when
+# present, rather than demanding presence on a short fixture.
+PALETTE_LINE=$(echo "$OUT_CAPTION_VOCAB" | grep "palette:" || true)
+if [ -n "$PALETTE_LINE" ]; then
+    PALETTE_OK=$(echo "$PALETTE_LINE" | grep -cE "palette: (acoustic|hybrid|electronic)$" || true)
+    assert_eq "palette is one of acoustic/hybrid/electronic" "1" "$PALETTE_OK"
+else
+    pass "palette omitted rather than guessed (no usable instrument mass)"
+fi
+TIMING_LINE=$(echo "$OUT_CAPTION_VOCAB" | grep "timing:" || true)
+if [ -n "$TIMING_LINE" ]; then
+    TIMING_OK=$(echo "$TIMING_LINE" | grep -cE "timing: (tight|human|loose)$" || true)
+    assert_eq "timing is one of tight/human/loose" "1" "$TIMING_OK"
+else
+    pass "timing omitted rather than guessed (no usable beat track)"
+fi
+
 "$MIRA" tag-folder "$ROOT/fixtures" --db "$FOLDDB" --clear >/dev/null 2>&1
 "$MIRA" tag "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" --clear >/dev/null 2>&1
 OUT_CAPTION_CLEARED_FOLDER=$("$MIRA" caption "$ROOT/fixtures/flamenco.wav" --db "$FOLDDB" 2>&1)

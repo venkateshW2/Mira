@@ -180,6 +180,8 @@ std::vector<std::pair<std::string, std::string>> renderSa3Tags(const CaptionFiel
     if (fields.rhythm) tags.emplace_back("rhythm", *fields.rhythm);
     if (fields.dynamics) tags.emplace_back("dynamics", *fields.dynamics);
     if (fields.texture) tags.emplace_back("texture", *fields.texture);
+    if (fields.palette) tags.emplace_back("palette", *fields.palette);
+    if (fields.timing) tags.emplace_back("timing", *fields.timing);
     if (fields.bpm) tags.emplace_back("bpm", formatRounded(*fields.bpm));
     if (fields.keyScale) tags.emplace_back("keyscale", *fields.keyScale);
     // Not underfit's `seconds_total` (that's computed independently, straight off the

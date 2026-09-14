@@ -1,7 +1,20 @@
 # Folder-level tagging — a caption vocabulary for style LoRAs
 
-**Status: design, not built.** Written 2026-09-14 after analysing five film scores in
-mira and measuring what actually separates them.
+**Status: built 2026-09-14.** Written after analysing five film scores in mira and
+measuring what actually separates them; implemented the same day.
+
+| layer | status |
+|---|---|
+| `palette` (measured) | **built** — `CaptionFields`, thresholds calibrated over 341 files |
+| `timing` (measured) | **built** — `CaptionFields`, calibrated over 317 files |
+| four human vocabularies | **built** — validated flags on `mira tag-folder` |
+| folder-level defaults | **already existed** — `folder_defaults` + `findFolderDefaultsForPath` |
+| UI dropdowns | **not built** — CLI only so far |
+
+```bash
+mira tag-folder "/path/to/LOTR" --material score --world fantasy --harmonic heroic
+# -> keywords: score, fantasy, heroic   palette: acoustic   timing: loose
+```
 
 The question this answers: *Lord of the Rings and Dune are both film score, but one is
 fantasy epic and the other sci-fi. How does a caption say that?*
