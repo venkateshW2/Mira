@@ -23,6 +23,13 @@
 // existing "purely so a person can hand-label what genre/instrument/mood classifiers
 // can't" and which "only ever comes from `human`". No new field, no renderer change.
 
+// INVARIANT: the four lists are disjoint -- no word appears in two of them.
+// mira_ui's Tag Folder dialog reads a folder's stored keywords back and decides which
+// dropdown each word belongs to purely by asking which vocabulary contains it. A word in
+// two lists would be classified into whichever is tested first, so a stored tag would
+// reappear in the wrong box and be silently rewritten on the next save. Checked at 37
+// words on 2026-09-14; keep it true when adding any.
+
 namespace mira {
 
 // What KIND of thing this is. Sets how everything else should be read.

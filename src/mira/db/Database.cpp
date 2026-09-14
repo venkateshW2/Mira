@@ -566,6 +566,13 @@ void Database::clearFolderDefault(const std::string& folderPath) {
     del.exec();
 }
 
+std::optional<std::string> Database::getFolderDefault(const std::string& folderPath) {
+    SQLite::Statement q(db, "SELECT human FROM folder_defaults WHERE folder_path = ?");
+    q.bind(1, folderPath);
+    if (!q.executeStep()) return std::nullopt;
+    return q.getColumn(0).getString();
+}
+
 std::vector<std::string> Database::findFolderDefaultsForPath(const std::string& filePath) {
     std::vector<std::pair<std::string, std::string>> matches; // (folderPath, human)
     SQLite::Statement q(db, "SELECT folder_path, human FROM folder_defaults");

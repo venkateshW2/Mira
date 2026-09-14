@@ -212,6 +212,12 @@ public:
                                 const std::string& jsonValueJson);
     void clearFolderDefault(const std::string& folderPath);
     std::vector<std::string> findFolderDefaultsForPath(const std::string& filePath);
+    // One folder's own stored `human`, exact path match, for editing it. The finder above
+    // answers "what applies to this FILE" (every matching ancestor, merged in order);
+    // this answers "what did someone set on THIS folder", which is what a tag dialog has
+    // to show before it can offer to change it -- without it a re-tag silently replaces
+    // whatever was there instead of editing it.
+    std::optional<std::string> getFolderDefault(const std::string& folderPath);
 
     // Reads back the `[[start,end],...]` active-span array Router/ActiveRegions.cpp
     // writes into files.active_spans -- same lean-on-SQLite's-own-json approach as

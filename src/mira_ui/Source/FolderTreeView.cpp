@@ -825,7 +825,40 @@ void FolderTreeView::promptForCollectionThen(std::vector<juce::String> paths)
 
 void FolderTreeView::promptTagFolder(const juce::File& folder)
 {
-    // AlertWindow's own combo boxes rather than a bespoke dialog: four dropdowns is
+    const std::string folderPath = folder.getFullPathName().toStdString();
+
+    // Read what this folder already has, so re-opening the dialog EDITS rather than
+    // replaces. getFolderDefault is the exact-path getter, not findFolderDefaultsForPath
+    // -- the latter answers "what applies to a file under here", which would show an
+    // ancestor's tags as if they were this folder's own and then write them down a level.
+    juce::String curMaterial, curWorld1, curWorld2, curHarmonic, curSignature;
+    juce::StringArray extras;   // keywords that aren't in any vocabulary -- see below
+    if (auto stored = database.getFolderDefault(folderPath))
+    {
+        for (const auto& kw : database.jsonStringArray(*stored, "$.keywords"))
+        {
+            juce::String w(kw);
+            if (mira::inVocab(kw, mira::kMaterialVocab, mira::kMaterialVocabCount))
+                curMaterial = w;
+            else if (mira::inVocab(kw, mira::kWorldVocab, mira::kWorldVocabCount))
+            {
+                if (curWorld1.isEmpty()) curWorld1 = w;
+                else if (curWorld2.isEmpty()) curWorld2 = w;
+            }
+            else if (mira::inVocab(kw, mira::kHarmonicVocab, mira::kHarmonicVocabCount))
+                curHarmonic = w;
+            else if (mira::inVocab(kw, mira::kSignatureVocab, mira::kSignatureVocabCount))
+                curSignature = w;
+            else
+                // `mira tag-folder --keywords` can write free-form words this dialog has
+                // no box for. Carry them through untouched rather than dropping them on
+                // save -- a UI that silently deletes what the CLI wrote is worse than one
+                // that can't edit it.
+                extras.add(w);
+        }
+    }
+
+    // AlertWindow's own combo boxes rather than a bespoke dialog: five dropdowns is
     // exactly what it is for, and it keeps the same anchoring/lifetime shape as
     // promptForText above. Its doc comment warns that more than about 3 BUTTONS may
     // silently fail -- Save/Clear/Cancel is three, deliberately.
@@ -844,21 +877,34 @@ void FolderTreeView::promptTagFolder(const juce::File& folder)
         for (size_t i = 0; i < n; ++i) items.add(v[i]);
         return items;
     };
+    auto addBox = [&](const char* id, const char* const* v, size_t n, const juce::String& label,
+                       const juce::String& current) {
+        aw->addComboBox(id, vocabItems(v, n), label);
+        if (auto* cb = aw->getComboBoxComponent(id))
+        {
+            // Item ids are 1-based and "(none)" is id 1, so a vocabulary entry is its
+            // index + 2. Found by searching rather than by arithmetic on the vocabulary
+            // order, so reordering a list can never mis-select a stored tag.
+            int id1 = 1;
+            for (size_t i = 0; i < n; ++i)
+                if (current == v[i]) { id1 = static_cast<int>(i) + 2; break; }
+            cb->setSelectedId(id1, juce::dontSendNotification);
+        }
+    };
 
-    aw->addComboBox("material", vocabItems(mira::kMaterialVocab, mira::kMaterialVocabCount), "Material");
-    aw->addComboBox("world1", vocabItems(mira::kWorldVocab, mira::kWorldVocabCount), "World");
-    aw->addComboBox("world2", vocabItems(mira::kWorldVocab, mira::kWorldVocabCount), "World (2nd, optional)");
-    aw->addComboBox("harmonic", vocabItems(mira::kHarmonicVocab, mira::kHarmonicVocabCount), "Harmonic language");
-    aw->addComboBox("signature", vocabItems(mira::kSignatureVocab, mira::kSignatureVocabCount), "Signature");
+    addBox("material", mira::kMaterialVocab, mira::kMaterialVocabCount, "Material", curMaterial);
+    addBox("world1", mira::kWorldVocab, mira::kWorldVocabCount, "World", curWorld1);
+    addBox("world2", mira::kWorldVocab, mira::kWorldVocabCount, "World (2nd, optional)", curWorld2);
+    addBox("harmonic", mira::kHarmonicVocab, mira::kHarmonicVocabCount, "Harmonic language", curHarmonic);
+    addBox("signature", mira::kSignatureVocab, mira::kSignatureVocabCount, "Signature", curSignature);
 
     aw->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
     aw->addButton("Clear", 2);
     aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
-    const std::string folderPath = folder.getFullPathName().toStdString();
     aw->enterModalState(
         true,
-        juce::ModalCallbackFunction::create([this, aw, folderPath](int result) {
+        juce::ModalCallbackFunction::create([this, aw, folderPath, extras](int result) {
             if (result == 0) return;
             if (result == 2) {
                 database.clearFolderDefault(folderPath);
@@ -878,6 +924,8 @@ void FolderTreeView::promptTagFolder(const juce::File& folder)
                 // The two world boxes can name the same world; store it once.
                 if (v.isNotEmpty() && !words.contains(v)) words.add(v);
             }
+            for (const auto& e : extras)
+                if (!words.contains(e)) words.add(e);
 
             // Nothing chosen means "clear", not "write an empty list" -- otherwise a
             // Save on an all-(none) dialog would leave an empty keywords array behind
