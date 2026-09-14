@@ -352,9 +352,16 @@ count for every set:
 | Dark Knight `qsk` | 28 | 7 | **~350** |
 | Batman `vzx` | 13 | 4 | **~200** |
 
-Checkpoint every 250 and **select the checkpoint whose `epoch=` is nearest 50** — the
-filename already carries it. Treat ~50 as the centre of a bracket, not a law: 50 epochs
-over 13 Batman files is not the exposure 50 over 38 Dune files was.
+**Measured 2026-09-14, and it revises this:** on Mad Max (52 files, batch 4, 2048 crop)
+the listening order came out **1000 > 750 > 500 > 250** — still improving at **epoch 76**,
+with the style reading as more recognisably Junkie XL at 1000 than 750. The unconditional
+demo had not started bleeding. So **~50 epochs is not the elbow**; it was simply the first
+checkpoint the Dune run ever wrote (ckpt was every 500 then), and was never compared
+against anything later. Nobody has yet found the top of this curve.
+
+Use the epoch ladder to *locate* the elbow by ear, not to stop at a number. The rule that
+survives: checkpoint often, keep everything, and let the demos decide — especially the
+unconditional one.
 
 ### Dataset Text Prompts — the screen that silently ruins runs
 
