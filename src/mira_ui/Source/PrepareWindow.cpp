@@ -7,10 +7,50 @@ constexpr int kRow = 26;
 constexpr int kGap = 10;
 constexpr int kLabelW = 110;
 
-// prepare-lora.sh emits its own progress; polling four times a second is enough to feel
-// live without spinning. The process is not interactive, so there is nothing to write.
-constexpr int kPollMs = 250;
 } // namespace
+
+// Blocks on the child's stdout off the message thread and posts what it reads back.
+class PrepareContent::OutputReader : public juce::Thread
+{
+public:
+    OutputReader(PrepareContent& ownerIn, juce::ChildProcess& procIn)
+        : juce::Thread("prepare-lora reader"), owner(&ownerIn), proc(procIn) {}
+
+    void run() override
+    {
+        char chunk[2048];
+        for (;;)
+        {
+            const int n = proc.readProcessOutput(chunk, sizeof(chunk));
+            if (n <= 0) break;
+            post(juce::String::fromUTF8(chunk, n));
+            if (threadShouldExit()) return;
+        }
+        if (threadShouldExit()) return;
+
+        // waitForProcessToFinish rather than isRunning(): the pipe can close a moment
+        // before the exit status is readable, and reporting "exited with code 0" for a
+        // failed run would be worse than reporting nothing.
+        proc.waitForProcessToFinish(5000);
+        const int code = proc.getExitCode();
+        auto safe = owner;
+        juce::MessageManager::callAsync([safe, code] {
+            if (safe.getComponent() != nullptr) safe.getComponent()->onProcessFinished(code);
+        });
+    }
+
+private:
+    void post(const juce::String& text)
+    {
+        auto safe = owner;
+        juce::MessageManager::callAsync([safe, text] {
+            if (safe.getComponent() != nullptr) safe.getComponent()->appendLog(text);
+        });
+    }
+
+    juce::Component::SafePointer<PrepareContent> owner;
+    juce::ChildProcess& proc;
+};
 
 PrepareContent::PrepareContent(const MiraLookAndFeel& lafIn, juce::File studioRootIn,
                                 mira::Database& databaseIn)
@@ -156,13 +196,26 @@ void PrepareContent::run(bool push)
         return;
     }
     setRunning(true);
-    startTimer(kPollMs);
+    reader = std::make_unique<OutputReader>(*this, *proc);
+    reader->startThread();
 }
 
 void PrepareContent::stop()
 {
-    stopTimer();
-    if (proc != nullptr) { proc->kill(); proc.reset(); }
+    // Kill first: the reader is parked inside a blocking read and only wakes when the
+    // pipe closes, which killing the child is what causes.
+    if (proc != nullptr) proc->kill();
+    if (reader != nullptr) { reader->stopThread(2000); reader.reset(); }
+    proc.reset();
+    setRunning(false);
+}
+
+void PrepareContent::onProcessFinished(int exitCode)
+{
+    appendLog(exitCode == 0 ? "\n-- done --\n"
+                            : "\n!! exited with code " + juce::String(exitCode) + "\n");
+    if (reader != nullptr) { reader->stopThread(2000); reader.reset(); }
+    proc.reset();
     setRunning(false);
 }
 
@@ -172,29 +225,6 @@ void PrepareContent::setRunning(bool running)
     pushButton.setEnabled(!running);
     chooseButton.setEnabled(!running);
     stopButton.setEnabled(running);
-}
-
-void PrepareContent::timerCallback()
-{
-    if (proc == nullptr) { stopTimer(); return; }
-
-    char chunk[2048];
-    for (;;)
-    {
-        const int n = proc->readProcessOutput(chunk, sizeof(chunk));
-        if (n <= 0) break;
-        appendLog(juce::String::fromUTF8(chunk, n));
-    }
-
-    if (!proc->isRunning())
-    {
-        const auto code = proc->getExitCode();
-        appendLog(code == 0 ? "\n-- done --\n"
-                            : "\n!! exited with code " + juce::String(code) + "\n");
-        proc.reset();
-        stopTimer();
-        setRunning(false);
-    }
 }
 
 void PrepareContent::appendLog(const juce::String& text)

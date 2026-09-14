@@ -24,7 +24,7 @@
 // stand-in .wav files (underfit finds tags by walking for AUDIO, so a latents-only folder
 // silently trains on the trigger alone) -> verify the tags survived -> zip -> rsync and
 // register the dataset.
-class PrepareContent : public juce::Component, private juce::Timer
+class PrepareContent : public juce::Component
 {
 public:
     PrepareContent(const MiraLookAndFeel& lafIn, juce::File studioRootIn,
@@ -42,7 +42,7 @@ private:
     void chooseFolder();
     void run(bool push);
     void stop();
-    void timerCallback() override;
+    void onProcessFinished(int exitCode);
     void refreshTagsLabel();
     void appendLog(const juce::String& text);
     void setRunning(bool running);
@@ -67,7 +67,13 @@ private:
     juce::TextButton stopButton { "Stop" };
 
     juce::TextEditor log;
+    // readProcessOutput() BLOCKS until the child writes or its pipe closes, so it can
+    // never run on the message thread: step 1 loops `mira caption` over every file and
+    // emits nothing for a long stretch, which froze the whole app. A reader thread does
+    // the blocking and posts lines back with callAsync.
+    class OutputReader;
     std::unique_ptr<juce::ChildProcess> proc;
+    std::unique_ptr<OutputReader> reader;
     std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PrepareContent)
