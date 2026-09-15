@@ -2893,6 +2893,36 @@ single piece of work left and the one the user has raised most often.
 
 ## Phase 7 — meter, bar lines, and grid confidence
 
+> ## ⛔ OPEN BUG — start here (2026-09-16)
+>
+> **The tempo detection is wrong, and it is confidently wrong.** Stated by the user on
+> tracks whose tempo they know:
+>
+> > *"the tempo detection is not correct and its confidently showing wrong... I know the
+> > tempo of the song and its wrong — essentia is wrong and onset cant come from essentia
+> > because it detecting tempo wrong period. the meter algorithm also your doing is wrong."*
+>
+> **Everything below this line is suspect until that is settled**, because all of it —
+> groove, swing, the fitted grid, meter — is built on the tempo and the onsets.
+>
+> **Why the evening's measurements did not settle it:** every one of them compared an
+> estimator against another estimator, or against a grid derived from the same onsets.
+> Those can all agree and still be wrong together. No test this session used a tempo a
+> human knows to be correct, except the `DKP_100_*` loops (tempo in the filename) — and
+> that one was decisive in minutes.
+>
+> **Do first, before touching any code:**
+>
+> - [ ] Get a list of tracks from the user with the tempo they KNOW each one is
+> - [ ] Measure `essentia_bpm`, `beat_this_bpm`, the fitted grid and the raw onsets
+>       against that list — not against each other
+> - [ ] Then decide what is broken. On the table: onsets come from Essentia's `OnsetRate`
+>       (the user's specific claim is that they inherit its tempo error), the octave
+>       choice in `pickBeatOctave`, and the meter port in `Meter.cpp`
+>
+> Do not defend the measurement. If it is wrong on a track the user knows, it is wrong.
+
+
 Opened 2026-09-16. **Not a PRD phase** — like Phase 6, this is work the PRD's §9 plan did
 not anticipate, driven by what the 2026-09-15 groove work exposed and by a bar-detection
 tool a collaborator shared (`~/Downloads/deploy_onnx_image`).

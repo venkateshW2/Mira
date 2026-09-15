@@ -4,7 +4,7 @@ The index to every document in this repo: what each one is, whether it is curren
 when to read it. **Start here.** If you are picking the project up after a break, or you
 are an agent with no memory of the last session, this file is the entry point.
 
-**Last updated: 2026-09-16.** Keep the *Recent work* log at the bottom current — that is
+**Last updated: 2026-09-16 (late).** Keep the *Recent work* log at the bottom current — that is
 this file's second job.
 
 ---
@@ -234,6 +234,15 @@ Newest first. Keep this current — it is how the next session finds the thread.
 - **2026-09-10** — Phase 0 spikes all passed; Phase 2 complete.
 
 ---
+
+## ⛔ Start here next session
+
+**The tempo detection is wrong and confidently wrong** — the user's finding, on tracks
+whose tempo they know. Everything built on it (groove, swing, the fitted grid, meter) is
+suspect until settled. **Get their ground-truth tempos before measuring anything**, and do
+not defend the pipeline with internal consistency checks: every test on 2026-09-16
+compared one estimator to another or to a grid derived from the same onsets, which can
+agree and be wrong together. Full note at [TASKS.md Phase 7](TASKS.md).
 
 ## Open threads
 
