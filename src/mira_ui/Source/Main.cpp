@@ -316,11 +316,18 @@ struct AnalyzeOptions
     // `mira similar --embedding dclap` and `--text`. Turn it on for folders that should be
     // findable by typed description.
     bool dclap = false;
+    // Stores every onset's time so swing/pocket/syncopation can be measured against the
+    // beat grid later. Costs no extra analysis time -- Essentia already produces these on
+    // the way to onset_count and mira discarded them -- but adds ~12 KB of JSON per
+    // 5-minute track, so it is opt-in for the folders where groove is the point rather
+    // than fattening every row in a library that will never ask a groove question.
+    bool groove = false;
 
     juce::StringArray toCliFlags() const
     {
         juce::StringArray flags;
         if (dclap) flags.add("--dclap");
+        if (groove) flags.add("--groove");
         if (chords) flags.add("--chords");
         if (transcribe) flags.add("--transcribe");
         if (recheckTempo) flags.add("--recheck-tempo");
@@ -4232,12 +4239,18 @@ public:
             menu.addItem(11, "Transcription (MIDI notes)", true, options.transcribe);
             menu.addItem(12, "Recheck Tempo (Essentia cross-check)", true, options.recheckTempo);
             menu.addItem(14, "Text Search Index (DCLAP)", true, options.dclap);
+            menu.addItem(16, "Groove (onset times)", true, options.groove);
             // The costs are the reason these are off by default, so they belong in the
             // menu rather than only in TASKS.md — measured on a 5:08 song, and the DCLAP
             // figure on a 4:05 track.
             menu.addSeparator();
             menu.addItem(13, "Chords +15s/file, Transcription +4s/file", false, false);
             menu.addItem(15, "Text Search +27% per file — needed for search by description",
+                          false, false);
+            // Groove is the one extra stage that is NOT slower: Essentia already produces
+            // onset times on the way to onset_count and mira threw them away. The cost is
+            // JSON size, so say that instead of a time.
+            menu.addItem(17, "Groove +0s — stores onset times for swing/pocket (~12 KB/track)",
                           false, false);
         }
         else if (topLevelMenuIndex == 3)
@@ -4282,13 +4295,14 @@ public:
         else if (menuItemID == 4 && onUndo) onUndo();
         else if (menuItemID == 5 && onRedo) onRedo();
         else if (menuItemID >= 700 && onAction) onAction(menuItemID); // Tags/Segments/View share one id space
-        else if ((menuItemID >= 10 && menuItemID <= 12) || menuItemID == 14)
+        else if ((menuItemID >= 10 && menuItemID <= 12) || menuItemID == 14 || menuItemID == 16)
         {
             if (!getAnalyzeOptions || !setAnalyzeOptions) return;
             auto options = getAnalyzeOptions();
             if (menuItemID == 10) options.chords = !options.chords;
             else if (menuItemID == 11) options.transcribe = !options.transcribe;
             else if (menuItemID == 14) options.dclap = !options.dclap;
+            else if (menuItemID == 16) options.groove = !options.groove;
             else options.recheckTempo = !options.recheckTempo;
             setAnalyzeOptions(options);
             menuItemsChanged(); // repaint the checkmarks

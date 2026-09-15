@@ -27,6 +27,7 @@ RoutingResult routeContentType(const std::vector<float>& audio, int sampleRate) 
 
         result.onsetRate = onsetRate;
         result.onsetCount = static_cast<int>(onsetTimes.size());
+        result.onsetTimes.assign(onsetTimes.begin(), onsetTimes.end());
     } catch (const essentia::EssentiaException&) {
         // onsetRate/onsetCount stay at 0 — duration-based routing below still applies.
     }
