@@ -79,6 +79,16 @@ private:
     mira::FileRecord record;               // records.front() -- the single-file views' subject
 
     juce::Label titleLabel, pathLabel, metaLabel, statusLabel, provenanceLabel;
+
+    // What mira itself made this file with. Read out of human.$.generated, which the
+    // Generate window's Keep button writes -- a generated file has no analysis until
+    // someone runs one, so without this the panel says "not analyzed yet" for every
+    // field and shows nothing at all about a recipe that is sitting right there.
+    // Read-only: it is a record of what happened, not a setting.
+    juce::Label generatedLabel;
+    juce::TextEditor generatedEditor;
+    bool hasGenerated = false;
+    void reloadGenerated();
     FieldRow bpmRow, keyRow, genreRow, instrumentRow, moodRow;
 
     // SA3 caption block — the rendered LoRA-training caption for this file, i.e. what the
