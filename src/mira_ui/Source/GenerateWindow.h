@@ -107,6 +107,14 @@ private:
     std::array<LoraSlot, kLoraSlots> slots;
     juce::TextButton addLoraButton { "Add LoRA file..." };
     juce::Slider secondsSlider, stepsSlider, seedSlider;
+    // CFG + negative prompt. sa3_gradio guards the negative branch with `if cfg != 1.0`
+    // and takes a conditional-only fast path at exactly 1.0, so the Avoid box does
+    // NOTHING until this is raised -- they ship together or not at all.
+    // cfg defaults to 1.0, the value every generation before this used, so adding the
+    // control changes nothing until it is deliberately moved.
+    juce::Slider cfgSlider;
+    juce::Label cfgLabel, negativeLabel;
+    juce::TextEditor negativeEditor;
     juce::TextButton generateButton { "Generate" };
     juce::TextButton encodeButton { "Prepare LoRA dataset..." };
     juce::TextEditor triggerEditor;
@@ -166,7 +174,7 @@ public:
         setUsingNativeTitleBar(true);
         setContentOwned(new GenerateContent(laf, std::move(studioRoot), db), false);
         setResizable(true, false);
-        centreWithSize(720, 640);
+        centreWithSize(720, 700);
         setVisible(true);
         toFront(true);
     }

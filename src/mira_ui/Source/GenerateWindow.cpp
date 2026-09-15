@@ -177,6 +177,18 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
                 "Diffusion steps. 8 is the tuned default.");
     setupNumber(seedSlider, 0, 100000, 1, 26,
                 "Seed. Fix it when comparing anything.");
+    setupNumber(cfgSlider, 1.0, 10.0, 0.5, 1.0,
+                "CFG. 1 = the long-standing default (Avoid is ignored). 3-5 to steer; 7 clips ~5% of samples.");
+    cfgLabel.setText("cfg", juce::dontSendNotification);
+    addAndMakeVisible(cfgLabel);
+
+    negativeLabel.setText("avoid", juce::dontSendNotification);
+    addAndMakeVisible(negativeLabel);
+    negativeEditor.setMultiLine(false);
+    negativeEditor.setTextToShowWhenEmpty("needs cfg above 1 -- e.g. voice, vocals, singing",
+                                           juce::Colours::grey);
+    tip(negativeEditor, "Steer AWAY from these. Only acts when cfg > 1 (sa3_gradio guards it with `if cfg != 1.0`).");
+    addAndMakeVisible(negativeEditor);
 
     tip(generateButton, "Generate with the settings above.");
     generateButton.onClick = [this] { generate(); };
@@ -434,6 +446,9 @@ void GenerateContent::generate() {
     auto req = new juce::DynamicObject();
     req->setProperty("cmd", "generate");
     req->setProperty("prompt", promptEditor.getText());
+    req->setProperty("cfg", cfgSlider.getValue());
+    if (negativeEditor.getText().trim().isNotEmpty())
+        req->setProperty("negative_prompt", negativeEditor.getText().trim());
     req->setProperty("seconds", secondsSlider.getValue());
     req->setProperty("steps", static_cast<int>(stepsSlider.getValue()));
     req->setProperty("seed", static_cast<int>(seedSlider.getValue()));
@@ -677,6 +692,16 @@ void GenerateContent::resized() {
     secondsSlider.setBounds(row(22));
     stepsSlider.setBounds(row(22));
     seedSlider.setBounds(row(22));
+    {
+        auto line = row(22);
+        cfgLabel.setBounds(line.removeFromLeft(34));
+        cfgSlider.setBounds(line);
+    }
+    {
+        auto line = row(24);
+        negativeLabel.setBounds(line.removeFromLeft(34));
+        negativeEditor.setBounds(line);
+    }
 
     auto a2a = row(24);
     initAudioButton.setBounds(a2a.removeFromLeft(100));
