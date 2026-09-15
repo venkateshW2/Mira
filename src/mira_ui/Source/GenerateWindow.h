@@ -7,6 +7,7 @@
 
 #include "mira/db/Database.h"
 #include "MiraLookAndFeel.h"
+#include "PromptBuilderWindow.h"
 #include "Sa3Worker.h"
 #include "WaveformView.h"
 
@@ -106,6 +107,10 @@ private:
     static constexpr int kLoraSlots = 3;
     std::array<LoraSlot, kLoraSlots> slots;
     juce::TextButton addLoraButton { "Add LoRA file..." };
+    // Opens the format helper. A LoRA is trained on "Key: value, Key: value" captions,
+    // so a hand-typed bare word list is off distribution -- this builds the shape.
+    juce::TextButton buildPromptButton { "Build prompt..." };
+    std::unique_ptr<PromptBuilderWindow> promptBuilder;
     juce::Slider secondsSlider, stepsSlider, seedSlider;
     // CFG + negative prompt. sa3_gradio guards the negative branch with `if cfg != 1.0`
     // and takes a conditional-only fast path at exactly 1.0, so the Avoid box does

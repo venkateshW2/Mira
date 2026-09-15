@@ -158,6 +158,19 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         tip(sl.maxStep, "Last step this LoRA applies to. Late steps shape timbre.");
     }
 
+    tip(buildPromptButton, "Build a prompt in the shape the LoRAs were trained on.");
+    buildPromptButton.onClick = [this] {
+        if (promptBuilder != nullptr) { promptBuilder->toFront(true); return; }
+        promptBuilder = std::make_unique<PromptBuilderWindow>(laf, studioRoot);
+        promptBuilder->content->onConstruct = [this](const juce::String& text) {
+            promptEditor.setText(text);
+        };
+        promptBuilder->onClosed = [this] {
+            juce::MessageManager::callAsync([this] { promptBuilder.reset(); });
+        };
+    };
+    addAndMakeVisible(buildPromptButton);
+
     tip(addLoraButton, "Copy a .safetensors into loras/sa3-medium/.");
     addLoraButton.onClick = [this] { addLoraFile(); };
     addAndMakeVisible(addLoraButton);
@@ -726,6 +739,8 @@ void GenerateContent::resized() {
     nameEditor.setBounds(out.removeFromLeft(200));
     out.removeFromLeft(6);
     addLoraButton.setBounds(out.removeFromLeft(120));
+    out.removeFromLeft(6);
+    buildPromptButton.setBounds(out.removeFromLeft(130));
 
     auto buttons = row(30);
     generateButton.setBounds(buttons.removeFromLeft(110));
