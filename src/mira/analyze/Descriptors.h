@@ -14,6 +14,15 @@ struct DspDescriptors {
     double crestFactor = 0.0;        // peak / mean of |signal| — "how spiky vs. flat"
     double spectralCentroidHz = 0.0; // brightness, averaged over frames
     double spectralFlatness = 0.0;   // noisiness (0=tonal, 1=noise-like), averaged over frames
+    // Share of energy below 80 Hz. spectral_centroid is a mean dominated by the mids and
+    // is blind to the sub, so a track built on a 40 Hz fundamental scores like one with
+    // no bottom end. See Descriptors.cpp for why the band is 20-80 and not 20-60.
+    double subRatio = 0.0;
+    // How fast the spectrum moves frame to frame, and how steadily. flatness says what
+    // the spectrum looks like; flux says whether it is going anywhere -- a drone and a
+    // continuously morphing texture can share a flatness and differ wildly here.
+    double fluxMean = 0.0;
+    double fluxStddev = 0.0;
     double attackTimeSeconds = 0.0;  // whole-file envelope attack; most meaningful on one-shots
     // 1.0 = purely harmonic tone, 0.0 = highly inharmonic/noisy; averaged over frames with
     // pitch confidence above kHarmonicityMinPitchConfidence (Descriptors.cpp), skipping

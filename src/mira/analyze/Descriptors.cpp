@@ -27,6 +27,22 @@ constexpr int kChromaSize = 12; // HPCP bins, one per pitch class
 struct SpectralAverages {
     double centroidHz = 0.0;
     double flatness = 0.0;
+    // Share of frame energy below 80 Hz. `spectral_centroid` is a mean dominated by the
+    // mids and cannot see the sub at all, so a track built on a 40 Hz fundamental and one
+    // with no bottom end score alike. 20-80 rather than 20-60 on purpose: at kFrameSize
+    // 2048 / 44.1 kHz a bin is 21.5 Hz wide, so 20-60 is barely two bins -- the wider
+    // band buys a third bin and a usable ratio. If this turns out to discriminate, the
+    // upgrade is a second 8192-point pass (5.4 Hz bins) for this measure alone.
+    double subRatio = 0.0;
+    // How fast the spectrum MOVES, frame to frame -- sum of squared bin differences.
+    // flatness describes what the spectrum looks like on average; flux describes whether
+    // it is going anywhere. A sustained drone and a continuously morphing texture can
+    // have identical flatness and completely different flux, and that difference is what
+    // "sound design" means as a measurement.
+    double fluxMean = 0.0;
+    // Steady motion vs bursty. Continuous granular movement and a static bed cut by
+    // sudden edits both raise fluxMean; only the second raises this.
+    double fluxStddev = 0.0;
     double harmonicity = 0.0;
     int harmonicityFrameCount = 0;
     std::vector<double> mfcc;    // size kNumMfccCoefficients, empty if unmeasurable
@@ -51,6 +67,12 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     AlgoPtr centroidAlgo = create("Centroid");
     centroidAlgo->configure("range", essentia::Parameter(sampleRate / 2.0));
     AlgoPtr flatnessAlgo = create("Flatness");
+    AlgoPtr subBandAlgo = create("EnergyBandRatio");
+    subBandAlgo->configure("sampleRate", static_cast<essentia::Real>(sampleRate),
+                            "startFrequency", 20.0f, "stopFrequency", 80.0f);
+    // Stateful: Flux keeps the previous frame's spectrum itself, so it must see every
+    // frame in order -- which the shared pass below already guarantees.
+    AlgoPtr fluxAlgo = create("Flux");
 
     AlgoPtr mfccAlgo = create("MFCC");
     // highFrequencyBound must stay below Nyquist — matters for low-sample-rate stems.
@@ -82,6 +104,14 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     essentia::Real flatnessValue = 0;
     flatnessAlgo->input("array").set(spec);
     flatnessAlgo->output("flatness").set(flatnessValue);
+
+    essentia::Real subValue = 0;
+    subBandAlgo->input("spectrum").set(spec);
+    subBandAlgo->output("energyBandRatio").set(subValue);
+
+    essentia::Real fluxValue = 0;
+    fluxAlgo->input("spectrum").set(spec);
+    fluxAlgo->output("flux").set(fluxValue);
 
     std::vector<essentia::Real> mfccBands, mfccCoeffs;
     mfccAlgo->input("spectrum").set(spec);
@@ -116,6 +146,8 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     inharmonicity->output("inharmonicity").set(inharmonicityValue);
 
     double centroidSum = 0.0, flatnessSum = 0.0, harmonicitySum = 0.0;
+    // Sum and sum-of-squares, so the stddev needs no second pass over the frames.
+    double subSum = 0.0, fluxSum = 0.0, fluxSumSq = 0.0;
     int frameCount = 0, harmonicityCount = 0;
     std::vector<double> mfccSum(kNumMfccCoefficients, 0.0);
     std::vector<double> chromaSum(kChromaSize, 0.0);
@@ -130,6 +162,13 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
         centroidSum += centroidValue;
         flatnessAlgo->compute();
         flatnessSum += flatnessValue;
+        // Both are a handful of sums over bins on a spectrum that already exists --
+        // measured as noise against the MFCC/HPCP chains in the same loop.
+        subBandAlgo->compute();
+        subSum += subValue;
+        fluxAlgo->compute();
+        fluxSum += fluxValue;
+        fluxSumSq += static_cast<double>(fluxValue) * fluxValue;
         ++frameCount;
 
         try {
@@ -174,6 +213,12 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     if (frameCount > 0) {
         result.centroidHz = centroidSum / frameCount;
         result.flatness = flatnessSum / frameCount;
+        result.subRatio = subSum / frameCount;
+        result.fluxMean = fluxSum / frameCount;
+        // max(0,...) because catastrophic cancellation can drive the variance a hair
+        // below zero when every frame's flux is near-identical (a pure tone, silence).
+        const double var = std::max(0.0, fluxSumSq / frameCount - result.fluxMean * result.fluxMean);
+        result.fluxStddev = std::sqrt(var);
     }
     result.harmonicity = harmonicityCount > 0 ? harmonicitySum / harmonicityCount : 0.0;
     result.harmonicityFrameCount = harmonicityCount;
@@ -250,6 +295,9 @@ DspDescriptors computeDspDescriptors(const std::vector<float>& left,
     auto spectral = computeSpectralAverages(mono, sampleRate);
     d.spectralCentroidHz = spectral.centroidHz;
     d.spectralFlatness = spectral.flatness;
+    d.subRatio = spectral.subRatio;
+    d.fluxMean = spectral.fluxMean;
+    d.fluxStddev = spectral.fluxStddev;
     d.harmonicity = spectral.harmonicity;
     d.harmonicityFrameCount = spectral.harmonicityFrameCount;
     d.mfcc = spectral.mfcc;
@@ -303,6 +351,9 @@ std::string toJson(const DspDescriptors& d) {
         << ",\"crest_factor\":" << d.crestFactor
         << ",\"spectral_centroid_hz\":" << d.spectralCentroidHz
         << ",\"spectral_flatness\":" << d.spectralFlatness
+        << ",\"sub_ratio\":" << d.subRatio
+        << ",\"flux_mean\":" << d.fluxMean
+        << ",\"flux_stddev\":" << d.fluxStddev
         << ",\"attack_time_seconds\":" << d.attackTimeSeconds
         << ",\"harmonicity\":" << d.harmonicity
         << ",\"harmonicity_frame_count\":" << d.harmonicityFrameCount
