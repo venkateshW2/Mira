@@ -86,7 +86,13 @@ OctaveChoice pickBeatOctave(const std::vector<double>& onsets, double fittedPeri
 {
     struct Candidate { double period; double bpm; double resultant; };
     std::vector<Candidate> candidates;
-    for (double mult : { 0.5, 1.0, 2.0, 3.0, 4.0 })
+    // 1.5 and 2/3 are here because the search genuinely locks onto 3-against-2
+    // subdivisions. Measured case: a 100 BPM drum loop (DKP_100_drum_full_million_dollar,
+    // and the filename is ground truth) fitted at 0.4015 s -- exactly 2/3 of the 0.600 s
+    // beat -- and with only integer multiples on offer, NOTHING in the candidate list
+    // could reach the 99.9 BPM that both estimators independently reported. The grid then
+    // fell through to the tempo prior and published 149.4 BPM at 2.33x strength.
+    for (double mult : { 0.5, 2.0 / 3.0, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0 })
     {
         const double period = fittedPeriod * mult;
         const double bpm = 60.0 / period;
@@ -126,14 +132,21 @@ OctaveChoice pickBeatOctave(const std::vector<double>& onsets, double fittedPeri
         if (auto pick = nearestTo(*beatThisBpm))
             return { pick->period, "beat_this" };
 
-    // Neither scalar landed on any multiple of the fitted period. Fall back to the
-    // candidate closest to 110 BPM -- the centre of the range people actually count in --
-    // and say so in octaveSource, so the guess is visible as a guess.
+    // Neither scalar landed on any multiple of the fitted period. The old code picked
+    // whichever candidate sat nearest 110 BPM and labelled it "onsets", which read like
+    // evidence when it was a tempo prior -- 23% of the library was getting its grid that
+    // way. It is now reported as uncorroborated so analyzeGroove can decline to derive
+    // anything from it (see kGrooveMinGridStrength's caller).
+    //
+    // Strength alone cannot rescue this. On the measured 100 BPM loop the circular
+    // concentration was HIGHER at the wrong 149.4 BPM subdivision (0.168) than at the
+    // true beat (0.150): a regular subdivision of a regular grid is also regular. Only
+    // corroboration separates them, which is why its absence now means "unknown".
     const Candidate* best = &candidates.front();
     for (const auto& candidate : candidates)
         if (std::abs(std::log2(candidate.bpm / 110.0)) < std::abs(std::log2(best->bpm / 110.0)))
             best = &candidate;
-    return { best->period, "onsets" };
+    return { best->period, "uncorroborated" };
 }
 
 // Phase of an onset within the beat, in [0,1).
@@ -198,6 +211,16 @@ GrooveResult analyzeGroove(const std::vector<double>& onsetTimes,
     if (grid.strength < kGrooveMinGridStrength)
     {
         result.omittedReason = "no grid lock";
+        return result;
+    }
+
+    // A grid no independent estimator agrees with is a hypothesis, not a measurement.
+    // Swing and pocket are defined RELATIVE TO THE BEAT, so deriving them from a grid
+    // that may be a subdivision of the real beat produces confident nonsense -- which is
+    // exactly what the 100 BPM loop did at 2.33x strength.
+    if (grid.octaveSource == "uncorroborated")
+    {
+        result.omittedReason = "grid not corroborated by any tempo estimate";
         return result;
     }
 
