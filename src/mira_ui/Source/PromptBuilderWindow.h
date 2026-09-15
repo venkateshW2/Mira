@@ -72,13 +72,16 @@ private:
 class PromptBuilderWindow : public juce::DocumentWindow
 {
 public:
-    PromptBuilderWindow(const MiraLookAndFeel& laf, juce::File studioRoot)
+    // Takes the content rather than making it: the Generate window OWNS it, so closing
+    // this window (which Construct does) keeps every dropdown and field exactly as it
+    // was. Reopening resumes instead of starting over.
+    explicit PromptBuilderWindow(PromptBuilderContent* existing)
         : juce::DocumentWindow("Construct Prompt", MiraLookAndFeel::surface,
                                 juce::DocumentWindow::allButtons)
     {
         setUsingNativeTitleBar(true);
-        content = new PromptBuilderContent(laf, std::move(studioRoot));
-        setContentOwned(content, false);
+        content = existing;
+        setContentNonOwned(content, false);
         setResizable(true, false);
         centreWithSize(660, 560);
         setAlwaysOnTop(true);

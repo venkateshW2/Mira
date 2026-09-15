@@ -161,10 +161,19 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     tip(buildPromptButton, "Build a prompt in the shape the LoRAs were trained on.");
     buildPromptButton.onClick = [this] {
         if (promptBuilder != nullptr) { promptBuilder->toFront(true); return; }
-        promptBuilder = std::make_unique<PromptBuilderWindow>(laf, studioRoot);
-        promptBuilder->content->onConstruct = [this](const juce::String& text) {
-            promptEditor.setText(text);
-        };
+        if (promptBuilderContent == nullptr) {
+            promptBuilderContent = std::make_unique<PromptBuilderContent>(laf, studioRoot);
+            promptBuilderContent->onConstruct = [this](const juce::String& text) {
+                promptEditor.setText(text);
+                statusLabel.setText("prompt built - " + juce::String(text.length()) + " chars",
+                                     juce::dontSendNotification);
+                log("prompt: " + text);
+                // Closing IS the confirmation: the panel goes away and the text is
+                // visibly sitting in the prompt box behind it.
+                juce::MessageManager::callAsync([this] { promptBuilder.reset(); });
+            };
+        }
+        promptBuilder = std::make_unique<PromptBuilderWindow>(promptBuilderContent.get());
         promptBuilder->onClosed = [this] {
             juce::MessageManager::callAsync([this] { promptBuilder.reset(); });
         };
@@ -328,6 +337,39 @@ void GenerateContent::refreshDatasets() {
                           juce::dontSendNotification);
 }
 
+namespace {
+// underfit names checkpoints "<run>-step<N>-epoch<M>.safetensors". Everything before
+// "-step" is the run, which is what a person actually picks by ("the nin one"); the
+// numbers only choose WHICH checkpoint of that run. Splitting there lets the menu show
+// the run once as a heading and the checkpoints under it, instead of thirteen long
+// near-identical filenames that differ in the middle.
+juce::String loraRunName(const juce::File& f) {
+    const auto stem = f.getFileNameWithoutExtension();
+    const auto cut = stem.indexOf("-step");
+    return cut > 0 ? stem.substring(0, cut) : stem;
+}
+
+int loraStep(const juce::File& f) {
+    const auto stem = f.getFileNameWithoutExtension();
+    const auto cut = stem.indexOf("-step");
+    if (cut < 0) return -1;
+    // "=" survives when a checkpoint is copied in by hand rather than through
+    // addLoraFile(), which strips it -- tolerate both spellings.
+    return stem.substring(cut + 5).trimCharactersAtStart("=")
+               .upToFirstOccurrenceOf("-", false, false).getIntValue();
+}
+
+juce::String loraShortLabel(const juce::File& f) {
+    const auto stem = f.getFileNameWithoutExtension();
+    const int step = loraStep(f);
+    if (step <= 0) return stem;
+    const auto epoch = stem.fromFirstOccurrenceOf("epoch", false, false)
+                           .trimCharactersAtStart("=");
+    return "step " + juce::String(step)
+         + (epoch.isNotEmpty() ? "   (epoch " + epoch + ")" : juce::String());
+}
+} // namespace
+
 void GenerateContent::refreshLoras() {
     loraFiles.clear();
     const auto dir = loraDirFor(studioRoot);
@@ -335,17 +377,31 @@ void GenerateContent::refreshLoras() {
         for (const auto& f : dir.findChildFiles(juce::File::findFiles, false, "*.safetensors"))
             loraFiles.add(f);
 
+    // Run name, then newest checkpoint first -- the one just trained is the one most
+    // likely wanted, and it used to be buried in whatever order the filesystem returned.
+    std::sort(loraFiles.begin(), loraFiles.end(), [](const juce::File& a, const juce::File& b) {
+        const auto ra = loraRunName(a), rb = loraRunName(b);
+        if (ra != rb) return ra < rb;
+        return loraStep(a) > loraStep(b);
+    });
+
     for (int i = 0; i < kLoraSlots; ++i) {
         auto& box = slots[static_cast<size_t>(i)].box;
         const int previous = box.getSelectedId();
         box.clear(juce::dontSendNotification);
         box.addItem("(empty)", 1);
-        for (int k = 0; k < loraFiles.size(); ++k)
-            box.addItem(loraFiles[k].getFileNameWithoutExtension(), k + 2);
-        // Slot 1 preselects the newest checkpoint; the others stay empty so a single-LoRA
-        // generation is still one click.
+        juce::String lastRun;
+        for (int k = 0; k < loraFiles.size(); ++k) {
+            const auto run = loraRunName(loraFiles[k]);
+            if (run != lastRun) { box.addSectionHeading(run); lastRun = run; }
+            // Ids stay k+2 over the SORTED array, which is the same array
+            // buildLoraSpecs() indexes -- section headings consume no id.
+            box.addItem(loraShortLabel(loraFiles[k]), k + 2);
+        }
+        // Slot 1 preselects the FIRST entry now that the list is sorted -- id 2 -- rather
+        // than the last one the filesystem happened to return.
         const int wanted = previous > 0 ? previous
-                          : (i == 0 && !loraFiles.isEmpty() ? loraFiles.size() + 1 : 1);
+                          : (i == 0 && !loraFiles.isEmpty() ? 2 : 1);
         box.setSelectedId(box.indexOfItemId(wanted) >= 0 ? wanted : 1,
                           juce::dontSendNotification);
     }

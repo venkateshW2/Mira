@@ -110,6 +110,9 @@ private:
     // Opens the format helper. A LoRA is trained on "Key: value, Key: value" captions,
     // so a hand-typed bare word list is off distribution -- this builds the shape.
     juce::TextButton buildPromptButton { "Build prompt..." };
+    // The CONTENT outlives the window on purpose -- Construct closes the window, and
+    // reopening should resume with every field as it was rather than blank.
+    std::unique_ptr<PromptBuilderContent> promptBuilderContent;
     std::unique_ptr<PromptBuilderWindow> promptBuilder;
     juce::Slider secondsSlider, stepsSlider, seedSlider;
     // CFG + negative prompt. sa3_gradio guards the negative branch with `if cfg != 1.0`

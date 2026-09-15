@@ -116,7 +116,10 @@ PromptBuilderContent::Field& PromptBuilderContent::addField(const juce::String& 
     if (vocabKey.isNotEmpty()) {
         const auto values = byFrequency(vocabKey);
         if (!values.empty()) {
-            f.picker.addItem("--", 1);
+            // Multi fields are an ADD action, so the picker returns to its prompt after
+            // each pick; single fields are a CHOICE, so the picker stays on what was
+            // chosen. Showing "--" after a successful pick made every row look unset.
+            f.picker.addItem(multi ? "+ add..." : "-- none --", 1);
             for (int i = 0; i < static_cast<int>(values.size()); ++i)
                 f.picker.addItem(values[static_cast<size_t>(i)], i + 2);
             f.picker.setSelectedId(1, juce::dontSendNotification);
@@ -127,16 +130,20 @@ PromptBuilderContent::Field& PromptBuilderContent::addField(const juce::String& 
                 const auto picked = fp->picker.getItemText(fp->picker.getSelectedItemIndex());
                 // Multi fields APPEND (that is what makes an instrument list possible
                 // without a multi-select widget); single fields replace.
-                if (fp->multi && fp->value.getText().trim().isNotEmpty()) {
+                if (fp->multi) {
                     const auto existing = fp->value.getText().trim();
-                    const auto parts = juce::StringArray::fromTokens(existing, ",", "");
-                    bool already = false;
-                    for (const auto& p : parts) if (p.trim() == picked) already = true;
-                    if (!already) fp->value.setText(existing + ", " + picked);
+                    if (existing.isEmpty()) {
+                        fp->value.setText(picked);
+                    } else {
+                        const auto parts = juce::StringArray::fromTokens(existing, ",", "");
+                        bool already = false;
+                        for (const auto& p : parts) if (p.trim() == picked) already = true;
+                        if (!already) fp->value.setText(existing + ", " + picked);
+                    }
+                    fp->picker.setSelectedId(1, juce::dontSendNotification);
                 } else {
-                    fp->value.setText(picked);
+                    fp->value.setText(picked);   // picker stays on the chosen item
                 }
-                fp->picker.setSelectedId(1, juce::dontSendNotification);
             };
             addAndMakeVisible(f.picker);
         }
