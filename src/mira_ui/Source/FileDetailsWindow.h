@@ -48,6 +48,12 @@ private:
         juce::Label referenceLabel; // read-only ranked machine output, small/dim
         juce::TextEditor editor;    // editable effective value (human override if set, else machine top)
         juce::String initialText;   // what reload() put in `editor` -- Save writes only if this changed
+        // Closed-vocabulary rows only (groove/swing/low_end/motion). Picking from it
+        // fills `editor`; the editor stays typeable, so the list is a reminder of the
+        // words the model was actually trained on rather than a cage. Empty for the
+        // open-ended rows (genre/instruments/moods), which have no fixed vocabulary.
+        juce::ComboBox vocab;
+        bool hasVocab = false;
     };
 
     // One file's effective (human-override-else-machine) value per editable field, plus
@@ -69,7 +75,8 @@ private:
 
     void reload();        // re-reads records + rebuilds every field from the DB
     void reloadCaption(); // re-renders the SA3 caption only, from the already-loaded record
-    void addFieldRow(FieldRow& row, const juce::String& sectionName);
+    void addFieldRow(FieldRow& row, const juce::String& sectionName,
+                      const juce::StringArray& vocabulary = {});
     EffectiveFields computeFields(const mira::FileRecord& r) const;
     void setRowValue(FieldRow& row, const juce::String& value, const juce::String& reference);
 
