@@ -135,6 +135,9 @@ public:
         // grid drifted; this is the only confidence number mira has about its own beats,
         // so it is drawn rather than buried.
         double barSpread = 0.0;
+        // The tempo of the grid the meter bars are actually drawn on (beat_this), which
+        // is NOT necessarily `bpm` above (the fitted grid). Shown when they disagree.
+        double beatGridBpm = 0.0;
     };
 
     void setGroove(GrooveOverlay newGroove);

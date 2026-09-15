@@ -1901,6 +1901,8 @@ private:
                 overlay.meter = static_cast<int>(*m);
             if (auto sp = database->jsonExtractDouble(record->machine, "$.rhythm.meter_bar_spread"))
                 overlay.barSpread = *sp;
+            if (auto bb = database->jsonExtractDouble(record->machine, "$.rhythm.beat_this_bpm"))
+                overlay.beatGridBpm = *bb;
 
             if (!groove.omittedReason.empty())
             {

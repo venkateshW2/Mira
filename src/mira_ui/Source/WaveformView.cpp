@@ -7,10 +7,16 @@
 using namespace mira_ui;
 
 namespace {
-juce::String formatTime(double seconds)
+// `roundToSecond` matters. The transport clock wants the nearest second; the zoomed-in
+// ruler appends its own fractional part and so must TRUNCATE, or the two halves of one
+// label disagree: at t=76.5 a rounding formatTime says "1:17" while the fraction says
+// ".5", printing 1:17.5 for a moment that is 1:16.5. Every tick past the half-second was
+// a second too high, which made the ruler read 1:16.8, 1:16.0, 1:16.2, 1:17.5 -- visibly
+// going backwards.
+juce::String formatTime(double seconds, bool roundToSecond = true)
 {
     if (seconds < 0.0 || !std::isfinite(seconds)) seconds = 0.0;
-    int total = static_cast<int>(seconds + 0.5);
+    int total = static_cast<int>(roundToSecond ? seconds + 0.5 : std::floor(seconds));
     int m = total / 60;
     int s = total % 60;
     return juce::String::formatted("%d:%02d", m, s);
@@ -958,6 +964,22 @@ void WaveformView::paintGrooveHistogram(juce::Graphics& g, juce::Rectangle<int> 
         g.drawText(meterText, footer, juce::Justification::centredRight, false);
     }
 
+    // When the meter bars are laid on a grid that disagrees with the fitted one, SAY SO.
+    // The bars come from beat_this's detected beats (Meter.h explains why: bar spread is
+    // meaningless on a synthetic grid), so if beat_this and the fitted grid disagree the
+    // green bars and the amber grid visibly drift apart -- on NIN's La Mer by 9%, 93.0
+    // against 85.4. That is two estimators disagreeing, which is information, but drawn
+    // without a word it just reads as broken.
+    if (groove.meter > 1 && groove.beatGridBpm > 0.0
+        && std::abs(groove.beatGridBpm - groove.bpm) / groove.bpm > 0.02)
+    {
+        auto note = inner.removeFromBottom(10);
+        g.setFont(juce::Font(juce::FontOptions(8.5f)));
+        g.setColour(MiraLookAndFeel::good.withAlpha(0.85f));
+        g.drawText("bars on beat_this " + juce::String(groove.beatGridBpm, 1), note,
+                   juce::Justification::centredLeft, false);
+    }
+
     auto plot = inner.reduced(0, 2);
     if (plot.getHeight() < 8) return;
 
@@ -1081,8 +1103,9 @@ void WaveformView::paint(juce::Graphics& g)
             g.setColour(MiraLookAndFeel::textDim);
             // Sub-second ticks need the fraction, or every label on a zoomed-in view
             // reads as the same second repeated.
-            auto label = tick < 1.0 ? formatTime(t) + juce::String(t - std::floor(t), 1).substring(1)
-                                     : formatTime(t);
+            auto label = tick < 1.0
+                             ? formatTime(t, false) + juce::String(t - std::floor(t), 1).substring(1)
+                             : formatTime(t);
             g.drawText(label, x + 3, ruler.getY(), 46, ruler.getHeight() - 4,
                         juce::Justification::centredLeft, false);
         }
