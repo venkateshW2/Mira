@@ -4262,7 +4262,10 @@ public:
             menu.addSeparator();
             menu.addItem(MainComponent::kShowLog, "Log...");
             menu.addSeparator();
-            menu.addItem(3, "Audio Settings...");
+            // 6, not 3: 3 is the File menu's "Add Files", and menuItemSelected is an
+            // else-if chain that matched Add Files first -- so this item opened the
+            // file chooser and the audio branch below was dead code.
+            menu.addItem(6, "Audio Settings...");
         }
         return menu;
     }
@@ -4272,7 +4275,7 @@ public:
         if (menuItemID == 1 && onAddFolder) onAddFolder();
         else if (menuItemID == 3 && onAddFiles) onAddFiles();
         else if (menuItemID == 2 && onRescan) onRescan();
-        else if (menuItemID == 3 && onAudioSettings) onAudioSettings();
+        else if (menuItemID == 6 && onAudioSettings) onAudioSettings();
         else if (menuItemID == 4 && onUndo) onUndo();
         else if (menuItemID == 5 && onRedo) onRedo();
         else if (menuItemID >= 700 && onAction) onAction(menuItemID); // Tags/Segments/View share one id space
