@@ -58,6 +58,13 @@ private:
     {
         juce::String bpm, key, genre, instrument, mood;
         juce::String bpmRef, keyRef, genreRef, instrumentRef, moodRef;
+        // The measured groove/sound-design fields. Their reference line shows the raw
+        // NUMBER analysis produced (grid strength, swing percentage, sub-bass share,
+        // flux) rather than re-deriving the bucket word here -- the thresholds live in
+        // CaptionFields.h and must have exactly one definition, and seeing "4.60x" next
+        // to "programmed" explains the word in a way repeating it cannot.
+        juce::String groove, swing, lowEnd, motion;
+        juce::String grooveRef, swingRef, lowEndRef, motionRef;
     };
 
     void reload();        // re-reads records + rebuilds every field from the DB
@@ -90,6 +97,10 @@ private:
     bool hasGenerated = false;
     void reloadGenerated();
     FieldRow bpmRow, keyRow, genreRow, instrumentRow, moodRow;
+    // Editable for the same reason every row here is: a measurement is a proposal,
+    // and `human` outranks it (PRD §11). Clearing one back to empty leaves the
+    // measured value showing, exactly as BPM already behaves.
+    FieldRow grooveRow, swingRow, lowEndRow, motionRow;
 
     // SA3 caption block — the rendered LoRA-training caption for this file, i.e. what the
     // whole analysis pipeline actually exists to produce. Read-only on purpose: it is a

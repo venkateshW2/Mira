@@ -91,6 +91,58 @@ struct CaptionFields {
     //     holds BEATS, so 8th/16th-note swing is invisible to it regardless.
     std::optional<std::string> palette;   // acoustic | hybrid | electronic   (instrument head)
     std::optional<std::string> timing;    // tight | human | loose            (beat-tick jitter)
+
+    // Groove fields (2026-09-15), measured over the 94-file Amon Tobin / Two Fingers
+    // corpus -- the first beat-driven material in this library, and the corpus this
+    // header's own `swing` note was waiting for ("Revisit when a real beat corpus
+    // lands"). That note also explains why these could not be built earlier: they are
+    // derived from `$.onset_times` via mira::analyzeGroove, not from `beat_this_beats`,
+    // which holds BEATS and so cannot see an 8th-note swing at all.
+    //
+    // Both are omitted on a file whose onsets never lock to a grid (Groove.h's
+    // kGrooveMinGridStrength). That omission is the point: the flat-histogram bug these
+    // replaced reported swing 0.54-0.57 for EVERY file in the library, orchestral cues
+    // included, which is what hid it for so long. 18 of the 94 are omitted today, and
+    // they are the ambient/sound-design pieces.
+    //
+    // Distributions over the 94 (the tertiles the thresholds below come from):
+    //   grid strength  min 1.06  p33 1.73  median 2.07  p66 2.67  max 7.45
+    //   swing          min 41.9% p33 50.9% median 53.2% p66 55.2% max 65.2%
+    //
+    // Deliberately NOT included, on the same "fewer fields that discriminate" rule the
+    // blocks above use:
+    //   - pocket (mean signed offset from the nearest 16th): the middle two thirds of
+    //     the corpus spans -2.4 to +2.0 ms, while the onset detector quantises at
+    //     ~11.6 ms (Essentia OnsetRate, hop 512 @ 44.1 kHz). Two thirds of the files sit
+    //     inside ONE quantisation step, so the field would be measuring rounding, not
+    //     feel. Only the +/-30 ms tails are real. Revisit if onsets ever get finer.
+    //   - syncopation: r=-0.46 with `groove`, i.e. partly the same axis, and its middle
+    //     band is narrow (62-71%). Worth adding only if `groove` alone turns out not to
+    //     respond at generation time.
+    std::optional<std::string> groove;    // organic | steady | programmed    (onset grid strength)
+    std::optional<std::string> swing;     // straight | light swing | swung   (off-beat 8th position)
+
+    // Two sound-design fields over DSP added for this corpus (Descriptors.cpp's
+    // sub_ratio / flux_mean). Same selection rule as everything above -- measured first,
+    // then kept or dropped on whether they split the corpus and whether they duplicate an
+    // axis already captioned:
+    //
+    //   low_end   sub_ratio (20-80 Hz share of spectral energy)
+    //             min 0.006  p33 0.202  median 0.256  p66 0.335  max 0.588
+    //             r=+0.12 with spectral_flatness (`texture`), -0.28 with crest_factor,
+    //             +0.31 with flux_mean. Correlates with nothing already captioned, which
+    //             is exactly what a new field has to prove.
+    //
+    //   motion    flux_mean (mean frame-to-frame spectral change) -- how much the timbre
+    //             itself moves, which is the closest single number to what "sound design"
+    //             means on this material.
+    //             min 0.019  p33 0.141  median 0.167  p66 0.198  max 0.352
+    //             r=+0.42 with spectral_flatness, -0.55 with crest_factor. The highest
+    //             correlation of any field kept here, and the reason it is one field
+    //             rather than two: flux_stddev is r=+0.71 with flux_mean, the same axis
+    //             measured twice, so it is stored by the analyzer but never captioned.
+    std::optional<std::string> lowEnd;    // light | balanced | heavy         (sub_ratio)
+    std::optional<std::string> motion;    // static | shifting | morphing     (flux_mean)
 };
 
 // Confidence-gate thresholds and top-k caps. Originally first-pass/unmeasured; TASKS.md
@@ -175,6 +227,19 @@ constexpr int kCaptionTimingMinBeats = 16;
 // Instrument mass below this means the head found essentially nothing -- palette would be
 // a ratio of noise to noise, so it is omitted instead.
 constexpr double kCaptionPaletteMinMass = 0.05;
+
+// Groove and sound-design tertiles, measured on the 94-file Amon Tobin / Two Fingers
+// corpus (see the field comments above for the full distributions). Rounded off the
+// measured p33/p66 rather than picked: groove 1.73/2.67, swing 0.509/0.552,
+// low_end 0.202/0.335, motion 0.141/0.198.
+constexpr double kCaptionGrooveOrganicMax = 1.75;      // onset phase histogram peak/uniform
+constexpr double kCaptionGrooveProgrammedMin = 2.65;
+constexpr double kCaptionSwingStraightMax = 0.51;      // position of the off-beat 8th in the beat
+constexpr double kCaptionSwingSwungMin = 0.55;
+constexpr double kCaptionLowEndLightMax = 0.20;        // 20-80 Hz share of spectral energy
+constexpr double kCaptionLowEndHeavyMin = 0.34;
+constexpr double kCaptionMotionStaticMax = 0.14;       // mean frame-to-frame spectral flux
+constexpr double kCaptionMotionMorphingMin = 0.20;
 
 // Reads `record.machine` into a CaptionFields document, then layers `record.human`
 // overrides on top (PRD §11: "human field always wins on conflict"). See

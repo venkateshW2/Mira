@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../analyze/GenreLabels.h"
+#include "../analyze/Groove.h"
 #include "../scan/Scanner.h" // instrumentFromFilename -- a stem's name names its instrument
 #include "../analyze/InstrumentLabels.h"
 #include "../analyze/MoodThemeLabels.h"
@@ -326,6 +327,46 @@ void applyShapeFields(Database& db, const std::string& machine, CaptionFields& f
                                "tight", "human", "loose"))
             f.timing = *tm;
     }
+
+    // Sound-design fields. Not gated on includeRhythm -- both come from `dsp`, which
+    // buildSegmentMachineJson does write, so a segment gets its own rather than
+    // inheriting the file's.
+    if (auto le = bucketed(db.jsonExtractDouble(machine, "$.dsp.sub_ratio"),
+                           kCaptionLowEndLightMax, kCaptionLowEndHeavyMin,
+                           "light", "balanced", "heavy"))
+        f.lowEnd = *le;
+    if (auto mo = bucketed(db.jsonExtractDouble(machine, "$.dsp.flux_mean"),
+                           kCaptionMotionStaticMax, kCaptionMotionMorphingMin,
+                           "static", "shifting", "morphing"))
+        f.motion = *mo;
+
+    // Groove. Gated on includeRhythm for the same reason timing is: `onset_times` is a
+    // TOP-LEVEL whole-file key that buildSegmentMachineJson does not write, so a segment
+    // inherits the file's groove rather than measuring a wrong one over its own slice.
+    //
+    // Present only when `mira analyze --groove` stored the onsets. Every other file keeps
+    // exactly the behaviour it had before these fields existed -- nothing is guessed from
+    // a beat track, which is the mistake this whole field replaced.
+    if (includeRhythm) {
+        auto onsets = db.jsonDoubleArray(machine, "$.onset_times");
+        if (!onsets.empty()) {
+            auto groove = analyzeGroove(onsets,
+                                        db.jsonExtractDouble(machine, "$.rhythm.essentia_bpm"),
+                                        db.jsonExtractDouble(machine, "$.rhythm.beat_this_bpm"));
+            // omittedReason non-empty means the onsets never locked to any grid, so there
+            // is no beat for a swing or a groove to be measured against.
+            if (groove.omittedReason.empty()) {
+                if (auto g = bucketed(groove.grid.strength,
+                                      kCaptionGrooveOrganicMax, kCaptionGrooveProgrammedMin,
+                                      "organic", "steady", "programmed"))
+                    f.groove = *g;
+                if (auto sw = bucketed(groove.swing,
+                                       kCaptionSwingStraightMax, kCaptionSwingSwungMin,
+                                       "straight", "light swing", "swung"))
+                    f.swing = *sw;
+            }
+        }
+    }
 }
 
 void applyHumanOverrides(Database& db, const std::string& human, CaptionFields& f) {
@@ -348,6 +389,10 @@ void applyHumanOverrides(Database& db, const std::string& human, CaptionFields& 
     if (auto texture = db.jsonExtractString(human, "$.texture")) f.texture = *texture;
     if (auto palette = db.jsonExtractString(human, "$.palette")) f.palette = *palette;
     if (auto timing = db.jsonExtractString(human, "$.timing")) f.timing = *timing;
+    if (auto groove = db.jsonExtractString(human, "$.groove")) f.groove = *groove;
+    if (auto swing = db.jsonExtractString(human, "$.swing")) f.swing = *swing;
+    if (auto lowEnd = db.jsonExtractString(human, "$.low_end")) f.lowEnd = *lowEnd;
+    if (auto motion = db.jsonExtractString(human, "$.motion")) f.motion = *motion;
     if (auto bpm = db.jsonExtractDouble(human, "$.bpm")) f.bpm = *bpm;
     if (auto key = db.jsonExtractString(human, "$.key")) f.keyScale = *key;
     if (auto isInstrumentalVal = db.jsonExtractDouble(human, "$.is_instrumental"))
@@ -431,6 +476,32 @@ CaptionFields extractCaptionFields(Database& db, const FileRecord& record) {
             stable = !(unstable && *unstable != 0.0);
         }
         if (bpmRaw && *bpmRaw > 0.0 && stable) f.bpm = *bpmRaw;
+
+        // Prefer the tempo of the grid the ONSETS actually lock to, when there is one.
+        //
+        // `beat_this` is kept as the default because it is the better estimator on songs,
+        // which is what it was picked for -- but it is not reliable on programmed
+        // electronic material, and a wrong BPM in a training caption is worse than no BPM:
+        // it teaches the model a false association rather than simply omitting one.
+        // Measured over the 94-file Amon Tobin / Two Fingers corpus, against the grid
+        // found by maximising onset phase concentration:
+        //
+        //     beat_this_bpm  agrees with the fitted grid on 12/94 (13%)
+        //     essentia_bpm   agrees on 77/94 (82%)
+        //
+        // Two Fingers is a ~79.5 BPM catalogue that `beat_this` reported as 86.5, 90.8,
+        // 104.8, 127.0 and 130.2 across the same record.
+        //
+        // Only overrides when the onsets lock (Groove.h's kGrooveMinGridStrength) -- an
+        // unlocked fit is not a tempo, and a file analyzed without --groove has no
+        // onset_times at all and keeps `beat_this` exactly as before.
+        auto bpmOnsets = db.jsonDoubleArray(record.machine, "$.onset_times");
+        if (!bpmOnsets.empty()) {
+            auto fitted = analyzeGroove(bpmOnsets,
+                                        db.jsonExtractDouble(record.machine, "$.rhythm.essentia_bpm"),
+                                        bpmRaw);
+            if (fitted.omittedReason.empty() && fitted.grid.bpm > 0.0) f.bpm = fitted.grid.bpm;
+        }
     }
 
     if (auto key = db.jsonExtractString(record.machine, "$.key.key")) f.keyScale = *key;

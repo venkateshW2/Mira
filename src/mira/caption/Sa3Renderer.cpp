@@ -182,6 +182,17 @@ std::vector<std::pair<std::string, std::string>> renderSa3Tags(const CaptionFiel
     if (fields.texture) tags.emplace_back("texture", *fields.texture);
     if (fields.palette) tags.emplace_back("palette", *fields.palette);
     if (fields.timing) tags.emplace_back("timing", *fields.timing);
+    // Groove and sound-design fields, emitted as their own keys for exactly the reason
+    // the block above gives -- underfit's _build_tag_prompt walks whatever keys the
+    // dashboard ticked and labels an unknown one with its own name
+    // (`_TAG_DISPLAY.get(key, key)`), so a new key becomes a new independent dial with no
+    // change needed on the training side. It also shuffles and takes random subsets of
+    // the ticked keys per sample, which is what teaches each one separately rather than
+    // as one frozen blob.
+    if (fields.groove) tags.emplace_back("groove", *fields.groove);
+    if (fields.swing) tags.emplace_back("swing", *fields.swing);
+    if (fields.lowEnd) tags.emplace_back("low_end", *fields.lowEnd);
+    if (fields.motion) tags.emplace_back("motion", *fields.motion);
     if (fields.bpm) tags.emplace_back("bpm", formatRounded(*fields.bpm));
     if (fields.keyScale) tags.emplace_back("keyscale", *fields.keyScale);
     // Not underfit's `seconds_total` (that's computed independently, straight off the

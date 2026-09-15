@@ -150,12 +150,16 @@ void printUsage() {
         "        <file>.json next to the source for underfit's dataset loader to pick up\n"
         "  mira tag <file|id> [--genre \"a, b\"] [--instruments \"a, b\"] [--moods \"a, b\"]\n"
         "            [--keywords \"funny, quirky\"] [--bpm N] [--key \"F minor\"]\n"
-        "            [--is-instrumental true|false] [--clear] [--db <path>]\n"
+        "            [--is-instrumental true|false] [--groove <g>] [--swing <s>]\n"
+        "            [--low-end <l>] [--motion <m>] [--clear] [--db <path>]\n"
         "        sets `human` overrides mira's own analysis never touches and `mira\n"
         "        caption` always prefers over the machine-derived value; --keywords is\n"
         "        the one field with no machine equivalent at all (scene/vibe words like\n"
         "        \"action\" or \"drama\" mira has no analyzer for). Each flag merges just\n"
-        "        that field; --clear resets all human overrides for the file\n"
+        "        that field; --clear resets all human overrides for the file.\n"
+        "        --groove organic|steady|programmed, --swing straight|\"light swing\"|\n"
+        "        swung, --low-end light|balanced|heavy, --motion static|shifting|\n"
+        "        morphing override the measured groove/sound-design fields\n"
         "  mira tag-folder <folder> [tag flags as above] [--material <m>]\n"
         "            [--world \"a,b\"] [--harmonic <h>] [--signature <s>]\n"
         "            [--clear] [--db <path>]\n"
@@ -1390,6 +1394,10 @@ int runTag(const std::vector<std::string>& args) {
     std::string dbPath = defaultDbPath();
     std::vector<std::string> positional;
     std::optional<std::string> genre, instruments, moods, keywords, key;
+    // The measured shape/groove fields. Overridable for the same reason bpm is: mira
+    // measures them, but a measurement is a proposal -- CaptionFields' machine value is
+    // only ever a default that `human` outranks (PRD §11).
+    std::optional<std::string> groove, swing, lowEnd, motion;
     std::optional<double> bpm;
     std::optional<bool> isInstrumental;
     bool clear = false;
@@ -1402,6 +1410,10 @@ int runTag(const std::vector<std::string>& args) {
         else if (args[i] == "--keywords" && i + 1 < args.size()) keywords = args[++i];
         else if (args[i] == "--bpm" && i + 1 < args.size()) bpm = std::stod(args[++i]);
         else if (args[i] == "--key" && i + 1 < args.size()) key = args[++i];
+        else if (args[i] == "--groove" && i + 1 < args.size()) groove = args[++i];
+        else if (args[i] == "--swing" && i + 1 < args.size()) swing = args[++i];
+        else if (args[i] == "--low-end" && i + 1 < args.size()) lowEnd = args[++i];
+        else if (args[i] == "--motion" && i + 1 < args.size()) motion = args[++i];
         else if (args[i] == "--is-instrumental" && i + 1 < args.size()) {
             std::string v = args[++i];
             isInstrumental = (v == "true" || v == "1" || v == "yes");
@@ -1437,9 +1449,11 @@ int runTag(const std::vector<std::string>& args) {
         return 0;
     }
 
-    if (!genre && !instruments && !moods && !keywords && !bpm && !key && !isInstrumental) {
+    if (!genre && !instruments && !moods && !keywords && !bpm && !key && !isInstrumental
+        && !groove && !swing && !lowEnd && !motion) {
         std::cerr << "mira tag: nothing to set -- pass at least one of --genre / --instruments / "
-                     "--moods / --keywords / --bpm / --key / --is-instrumental, or --clear"
+                     "--moods / --keywords / --bpm / --key / --is-instrumental / --groove / "
+                     "--swing / --low-end / --motion, or --clear"
                   << std::endl;
         return 1;
     }
@@ -1451,6 +1465,10 @@ int runTag(const std::vector<std::string>& args) {
     if (bpm) db.setHumanField(record->id, "$.bpm", std::to_string(*bpm));
     if (key) db.setHumanField(record->id, "$.key", "\"" + jsonEscapeForTag(*key) + "\"");
     if (isInstrumental) db.setHumanField(record->id, "$.is_instrumental", *isInstrumental ? "true" : "false");
+    if (groove) db.setHumanField(record->id, "$.groove", "\"" + jsonEscapeForTag(*groove) + "\"");
+    if (swing) db.setHumanField(record->id, "$.swing", "\"" + jsonEscapeForTag(*swing) + "\"");
+    if (lowEnd) db.setHumanField(record->id, "$.low_end", "\"" + jsonEscapeForTag(*lowEnd) + "\"");
+    if (motion) db.setHumanField(record->id, "$.motion", "\"" + jsonEscapeForTag(*motion) + "\"");
 
     auto updated = db.findById(record->id);
     std::cout << "human overrides for " << updated->path << ": " << updated->human << std::endl;

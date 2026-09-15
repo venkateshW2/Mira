@@ -42,6 +42,12 @@ PromptBuilderContent::PromptBuilderContent(const MiraLookAndFeel& l, juce::File 
     addField("Dynamics",    "Dynamics",    "dynamics",    false);
     addField("Timing",      "Timing",      "timing",      false);
     addField("Palette",     "Palette",     "palette",     false);
+    // The groove and sound-design fields. Same single-select shape as the shape fields
+    // above -- each is one bucket word out of three, so there is nothing to multi-select.
+    addField("Groove",      "Groove",      "groove",      false);
+    addField("Swing",       "Swing",       "swing",       false);
+    addField("Low end",     "Low end",     "low_end",     false);
+    addField("Motion",      "Motion",      "motion",      false);
     addField("Keyscale",    "Keyscale",    "keyscale",    false);
     addField("BPM",         "BPM",         "",            false);
     addField("",            "also add",    "",            false);
