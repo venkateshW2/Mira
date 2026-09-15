@@ -37,8 +37,28 @@ private:
     // they are easiest to hit -- it never hides anything.
     using Vocab = std::map<juce::String, int>;
     std::map<juce::String, Vocab> vocab;
+    // The same counts again, split by the trigger the sidecar carried. Randomise needs
+    // this: "surprise me" is only useful if it surprises you with things THIS LoRA was
+    // actually trained on.
+    std::map<juce::String, std::map<juce::String, Vocab>> vocabByTrigger;
     void scanVocabulary(const juce::File& studioRoot);
     std::vector<juce::String> byFrequency(const juce::String& field) const;
+
+    // Pools the counts for `field` over the triggers currently in the trigger row (or
+    // over everything, when that row is empty). Two triggers means both corpora's counts
+    // added together, so a word common in one and absent in the other is likelier but
+    // the other's own words can still come up -- which is the interesting part of a
+    // blend.
+    Vocab pooled(const juce::String& field) const;
+    // Frequency-WEIGHTED, not uniform: uniform picking makes "Rhythm: sparse" (7 of 72
+    // NIN files) as likely as "driving" (95), which is how a prompt ends up asking for a
+    // corner the model barely knows. Returns empty when there is nothing to draw from.
+    juce::String weightedPick(const Vocab& from) const;
+    void randomise();
+    juce::Random rng;
+    // Field key -> the vocabulary key it draws from, so randomise() knows where to look
+    // without re-deriving it.
+    std::map<juce::String, juce::String> vocabKeyForField;
 
     juce::String build() const;
 
@@ -60,6 +80,7 @@ private:
     Field& addField(const juce::String& key, const juce::String& shown,
                     const juce::String& vocabKey, bool multi);
 
+    juce::TextButton randomiseButton { "Randomise" };
     juce::TextButton constructButton { "Construct prompt" };
     juce::TextButton clearButton { "Clear" };
     juce::Label previewLabel;

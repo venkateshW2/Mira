@@ -51,6 +51,9 @@ PromptBuilderContent::PromptBuilderContent(const MiraLookAndFeel& l, juce::File 
     previewLabel.setJustificationType(juce::Justification::topLeft);
     addAndMakeVisible(previewLabel);
 
+    randomiseButton.onClick = [this] { randomise(); };
+    addAndMakeVisible(randomiseButton);
+
     constructButton.onClick = [this] { if (onConstruct) onConstruct(build()); };
     addAndMakeVisible(constructButton);
 
@@ -70,15 +73,20 @@ void PromptBuilderContent::scanVocabulary(const juce::File& studioRoot) {
             const auto parsed = juce::JSON::parse(f.loadFileAsString());
             auto* obj = parsed.getDynamicObject();
             if (obj == nullptr) continue;
+            const auto trig = obj->getProperty("trigger").toString().trim();
             for (const auto& prop : obj->getProperties()) {
                 const auto key = prop.name.toString();
                 const auto text = prop.value.toString();
                 if (text.isEmpty()) continue;
                 if (isListField(key)) {
                     for (const auto& piece : juce::StringArray::fromTokens(text, ",", ""))
-                        if (piece.trim().isNotEmpty()) vocab[key][piece.trim()]++;
+                        if (piece.trim().isNotEmpty()) {
+                            vocab[key][piece.trim()]++;
+                            if (trig.isNotEmpty()) vocabByTrigger[trig][key][piece.trim()]++;
+                        }
                 } else {
                     vocab[key][text.trim()]++;
+                    if (trig.isNotEmpty()) vocabByTrigger[trig][key][text.trim()]++;
                 }
             }
         }
@@ -105,6 +113,8 @@ PromptBuilderContent::Field& PromptBuilderContent::addField(const juce::String& 
     auto& f = *fields.back();
     f.key = key;
     f.multi = multi;
+
+    if (key.isNotEmpty() && vocabKey.isNotEmpty()) vocabKeyForField[key] = vocabKey;
 
     f.label.setText(shown, juce::dontSendNotification);
     f.label.setFont(juce::Font(12.0f));
@@ -151,6 +161,74 @@ PromptBuilderContent::Field& PromptBuilderContent::addField(const juce::String& 
     return f;
 }
 
+PromptBuilderContent::Vocab PromptBuilderContent::pooled(const juce::String& field) const {
+    juce::StringArray chosen;
+    for (const auto& f : fields)
+        if (f->key.isEmpty() && f->label.getText() == "trigger")
+            for (const auto& p : juce::StringArray::fromTokens(f->value.getText(), ",", ""))
+                if (p.trim().isNotEmpty()) chosen.add(p.trim());
+
+    if (chosen.isEmpty()) {                      // no trigger picked: draw from everything
+        const auto it = vocab.find(field);
+        return it == vocab.end() ? Vocab{} : it->second;
+    }
+    Vocab out;
+    for (const auto& trig : chosen) {
+        const auto t = vocabByTrigger.find(trig);
+        if (t == vocabByTrigger.end()) continue;
+        const auto f = t->second.find(field);
+        if (f == t->second.end()) continue;
+        for (const auto& [value, count] : f->second) out[value] += count;
+    }
+    return out;
+}
+
+juce::String PromptBuilderContent::weightedPick(const Vocab& from) const {
+    int total = 0;
+    for (const auto& [value, count] : from) total += count;
+    if (total <= 0) return {};
+    int r = const_cast<juce::Random&>(rng).nextInt(total);
+    for (const auto& [value, count] : from) {
+        r -= count;
+        if (r < 0) return value;
+    }
+    return from.begin()->first;
+}
+
+void PromptBuilderContent::randomise() {
+    for (auto& f : fields) {
+        // The trigger row is the QUESTION, not part of the answer -- rolling it would
+        // change which corpus every other field is drawn from, so a re-roll would never
+        // settle. The free-text tail is the user's, and is left alone too.
+        if (f->key.isEmpty()) continue;
+        const auto it = vocabKeyForField.find(f->key);
+        if (it == vocabKeyForField.end()) {
+            if (f->key == "BPM") {               // BPM has no picker but is still a real value
+                const auto pick = weightedPick(pooled("bpm"));
+                f->value.setText(pick, juce::dontSendNotification);
+            }
+            continue;
+        }
+        const auto candidates = pooled(it->second);
+        if (candidates.empty()) { f->value.clear(); continue; }
+
+        if (!f->multi) {
+            f->value.setText(weightedPick(candidates), juce::dontSendNotification);
+            continue;
+        }
+        // Multi fields get a handful. Three to five is what a real caption carries; more
+        // reads as a shopping list and dilutes every word in it.
+        const int want = 3 + rng.nextInt(3);
+        juce::StringArray picked;
+        for (int tries = 0; tries < want * 6 && picked.size() < want; ++tries) {
+            const auto v = weightedPick(candidates);
+            if (v.isNotEmpty() && !picked.contains(v)) picked.add(v);
+        }
+        f->value.setText(picked.joinIntoString(", "), juce::dontSendNotification);
+    }
+    previewLabel.setText("rolled - edit anything, then Construct", juce::dontSendNotification);
+}
+
 juce::String PromptBuilderContent::build() const {
     juce::StringArray parts;
     for (const auto& f : fields) {
@@ -174,6 +252,8 @@ void PromptBuilderContent::resized() {
     constructButton.setBounds(foot.removeFromLeft(140));
     foot.removeFromLeft(6);
     clearButton.setBounds(foot.removeFromLeft(70));
+    foot.removeFromLeft(6);
+    randomiseButton.setBounds(foot.removeFromLeft(100));
     r.removeFromBottom(6);
     previewLabel.setBounds(r.removeFromBottom(46));
     r.removeFromBottom(6);
