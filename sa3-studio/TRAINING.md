@@ -365,6 +365,45 @@ curl -s http://127.0.0.1:8787/api/datasets/<id>/files \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["total_files"], len({k for f in d["files"] if f.get("tags") for k in f["tags"]}))'
 ```
 
+### A dataset marked "error" that is perfectly fine — the missing `details.json`
+
+Found 2026-09-15. `nin-nin` showed **status: error** in the dashboard while reporting
+`encoded: 183, errors: 0, broken_shape: 0`. Nothing was wrong with it.
+
+`_validate_datasets_on_startup()` checks for `details.json` **before** it ever counts the
+latents:
+
+```python
+details_path = latent_dir / "details.json"
+if not latent_dir.exists() or not details_path.exists():
+    datasets_registry.update_dataset(ds["id"], status="error")
+```
+
+`details.json` is written by the pre-encoder and ships in the upload, but the import does
+not always link it into the shadow latent dir. When it is absent the dataset is flagged on
+the next dashboard restart and filtered out of the picker — with 183 intact latents
+sitting right there.
+
+Three of eight datasets had the hole (`nin-nin`, `dune-zvq`, and the freshly imported
+`amontobin-amt`, which still read `ready` only because the validator had not run since its
+import — it would have flipped on the next restart, mid-session).
+
+**Check after every import**, before the next restart makes it look broken:
+
+```bash
+S=/home/workspace/underfit/state/datasets/<name>/latents/sa3-medium
+[ -f "$S/details.json" ] || cp /home/workspace/datasets/<src>/details.json "$S/"
+```
+
+Clearing the flag afterwards needs a manual edit — the validator only ever *sets* status
+to error, it never clears one, so a fixed dataset stays broken-looking until `status` is
+put back to `ready` in `state/datasets.json` (back it up first) and the dashboard restarted.
+
+Related but distinct: `dune-zvq`'s latents also sit one directory deeper than every other
+set (`sa3-medium/sa3-medium/`), because it was uploaded with its parent folder included.
+The recursive `*.npy` count still finds them, but do not trust that set without a flat
+re-upload.
+
 ### Daily use
 
 ```bash

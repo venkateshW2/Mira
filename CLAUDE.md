@@ -4,7 +4,7 @@ The index to every document in this repo: what each one is, whether it is curren
 when to read it. **Start here.** If you are picking the project up after a break, or you
 are an agent with no memory of the last session, this file is the entry point.
 
-**Last updated: 2026-09-15.** Keep the *Recent work* log at the bottom current — that is
+**Last updated: 2026-09-15 (evening).** Keep the *Recent work* log at the bottom current — that is
 this file's second job.
 
 ---
@@ -139,6 +139,27 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
+### 2026-09-15 evening — first Amon Tobin run
+
+- **`amt` launched** on JarvisLabs (A30, 217.18.55.220): 94 files, 20,000 steps, batch 4,
+  512 latent crop. That is **833 exposures per cue**, mid-window against TRAINING.md
+  §7.1's 700-900 target, and the same short-crop shape as `xyr-short` — the best LoRA to
+  date. ~6h50m at 1.23 s/it.
+- **The first run trained on `groove`/`swing`/`low_end`/`motion`.** 17 tag keys, with
+  `prompt` and `trigger` deliberately off: the prepend already supplies the trigger at
+  80%, and `prompt` duplicated every other field and dragged `Length:` back in.
+- **Dataset prep**: all 94 source sidecars verified current before the encode consumed
+  them, stand-ins written, tags verified to render by running underfit's own tag reader
+  on the box rather than assuming.
+- **Found a dashboard trap**: three of eight datasets were flagged `status: error` purely
+  because `details.json` was missing from their shadow latent dir — including the fresh
+  Amon Tobin import, which would have flipped on the next restart. Documented in
+  [sa3-studio/TRAINING.md](sa3-studio/TRAINING.md); all eight now validate clean.
+- Open: the BPM **octave** is inconsistent across the Two Fingers catalogue (six tracks
+  read 159 where seven read 79 — the same grid, a different multiple called "the beat").
+  The grid is right on all 94; only the convention varies. Left as-is rather than
+  guessing, and worth a measured fix later.
+
 ### 2026-09-15 — groove, and the flat-histogram bug
 
 - **Found and fixed a measurement that returned the same answer for every file.** Swing
@@ -182,4 +203,6 @@ Newest first. Keep this current — it is how the next session finds the thread.
   from `beat_this` and have never been checked the way the Amon Tobin set now has.
 - `sub_ratio` may want an 8192-point pass (5.4 Hz bins) if 21.5 Hz bins smear.
 - Higher-step re-runs of `lou` and `dune`.
+- Decide the BPM octave convention for halftime material — see the 2026-09-15 evening
+  entry. Affects captions, not grids, and needs a measurement rather than a preference.
 - TASKS.md Phase 6 — 29 items open.
