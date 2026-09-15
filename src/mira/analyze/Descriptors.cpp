@@ -56,7 +56,8 @@ struct SpectralAverages {
 // scratch over the same audio. Found by comparing against a hand-written analyser
 // (single-STFT-pass design) that does this correctly; this was silently tripling mira's
 // own spectral analysis cost for no reason.
-SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sampleRate) {
+SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sampleRate,
+                                          SpectralFrames* framesOut) {
     SpectralAverages result;
     if (static_cast<int>(mono.size()) < kFrameSize) return result;
 
@@ -153,6 +154,16 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
     std::vector<double> chromaSum(kChromaSize, 0.0);
     int mfccCount = 0, chromaCount = 0;
 
+    // Keeping the frames, when the caller asked. Reserving on a rough frame estimate
+    // keeps this from repeatedly reallocating a multi-megabyte buffer mid-analysis.
+    if (framesOut != nullptr) {
+        const size_t estimate = mono.size() / kHopSize + 1;
+        framesOut->hopSeconds = static_cast<double>(kHopSize) / sampleRate;
+        framesOut->mfcc.reserve(estimate * kNumMfccCoefficients);
+        framesOut->chroma.reserve(estimate * kChromaSize);
+        framesOut->flux.reserve(estimate);
+    }
+
     for (size_t start = 0; start + kFrameSize <= mono.size(); start += kHopSize) {
         std::copy(mono.begin() + start, mono.begin() + start + kFrameSize, frame.begin());
         windowing->compute();
@@ -171,19 +182,38 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
         fluxSumSq += static_cast<double>(fluxValue) * fluxValue;
         ++frameCount;
 
+        // Frames are appended per-frame and transposed to row-major at the end, so a
+        // frame that throws below still leaves every kept row the same length.
+        if (framesOut != nullptr) framesOut->flux.push_back(static_cast<float>(fluxValue));
+
+        bool mfccOk = false;
         try {
             mfccAlgo->compute();
             if (static_cast<int>(mfccCoeffs.size()) == kNumMfccCoefficients) {
                 for (int i = 0; i < kNumMfccCoefficients; ++i) mfccSum[i] += mfccCoeffs[i];
                 ++mfccCount;
+                mfccOk = true;
             }
         } catch (const essentia::EssentiaException&) {
             // e.g. a near-silent frame producing an unstable log — skip it, not the file
+        }
+        // A frame that threw still gets a row, zero-filled: the beat-synchronous
+        // averaging in Meter.cpp indexes frames by time, so a missing row would silently
+        // shift every later frame against the beat grid.
+        if (framesOut != nullptr) {
+            for (int i = 0; i < kNumMfccCoefficients; ++i)
+                framesOut->mfcc.push_back(mfccOk ? static_cast<float>(mfccCoeffs[i]) : 0.0f);
+            if (framesOut->melBands == 0 && mfccOk)
+                framesOut->melBands = static_cast<int>(mfccBands.size());
+            for (int i = 0; i < framesOut->melBands; ++i)
+                framesOut->mel.push_back(mfccOk && i < static_cast<int>(mfccBands.size())
+                                              ? static_cast<float>(mfccBands[i]) : 0.0f);
         }
 
         // SpectralPeaks -> HPCP: unconditional per frame (chroma is meaningful on
         // polyphonic/noisy material too, unlike the monophonic-pitch harmonicity chain
         // below), and shared with that chain so peaks aren't computed twice.
+        bool chromaOk = false;
         try {
             spectralPeaks->compute();
             if (!peakFreqs.empty()) {
@@ -191,11 +221,15 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
                 if (static_cast<int>(chromaValues.size()) == kChromaSize) {
                     for (int i = 0; i < kChromaSize; ++i) chromaSum[i] += chromaValues[i];
                     ++chromaCount;
+                    chromaOk = true;
                 }
             }
         } catch (const essentia::EssentiaException&) {
             // skip this frame's chroma contribution
         }
+        if (framesOut != nullptr)
+            for (int i = 0; i < kChromaSize; ++i)
+                framesOut->chroma.push_back(chromaOk ? static_cast<float>(chromaValues[i]) : 0.0f);
 
         pitchYin->compute();
         if (pitchConfidence < kHarmonicityMinPitchConfidence) continue;
@@ -220,6 +254,23 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
         const double var = std::max(0.0, fluxSumSq / frameCount - result.fluxMean * result.fluxMean);
         result.fluxStddev = std::sqrt(var);
     }
+
+    // Transpose frame-major -> row-major ([dim][frame]), which is what MeterFeature wants
+    // and what makes the beat-synchronous averaging a contiguous walk per dimension.
+    if (framesOut != nullptr && frameCount > 0) {
+        framesOut->frames = frameCount;
+        auto transpose = [frameCount](std::vector<float>& v, int dims) {
+            if (dims <= 0 || v.size() != static_cast<size_t>(dims) * frameCount) { v.clear(); return; }
+            std::vector<float> out(v.size());
+            for (int f = 0; f < frameCount; ++f)
+                for (int d = 0; d < dims; ++d)
+                    out[static_cast<size_t>(d) * frameCount + f] = v[static_cast<size_t>(f) * dims + d];
+            v.swap(out);
+        };
+        transpose(framesOut->mfcc, kNumMfccCoefficients);
+        transpose(framesOut->chroma, kChromaSize);
+        transpose(framesOut->mel, framesOut->melBands);
+    }
     result.harmonicity = harmonicityCount > 0 ? harmonicitySum / harmonicityCount : 0.0;
     result.harmonicityFrameCount = harmonicityCount;
     if (mfccCount > 0) {
@@ -235,7 +286,8 @@ SpectralAverages computeSpectralAverages(const std::vector<float>& mono, int sam
 } // namespace
 
 DspDescriptors computeDspDescriptors(const std::vector<float>& left,
-                                      const std::vector<float>& right, int sampleRate) {
+                                      const std::vector<float>& right, int sampleRate,
+                                      SpectralFrames* framesOut) {
     DspDescriptors d;
     if (left.empty() || left.size() != right.size() || sampleRate <= 0) return d;
 
@@ -292,7 +344,7 @@ DspDescriptors computeDspDescriptors(const std::vector<float>& left,
     }
 
     // --- Spectral centroid, flatness, harmonicity, MFCC, chroma — one shared frame loop ---
-    auto spectral = computeSpectralAverages(mono, sampleRate);
+    auto spectral = computeSpectralAverages(mono, sampleRate, framesOut);
     d.spectralCentroidHz = spectral.centroidHz;
     d.spectralFlatness = spectral.flatness;
     d.subRatio = spectral.subRatio;

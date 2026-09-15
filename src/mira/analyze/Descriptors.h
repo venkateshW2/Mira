@@ -44,8 +44,27 @@ struct DspDescriptors {
 // for it (ActiveRegions.h's extractActiveAudio, applied in main.cpp) — this function
 // itself just measures whatever samples it's handed. `left`/`right` must be equal
 // length; pass the same buffer twice for mono. Requires an EssentiaEngine to already exist.
+// Per-frame features kept alongside the averages, for meter detection (Meter.h). The
+// frames are computed by the loop below either way -- this only stops them being
+// discarded. OFF by default because a 5-minute track is ~13,000 frames and keeping MFCC
+// + chroma + mel bands + flux for all of them costs a few MB that nothing else wants.
+//
+// The hop matches the reference meter implementation's time resolution exactly
+// (kHopSize/44100 == 512/22050 == 23.2 ms), which is why beat-synchronous averaging over
+// these frames lines up with it rather than needing its own pass.
+struct SpectralFrames {
+    int frames = 0;
+    double hopSeconds = 0.0;
+    std::vector<float> mfcc;   // kNumMfccCoefficients rows x frames, row-major
+    std::vector<float> chroma; // kChromaSize rows x frames
+    std::vector<float> mel;    // melBands rows x frames
+    int melBands = 0;
+    std::vector<float> flux;   // one per frame -- the onset envelope the accents read
+};
+
 DspDescriptors computeDspDescriptors(const std::vector<float>& left,
-                                      const std::vector<float>& right, int sampleRate);
+                                      const std::vector<float>& right, int sampleRate,
+                                      SpectralFrames* framesOut = nullptr);
 
 std::string toJson(const DspDescriptors& d);
 

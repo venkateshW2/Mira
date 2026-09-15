@@ -2,6 +2,8 @@
 #include "analyze/ActiveSpanMap.h"
 #include "analyze/AudioLoader.h"
 #include "analyze/Descriptors.h"
+#include "analyze/Groove.h"
+#include "analyze/Meter.h"
 #include "analyze/Chords.h"
 #include "analyze/ContentGate.h"
 #include "analyze/Embedding.h"
@@ -755,9 +757,20 @@ int runAnalyze(const std::vector<std::string>& args) {
                 fileTimeSpans.emplace_back(span.startSeconds, span.endSeconds);
 
             // DSP descriptors (PRD §5A) — all content types.
-            auto dsp = mira::computeDspDescriptors(*left, *right, c.audio.sampleRate);
+            //
+            // The per-frame features are kept only under --groove, which is also the flag
+            // that stores onset_times. That pairing is deliberate: meter is measured
+            // against the grid fitted to those onsets (Groove.h), so asking for one
+            // without the other would leave the better grid unused.
+            mira::SpectralFrames frames;
+            auto dsp = mira::computeDspDescriptors(*left, *right, c.audio.sampleRate,
+                                                    runGroove ? &frames : nullptr);
             machine << ",\"dsp\":" << mira::toJson(dsp);
             timer.mark("DSP descriptors (incl. harmonicity)");
+
+            // Meter is computed after rhythm, where the real detected beats are --
+            // see the block below.
+            std::string meterJson;
 
             // Classification (Phase 2, PRD §2c vertical slice). Embedding + content gate
             // run on *every* content type, unlike rhythm/key below — embedding-based
@@ -880,7 +893,53 @@ int runAnalyze(const std::vector<std::string>& args) {
                     downbeat = mira::activeTimeToFileTime(fileTimeSpans, downbeat);
                 for (auto& tick : rhythm.essentiaBeatTicks)
                     tick = mira::activeTimeToFileTime(fileTimeSpans, tick);
-                if (rhythm.ok) machine << ",\"rhythm\":" << mira::toJson(rhythm);
+                // Meter (TASKS.md Phase 7). Run on beat_this's DETECTED beats, not on
+                // the grid fitted to the onsets, and the reason is `bar_spread`: a fitted
+                // grid is perfectly even by construction, so the longest/shortest bar
+                // ratio is exactly 1.0 on every file and the confidence signal -- the
+                // main reason for doing this at all -- carries no information. Detected
+                // beats drift, and that drift is what says the grid is wrong.
+                //
+                // This is also the input the reference implementation was validated on.
+                // Phase 6's finding that beat_this misreads the TEMPO of halftime
+                // electronic does not transfer to meter on ordinary material, and the
+                // per-file check for which grid to trust is Phase 7's open question.
+                if (runGroove && frames.frames > 0
+                    && static_cast<int>(rhythm.beatThisBeats.size()) >= mira::kMeterMinBeats) {
+                    std::vector<mira::MeterFeature> features;
+                    auto add = [&](const char* name, const std::vector<float>& v, int dims) {
+                        if (dims > 0 && v.size() == static_cast<size_t>(dims) * frames.frames)
+                            features.push_back({ name, dims, frames.frames, v });
+                    };
+                    add("MFCC", frames.mfcc, 13);
+                    add("Chroma", frames.chroma, 12);
+                    add("Mel", frames.mel, frames.melBands);
+
+                    auto meter = mira::detectMeter(features, frames.flux,
+                                                    rhythm.beatThisBeats, frames.hopSeconds);
+                    if (meter.valid) {
+                        std::ostringstream m;
+                        m << ",\"meter\":" << meter.meter
+                          << ",\"meter_pre_snap\":" << meter.meterPreSnap
+                          << ",\"meter_acf\":" << meter.acfMeter
+                          << ",\"meter_arbitrated\":" << (meter.arbitrated ? "true" : "false")
+                          << ",\"meter_bar_spread\":" << std::fixed << std::setprecision(3) << meter.barSpread
+                          << ",\"meter_bar_count\":" << meter.barCount
+                          << ",\"meter_strongest_feature\":\"" << meter.strongestFeature << "\"";
+                        meterJson = m.str();
+                    }
+                    timer.mark("meter");
+                }
+
+                if (rhythm.ok) {
+                    // Meter rides inside the rhythm object, spliced before its closing
+                    // brace: it is a rhythm fact, and everything that reads rhythm
+                    // (CaptionFields, the UI) already looks there.
+                    auto rhythmJson = mira::toJson(rhythm);
+                    if (!meterJson.empty() && rhythmJson.size() > 1 && rhythmJson.back() == '}')
+                        rhythmJson.insert(rhythmJson.size() - 1, meterJson);
+                    machine << ",\"rhythm\":" << rhythmJson;
+                }
                 timer.mark("rhythm (essentia + beat_this_cpp)");
 
                 // Key and chords: both gated on harmonic content (PRD §12b) — never run

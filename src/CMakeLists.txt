@@ -187,6 +187,10 @@ add_library(mira_core STATIC
   # beat grid while drawing a waveform, and the CLI links the same objects rather than a
   # second copy whose thresholds could drift.
   mira/analyze/Groove.cpp
+  # Meter is here for the same reason: given the per-frame features and the beats it
+  # is pure arithmetic (TASKS.md Phase 7). The analyzer supplies the features from the
+  # frames Descriptors.cpp already computes; this opens no audio and loads no model.
+  mira/analyze/Meter.cpp
   mira/caption/CaptionFields.cpp
   mira/caption/Sa3Renderer.cpp
 )

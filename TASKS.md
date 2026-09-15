@@ -2946,28 +2946,38 @@ tool alone: **their meter layer on mira's fitted grid.**
 
 ### Tasks, in the order value/effort says to do them
 
-**1. Meter detection (no madmom, no new model)**
+**1. Meter detection (no madmom, no new model)** — ported 2026-09-16
 
-- [ ] Port `detect_meter` into `mira_core` beside `Groove` — same rule: pure arithmetic
+- [x] Port `detect_meter` into `mira_core` beside `Groove` — same rule: pure arithmetic
       over stored analysis, no audio, no models, so the UI can run it inline
-- [ ] Essentia already provides MFCC, chroma and mel; the port is mostly the
+- [x] Essentia already provides MFCC, chroma and mel; the port is mostly the
       beat-synchronous similarity matrix, the ACF, and the accent folding
-- [ ] Run on mira's fitted grid (Groove.h) rather than `beat_this_beats`, since Phase 6
-      measured the fitted grid better on beat-driven material
-- [ ] Validate against NIN's 183 files — the corpus with real odd meters. La Mer (6/8)
+- [x] ~~Run on mira's fitted grid rather than `beat_this_beats`~~ — **tried and reverted.**
+      A fitted grid is perfectly even by construction, so `bar_spread` comes out exactly
+      1.000 on every file and the confidence signal — the main reason for doing this —
+      carries no information. Detected beats drift, and that drift is the signal. Meter
+      now runs on `beat_this_beats`, which is also what the reference was validated on.
+      Phase 6's tempo finding does not transfer: reading the wrong TEMPO on halftime
+      electronic is a different failure from reading the wrong METER on ordinary material
+- [ ] Validate across all 183 NIN files (spot-checked 3 so far, below) — the corpus with real odd meters. La Mer (6/8)
       and The Frail (6/8) are known cases; March Of The Pigs (7/8 + 4/4) is the known
       hard one
+- [x] Parity-checked against the reference on identical inputs: meter, pre-snap, ACF
+      winner, per-feature votes, strongest feature and the arbitration flag all match
+      exactly on 4/4 NIN tracks, including both arbitration cases
+- [x] End-to-end in mira, matching the reference tool: La Mer 6 (spread 1.016 vs 1.02),
+      March Of The Pigs 4 (1.247 vs 1.29), The Frail 4 from ACF 8 (2.449 vs 2.43)
 - [ ] Only then decide whether `meter` becomes a caption field. Same rule as everything
       else: it must VARY across a corpus to be worth a slot (ANALYSIS.md §3), and on a
       library that is ~90% 4/4 it may not
 
-**2. Grid confidence — `bar_spread`**
+**2. Grid confidence — `bar_spread`** — stored 2026-09-16
 
-- [ ] Adopt the collaborator's signal: ratio of longest to shortest bar. Their threshold
+- [x] Adopt the collaborator's signal: ratio of longest to shortest bar. Their threshold
       is >1.5 = "the meter may be right but the beat tracking drifted"
-- [ ] mira has no confidence number on its grid today. This is the single cheapest
-      defence against another silent-wrong-grid bug, and it is nearly free once meter
-      exists
+- [x] Stored as `$.rhythm.meter_bar_spread`. It discriminates on the first three files
+      tried: 1.016 / 1.247 / 2.449, with The Frail correctly over the 1.5 line
+- [ ] Surface it in the waveform view next to the groove histogram
 - [ ] Surface it in the waveform view next to the groove histogram, and gate any
       meter-derived caption field on it
 
@@ -2990,6 +3000,15 @@ tool alone: **their meter layer on mira's fitted grid.**
 - [ ] Ask for the source folder the README mentions ("to change the code you need the
       source folder, not this image") — licence and provenance need to be clear before
       any of this ships, and the meter layer's own origin should be credited
+
+### Noted while porting
+
+- [ ] On March Of The Pigs, **MFCC and Mel both voted 7** — the autocorrelation found the
+      7/8 — and the accent arbitration overrode it to 4. The ACF was right and the
+      arbitration spoiled it. n=1, and it may not survive better beats, but if it repeats
+      then `diagnose()`'s rule (accents arbitrate whenever two foldable candidates
+      disagree) is too eager and should require the accents to be *strong*
+      (`kMeterAccentWeakF`) before they overrule a feature majority
 
 ### Open question
 
