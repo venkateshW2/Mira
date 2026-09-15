@@ -204,6 +204,8 @@ public:
     void setActiveSpans(std::vector<std::pair<double, double>> spans) { waveform.setActiveSpans(std::move(spans)); }
     void setChords(std::vector<WaveformView::ChordMark> chords) { waveform.setChords(std::move(chords)); }
     void setNotes(std::vector<WaveformView::NoteBlock> notes) { waveform.setNotes(std::move(notes)); }
+    void setOnsets(std::vector<double> onsets) { waveform.setOnsets(std::move(onsets)); }
+    void setGroove(WaveformView::GrooveOverlay groove) { waveform.setGroove(std::move(groove)); }
     void setBeats(std::vector<double> beats, std::vector<double> downbeats)
     {
         waveform.setBeats(std::move(beats), std::move(downbeats));

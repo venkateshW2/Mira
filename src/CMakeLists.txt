@@ -182,6 +182,11 @@ add_library(mira_core STATIC
   # it belongs here rather than in the heavy `mira` target: mira_ui can run it directly in
   # milliseconds instead of shelling out to a child process.
   mira/analyze/CueDetection.cpp
+  # Groove is here for the same reason CueDetection is: it reads only `$.onset_times` and
+  # two BPM scalars out of the stored JSON -- no audio, no models -- so the UI can fit a
+  # beat grid while drawing a waveform, and the CLI links the same objects rather than a
+  # second copy whose thresholds could drift.
+  mira/analyze/Groove.cpp
   mira/caption/CaptionFields.cpp
   mira/caption/Sa3Renderer.cpp
 )

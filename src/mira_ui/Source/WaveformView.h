@@ -104,6 +104,32 @@ public:
     // the ruler then falls back to time ticks only.
     void setBeats(std::vector<double> newBeats, std::vector<double> newDownbeats);
 
+    // Every detected onset (`$.onset_times`, stored by `mira analyze --groove`), drawn as
+    // its own tick lane. This is the raw evidence the groove grid below is fitted to, and
+    // it is drawn for the same reason the fit exists at all: the bug that produced a flat
+    // groove measurement across 94 files was invisible in the numbers and obvious the
+    // moment onsets and grid were put on the same axis.
+    void setOnsets(std::vector<double> newOnsets);
+
+    // The fitted groove grid (mira::GrooveResult, converted by the owner). Deliberately a
+    // plain struct rather than mira_core's own type, for the same reason ChordMark and
+    // SegmentSpan are: this class opens audio files, not databases, and knows nothing
+    // about mira_core.
+    struct GrooveOverlay
+    {
+        bool valid = false;
+        double periodSeconds = 0.0; // one beat
+        double phaseSeconds = 0.0;  // file time of the grid's first line
+        double bpm = 0.0;
+        double strength = 0.0;      // phase histogram peak/uniform; 1.0 means no grid at all
+        bool locked = false;        // strength cleared the threshold, so the metrics below are real
+        juce::String octaveSource;  // which estimator picked the octave
+        juce::String summary;       // one line: swing / pocket / syncopation, or why they're missing
+        std::vector<double> phaseHistogram; // normalised to mean 1.0, so each bar IS a peak/uniform ratio
+    };
+
+    void setGroove(GrooveOverlay newGroove);
+
     // Which lanes the user has switched off, independent of whether the current file has
     // data for them (a lane with no data never renders regardless).
     struct LaneVisibility
@@ -113,6 +139,9 @@ public:
         bool spans = true;
         bool chords = true;
         bool notes = true;
+        bool onsets = true;
+        bool grooveGrid = true;
+        bool grooveHistogram = true;
     };
     LaneVisibility getLaneVisibility() const { return lanes; }
     void setLaneVisibility(LaneVisibility newVisibility);
@@ -258,6 +287,8 @@ private:
     std::vector<ChordMark> chords;
     std::vector<NoteBlock> notes;
     std::vector<double> beats, downbeats;
+    std::vector<double> onsets;
+    GrooveOverlay groove;
     LaneVisibility lanes;
     int noteLowPitch = 0, noteHighPitch = 0; // recomputed in setNotes, for the overlay's y mapping
 
@@ -265,6 +296,7 @@ private:
     {
         juce::Rectangle<int> ruler;       // empty when not shown; claimed from the TOP
         juce::Rectangle<int> peaks;
+        juce::Rectangle<int> onsetLane;   // empty when not shown
         juce::Rectangle<int> spanLane;    // empty when not shown
         juce::Rectangle<int> chordLane;   // empty when not shown
         juce::Rectangle<int> segmentBand; // empty when not shown
@@ -289,10 +321,19 @@ private:
     juce::TextButton lanesButton { "Lanes" };
     static constexpr int kRulerHeight = 18;
     static constexpr int kSpanLaneHeight = 8;
+    static constexpr int kOnsetLaneHeight = 12;
     static constexpr int kChordLaneHeight = 14;
     static constexpr int kMinPeaksHeight = 40;
     static constexpr int kMinTickSpacing = 64;   // px between time ticks, label width + air
     static constexpr int kMinBarNumberSpacing = 26; // px between bar numbers before they thin out
+
+    // The phase histogram is drawn as a small inset panel over the peaks rather than as a
+    // lane of its own: it has no time axis (it is the whole file folded onto one beat), so
+    // parking it in the timeline stack would put a non-temporal picture in a row of
+    // temporal ones and invite it to be read as if it had a position.
+    void paintGrooveHistogram(juce::Graphics& g, juce::Rectangle<int> peaks) const;
+    static constexpr int kGrooveHistogramWidth = 168;
+    static constexpr int kGrooveHistogramHeight = 74;
 
     // What the current drag is doing. Panning and scrubbing are modes rather than
     // separate components because they share the same surface as selection -- which one

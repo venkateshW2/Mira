@@ -12,6 +12,7 @@
 
 #include "mira/analyze/ActiveSpanMap.h"
 #include "mira/analyze/CueDetection.h"
+#include "mira/analyze/Groove.h"
 #include "mira/db/Database.h"
 #include "mira/scan/Scanner.h"
 #include "MiraLookAndFeel.h"
@@ -1801,6 +1802,8 @@ private:
             bottomPanel->setChords({});
             bottomPanel->setNotes({});
             bottomPanel->setBeats({}, {});
+            bottomPanel->setOnsets({});
+            bottomPanel->setGroove({});
             return;
         }
 
@@ -1861,6 +1864,56 @@ private:
             for (auto& downbeat : downbeats) downbeat = mira::activeTimeToFileTime(spans, downbeat);
         }
         bottomPanel->setBeats(std::move(beats), std::move(downbeats));
+
+        // Onsets and the groove grid fitted to them. Onsets are instants like beats, so
+        // they map rather than clip, for the same reason.
+        //
+        // The grid is fitted HERE rather than read from a stored field because it is
+        // derived, not measured: analyzeGroove() is pure arithmetic over what analysis
+        // already wrote, it runs in well under a millisecond, and computing it at read
+        // time means an improvement to the fit reaches every already-analyzed file
+        // without re-analyzing anything. That mattered immediately -- the 94-file corpus
+        // that exposed the flat-grid bug was already on disk when the fix was written.
+        auto onsets = database->jsonDoubleArray(record->machine, "$.onset_times");
+        if (legacyTimebase)
+            for (auto& onset : onsets) onset = mira::activeTimeToFileTime(spans, onset);
+
+        WaveformView::GrooveOverlay overlay;
+        if (!onsets.empty())
+        {
+            auto groove = mira::analyzeGroove(
+                onsets, database->jsonExtractDouble(record->machine, "$.rhythm.essentia_bpm"),
+                database->jsonExtractDouble(record->machine, "$.rhythm.beat_this_bpm"));
+
+            overlay.valid = groove.grid.valid;
+            overlay.periodSeconds = groove.grid.periodSeconds;
+            overlay.phaseSeconds = groove.grid.phaseSeconds;
+            overlay.bpm = groove.grid.bpm;
+            overlay.strength = groove.grid.strength;
+            overlay.locked = groove.omittedReason.empty();
+            overlay.octaveSource = juce::String(groove.grid.octaveSource);
+            overlay.phaseHistogram = groove.grid.phaseHistogram;
+
+            if (!groove.omittedReason.empty())
+            {
+                overlay.summary = juce::String(groove.omittedReason);
+            }
+            else
+            {
+                // Swing as a percentage of the beat (50% straight, 66.7% triplet) and
+                // pocket in milliseconds rather than fractions of a beat -- both are
+                // read against the audio here, and "18 ms behind" is a thing a person
+                // can hear, where "0.024 of a beat" is a thing they have to convert.
+                auto pocketMs = groove.pocket
+                    ? juce::String(*groove.pocket * groove.grid.periodSeconds * 1000.0, 0) + "ms"
+                    : juce::String("-");
+                overlay.summary = "swing " + (groove.swing ? juce::String(*groove.swing * 100.0, 1) : "-")
+                                + "%  pocket " + pocketMs + "  sync "
+                                + (groove.syncopation ? juce::String(*groove.syncopation * 100.0, 0) : "-") + "%";
+            }
+        }
+        bottomPanel->setOnsets(std::move(onsets));
+        bottomPanel->setGroove(std::move(overlay));
     }
 
     // The stem activity matrix and the cues drawn across it (review round 6). Only a file

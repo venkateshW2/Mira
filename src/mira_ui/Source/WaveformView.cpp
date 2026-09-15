@@ -192,6 +192,8 @@ void WaveformView::setFile(const juce::File& file)
     notes.clear();
     beats.clear();
     downbeats.clear();
+    onsets.clear();
+    groove = {};
     noteLowPitch = noteHighPitch = 0;
     dragMode = DragMode::none;
     if (onSelectionChanged) onSelectionChanged();
@@ -298,6 +300,10 @@ WaveformView::LaneLayout WaveformView::computeLanes() const
     layout.segmentBand = claim(kSegmentBandHeight, !segments.empty());
     layout.chordLane = claim(kChordLaneHeight, lanes.chords && !chords.empty());
     layout.spanLane = claim(kSpanLaneHeight, lanes.spans && !activeSpans.empty());
+    // Claimed last of the bottom lanes, so it ends up closest to the peaks: an onset is a
+    // claim about a transient in the audio directly above it, and every pixel of distance
+    // between the tick and the peak it marks makes that harder to check by eye.
+    layout.onsetLane = claim(kOnsetLaneHeight, lanes.onsets && !onsets.empty());
     layout.peaks = remaining;
     return layout;
 }
@@ -375,6 +381,18 @@ void WaveformView::setBeats(std::vector<double> newBeats, std::vector<double> ne
     repaint();
 }
 
+void WaveformView::setOnsets(std::vector<double> newOnsets)
+{
+    onsets = std::move(newOnsets);
+    repaint();
+}
+
+void WaveformView::setGroove(GrooveOverlay newGroove)
+{
+    groove = std::move(newGroove);
+    repaint();
+}
+
 void WaveformView::setLaneVisibility(LaneVisibility newVisibility)
 {
     lanes = newVisibility;
@@ -393,6 +411,9 @@ enum ViewAction {
     kLaneSpans,
     kLaneChords,
     kLaneNotes,
+    kLaneOnsets,
+    kLaneGrooveGrid,
+    kLaneGrooveHistogram,
     kClearSelection,
 };
 } // namespace
@@ -407,6 +428,9 @@ void WaveformView::addLaneItemsTo(juce::PopupMenu& menu) const
     menu.addItem(kLaneSpans, "Active spans", !activeSpans.empty(), lanes.spans);
     menu.addItem(kLaneChords, "Chords", !chords.empty(), lanes.chords);
     menu.addItem(kLaneNotes, "Notes", !notes.empty(), lanes.notes);
+    menu.addItem(kLaneOnsets, "Onsets", !onsets.empty(), lanes.onsets);
+    menu.addItem(kLaneGrooveGrid, "Groove grid", groove.valid, lanes.grooveGrid);
+    menu.addItem(kLaneGrooveHistogram, "Groove histogram", groove.valid, lanes.grooveHistogram);
 }
 
 void WaveformView::buildViewMenu(juce::PopupMenu& menu) const
@@ -448,6 +472,9 @@ void WaveformView::applyLaneMenuResult(int result)
         case kLaneSpans:   lanes.spans = !lanes.spans; break;
         case kLaneChords:  lanes.chords = !lanes.chords; break;
         case kLaneNotes:   lanes.notes = !lanes.notes; break;
+        case kLaneOnsets:  lanes.onsets = !lanes.onsets; break;
+        case kLaneGrooveGrid: lanes.grooveGrid = !lanes.grooveGrid; break;
+        case kLaneGrooveHistogram: lanes.grooveHistogram = !lanes.grooveHistogram; break;
         default: return;
     }
     repaint();
@@ -873,6 +900,81 @@ void WaveformView::timerCallback()
     repaint();
 }
 
+// The whole file folded onto one beat: bin i is the share of onsets landing in the i-th
+// sixteenth of a 16th-resolution beat, normalised so 1.0 is "perfectly even". So the
+// tallest bar IS the `strength` number, and a flat picture is literally the null result
+// this whole measurement was built to stop shipping -- on the corpus that exposed the bug,
+// every one of 94 files drew flat against `beat_this`'s grid and 76 drew peaked against
+// the fitted one.
+void WaveformView::paintGrooveHistogram(juce::Graphics& g, juce::Rectangle<int> peaks) const
+{
+    if (!groove.valid || groove.phaseHistogram.empty()) return;
+    // Never at the cost of the waveform: on a short panel the peaks matter more than the
+    // picture of them, which is the same rule computeLanes() applies to every other lane.
+    if (peaks.getWidth() < kGrooveHistogramWidth + 24
+        || peaks.getHeight() < kGrooveHistogramHeight + 16)
+        return;
+
+    auto panel = juce::Rectangle<int>(peaks.getRight() - kGrooveHistogramWidth - 8,
+                                      peaks.getY() + 6, kGrooveHistogramWidth,
+                                      kGrooveHistogramHeight);
+
+    g.setColour(MiraLookAndFeel::surface.withAlpha(0.88f));
+    g.fillRoundedRectangle(panel.toFloat(), 4.0f);
+    g.setColour(MiraLookAndFeel::border);
+    g.drawRoundedRectangle(panel.toFloat(), 4.0f, 1.0f);
+
+    auto inner = panel.reduced(6, 4);
+    auto header = inner.removeFromTop(12);
+    g.setFont(juce::Font(juce::FontOptions(9.5f)));
+    g.setColour(MiraLookAndFeel::textDim);
+    g.drawText(juce::String(groove.bpm, 1) + " BPM  " + groove.octaveSource, header,
+               juce::Justification::centredLeft, false);
+    // A locked grid earns the accent colour; an unlocked one stays dim, because the number
+    // beside it is then a description of noise and should not look like a result.
+    g.setColour(groove.locked ? MiraLookAndFeel::accent : MiraLookAndFeel::textFaint);
+    g.drawText(juce::String(groove.strength, 2) + juce::String(juce::CharPointer_UTF8("\xc3\x97")), header,
+               juce::Justification::centredRight, false);
+
+    auto footer = inner.removeFromBottom(11);
+    g.setFont(juce::Font(juce::FontOptions(9.0f)));
+    g.setColour(MiraLookAndFeel::textFaint);
+    g.drawText(groove.summary, footer, juce::Justification::centredLeft, false);
+
+    auto plot = inner.reduced(0, 2);
+    if (plot.getHeight() < 8) return;
+
+    // Fixed ceiling rather than auto-scaling to this file's own peak: the point of the
+    // picture is comparing one track against another, and a y-axis that rescales per file
+    // would make a flat 1.1x look exactly like a locked 6.9x.
+    constexpr double kHistogramCeiling = 4.0;
+    const int bins = static_cast<int>(groove.phaseHistogram.size());
+    const float binWidth = static_cast<float>(plot.getWidth()) / static_cast<float>(bins);
+
+    // The uniform line -- where every bar would sit if onsets fell anywhere at all.
+    int uniformY = plot.getBottom()
+                   - static_cast<int>(1.0 / kHistogramCeiling * plot.getHeight());
+    g.setColour(MiraLookAndFeel::textFaint.withAlpha(0.45f));
+    g.drawHorizontalLine(uniformY, static_cast<float>(plot.getX()),
+                          static_cast<float>(plot.getRight()));
+
+    for (int i = 0; i < bins; ++i)
+    {
+        double value = juce::jlimit(0.0, kHistogramCeiling, groove.phaseHistogram[static_cast<size_t>(i)]);
+        auto height = static_cast<float>(value / kHistogramCeiling * plot.getHeight());
+        juce::Rectangle<float> bar(plot.getX() + i * binWidth, plot.getBottom() - height,
+                                   juce::jmax(1.0f, binWidth - 1.0f), height);
+        // Beats (every fourth bin) are the metrical anchors; the rest are the off-beat
+        // sixteenths. Colouring them apart is what turns the picture into a groove
+        // reading instead of a bar chart -- swing shows up as the off-beat bar leaning
+        // late, syncopation as the off-beat bars out-growing the beats.
+        const bool onBeat = (i % 4) == 0;
+        g.setColour(onBeat ? MiraLookAndFeel::accent.withAlpha(groove.locked ? 0.95f : 0.45f)
+                           : MiraLookAndFeel::active.withAlpha(groove.locked ? 0.80f : 0.35f));
+        g.fillRect(bar);
+    }
+}
+
 void WaveformView::paint(juce::Graphics& g)
 {
     auto waveformBounds = getWaveformBounds();
@@ -1021,9 +1123,110 @@ void WaveformView::paint(juce::Graphics& g)
         }
     }
 
+    // --- Groove grid ---------------------------------------------------------------
+    // The beat grid FITTED TO THE ONSETS (mira::analyzeGroove), which is a different claim
+    // from the bar grid above and is drawn in a different colour for exactly that reason:
+    // the bar grid is `beat_this`'s detected downbeats, this is the period that actually
+    // maximises onset phase concentration. On the 94-file Amon Tobin corpus they disagree
+    // on nearly every track, and seeing both at once is what makes the disagreement
+    // checkable rather than an argument between two numbers.
+    //
+    // Unlike the bar grid this one IS laid out from a period -- that is the whole point,
+    // it is a hypothesis about a steady pulse -- so it drifts on rubato material. That is
+    // a feature here: visible drift is the eye's version of a low `strength`.
+    if (lanes.grooveGrid && groove.valid && groove.periodSeconds > 0.0)
+    {
+        double spacingPx = groove.periodSeconds / visibleSeconds * gridArea.getWidth();
+        if (spacingPx >= 5.0)
+        {
+            // Start at the first grid line at or before the visible window, so panning
+            // never shifts the grid's own phase.
+            double firstIndex = std::floor((viewStart - groove.phaseSeconds) / groove.periodSeconds);
+            // Quarter-beat (16th) subdivisions only once they are legible; they are what
+            // the pocket and syncopation numbers are measured against.
+            bool showSixteenths = spacingPx >= 48.0;
+            for (double i = firstIndex;; i += 1.0)
+            {
+                double t = groove.phaseSeconds + i * groove.periodSeconds;
+                if (t > viewEnd) break;
+                if (t >= viewStart)
+                {
+                    g.setColour(MiraLookAndFeel::accent.withAlpha(0.30f));
+                    g.drawVerticalLine(secondsToX(t, gridArea), static_cast<float>(gridArea.getY()),
+                                        static_cast<float>(gridArea.getBottom()));
+                }
+                if (showSixteenths)
+                {
+                    g.setColour(MiraLookAndFeel::accent.withAlpha(0.10f));
+                    for (int sub = 1; sub < 4; ++sub)
+                    {
+                        double subT = t + groove.periodSeconds * sub / 4.0;
+                        if (subT < viewStart || subT > viewEnd) continue;
+                        g.drawVerticalLine(secondsToX(subT, gridArea), static_cast<float>(gridArea.getY()),
+                                            static_cast<float>(gridArea.getBottom()));
+                    }
+                }
+            }
+        }
+    }
+
     // White/near-white waveform -- "the waveform not orange in colour, use white".
     g.setColour(MiraLookAndFeel::text);
     thumbnail.drawChannels(g, layout.peaks.reduced(0, 4), viewStart, viewEnd, 1.0f);
+
+    // --- Onset lane ------------------------------------------------------------------
+    // The raw evidence. Ticks are split into two tiers by how far each onset sits from the
+    // nearest 16th of the fitted grid: on-grid onsets full height and bright, off-grid ones
+    // short and dim. That split IS the syncopation number drawn -- a four-on-the-floor
+    // pattern reads as a row of tall ticks, a broken-beat one as a scatter -- and it is
+    // also the fastest way to see a grid that has locked onto the wrong period, because
+    // then nothing is tall.
+    if (!layout.onsetLane.isEmpty())
+    {
+        auto lane = layout.onsetLane;
+        g.setColour(MiraLookAndFeel::surface3);
+        g.fillRect(lane);
+
+        const bool haveGrid = groove.valid && groove.periodSeconds > 0.0;
+        const double cell = haveGrid ? groove.periodSeconds / 4.0 : 0.0;
+        // How close counts as "on the grid". A 16th at 80 BPM is 187 ms, so 18% of a cell
+        // is ~34 ms -- tight enough to mean something, loose enough to survive the ~11.6 ms
+        // quantisation of the onset detector's own hop.
+        constexpr double kOnGridTolerance = 0.18;
+
+        for (double onset : onsets)
+        {
+            if (onset < viewStart || onset > viewEnd) continue;
+            int x = secondsToX(onset, lane);
+
+            bool onGrid = false;
+            if (haveGrid)
+            {
+                double cells = (onset - groove.phaseSeconds) / cell;
+                onGrid = std::abs(cells - std::round(cells)) <= kOnGridTolerance;
+            }
+
+            if (onGrid)
+            {
+                g.setColour(MiraLookAndFeel::accent.withAlpha(0.95f));
+                g.drawVerticalLine(x, static_cast<float>(lane.getY() + 1),
+                                    static_cast<float>(lane.getBottom() - 1));
+            }
+            else
+            {
+                g.setColour(MiraLookAndFeel::textDim.withAlpha(0.75f));
+                g.drawVerticalLine(x, static_cast<float>(lane.getY() + 5),
+                                    static_cast<float>(lane.getBottom() - 1));
+            }
+        }
+
+        g.setColour(MiraLookAndFeel::border);
+        g.drawHorizontalLine(lane.getY(), static_cast<float>(lane.getX()),
+                              static_cast<float>(lane.getRight()));
+    }
+
+    if (lanes.grooveHistogram)
+        paintGrooveHistogram(g, layout.peaks);
 
     // Note transcription ($.notes), drawn as a piano roll straight over the peaks rather
     // than in a lane of its own (decided in review): a roll reads against the audio it
