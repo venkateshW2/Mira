@@ -1,6 +1,9 @@
-# PRD — drive-audio-analyzer (v2)
+# PRD — mira (formerly drive-audio-analyzer v2)
 
-**Status:** draft for review. Nothing built.
+**Status:** the design this project was built from. Phases 0-5 are complete and
+Phase 6 is in progress (see [TASKS.md](TASKS.md)); the section numbers here are cited
+throughout the source, so this stays as written except where the design itself changed.
+Caption generation, marked out of scope for v1 below, has since been built.
 **Date:** 2026-09-09
 **Machine:** Apple M1 Pro, 16 GB, macOS 15.5. Fully local.
 **Language:** C++20 + ONNX Runtime. Native app, no server, no browser. See §2d.

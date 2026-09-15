@@ -2357,6 +2357,33 @@ of what is left. Nothing was dropped in the move and nothing was re-scoped — w
 item was recorded with its evidence, the evidence came with it, and each group below names
 the Phase 5 section it came from so the surrounding reasoning is still findable.
 
+### Groove and sound-design captioning ✅ (2026-09-15)
+
+Prompted by preparing the first beat-driven corpus (Amon Tobin / Two Fingers, 94 files).
+Full reference in [ANALYSIS.md](ANALYSIS.md).
+
+- [x] `--groove` stores `onset_times`; `Router` stopped discarding them
+- [x] `sub_ratio`, `flux_mean`, `flux_stddev` added to `Descriptors` inside the existing
+      Windowing/Spectrum pass (no extra cost)
+- [x] **Found the flat-groove bug**: against `beat_this_beats` the onset phase histogram
+      was flat on all 94 files (median peak/uniform 1.17, ceiling 1.36), so swing read
+      0.54-0.57 for everything in the library — an orchestral cue scored identically to a
+      programmed halftime beat
+- [x] `mira::analyzeGroove` (`mira_core`) fits the period from the onsets themselves;
+      median 1.93, max 6.93, wins on 94/94. No re-analysis needed
+- [x] BPM prefers the fitted grid where onsets lock (`essentia` agrees 82%, `beat_this` 13%)
+- [x] `groove` / `swing` / `low_end` / `motion` caption fields, thresholds from the corpus
+- [x] `pocket` and `syncopation` measured and deliberately NOT captioned — reasons
+      recorded in `CaptionFields.h` and [ANALYSIS.md §5](ANALYSIS.md)
+- [x] Waveform view draws onsets, the fitted grid, and the phase histogram
+- [x] Editable in File Details (vocabulary dropdowns) and `mira tag --groove/--swing/…`
+- [ ] Calibrate the thresholds against a second beat corpus — one artist is one corpus
+- [ ] Re-run the film-score sets with `--groove --recheck-tempo`; their BPMs have never
+      been checked the way this set now has
+- [ ] Consider an 8192-point pass for `sub_ratio` if 21.5 Hz bins smear
+
+---
+
 The trigger was the first import of a commercial music album (Dune OST, 38 files) instead
 of the score-stem sets every earlier round used. Two things that a 15-file test folder had
 hidden were obvious within a minute: analysis status reads as though the entire folder is

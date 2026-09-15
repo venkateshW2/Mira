@@ -1,7 +1,11 @@
 # RUNBOOK — Dune OST LoRA (sa3-sm-music, MLX)
 
-Prepared 2026-09-12. Everything below the "Already done" line is staged and verified;
-nothing has been trained yet. Run the "Tomorrow" section top to bottom.
+**Historical — this run has since happened.** Prepared 2026-09-12 and executed; `zvq`
+(Dune) was the first LoRA trained, followed by `xyr`, `dkt`, `lrt`, `lou` and `nin`. Kept
+because it is still the clearest end-to-end walkthrough of one run, but read it as a
+record rather than a plan: for current practice see
+[TRAINING.md](TRAINING.md), and for what the captions now contain see
+[../ANALYSIS.md](../ANALYSIS.md).
 
 ---
 

@@ -1,5 +1,8 @@
 # TRAINING — the SA3 LoRA pipeline, end to end
 
+> For what each caption field means and how to change it, see
+> [../ANALYSIS.md](../ANALYSIS.md). For the map of every document, [../CLAUDE.md](../CLAUDE.md).
+
 **Entry point for this whole area.** Written 2026-09-13 after the first working run;
 rewritten 2026-09-14 when the platform moved to JarvisLabs and the first run's real
 config was recovered. Read this first; the other docs are detail.

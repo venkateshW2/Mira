@@ -1,6 +1,7 @@
 # Folder-level tagging — a caption vocabulary for style LoRAs
 
-**Status: built 2026-09-14.** Written after analysing five film scores in mira and
+**Status: built 2026-09-14.** For the machine-measured fields this sits alongside —
+and why those are per-file where these are per-folder — see [ANALYSIS.md](ANALYSIS.md). Written after analysing five film scores in mira and
 measuring what actually separates them; implemented the same day.
 
 | layer | status |
