@@ -165,6 +165,15 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     keepButton.onClick = [this] { keepResult(); };
     addAndMakeVisible(keepButton);
 
+    discardButton.setEnabled(false);
+    tip(discardButton, "Move this result and its recipe to the Trash.");
+    discardButton.onClick = [this] { discardResult(); };
+    addAndMakeVisible(discardButton);
+
+    tip(cleanupButton, "Trash every generation in the output folder you never pressed Keep on.");
+    cleanupButton.onClick = [this] { cleanupUnkept(); };
+    addAndMakeVisible(cleanupButton);
+
     tip(buildPromptButton, "Build a prompt in the shape the LoRAs were trained on.");
     buildPromptButton.onClick = [this] {
         if (promptBuilder != nullptr) { promptBuilder->toFront(true); return; }
@@ -472,6 +481,68 @@ void GenerateContent::keepResult() {
     log("kept: " + wav.getFileName());
 }
 
+// Trash, not delete: the result is still audible in the preview when this is pressed,
+// and an accidental click on the wrong one should be recoverable.
+void GenerateContent::discardResult() {
+    const auto wav = resultTile.getFile();
+    if (!wav.existsAsFile()) return;
+    const auto sidecar = wav.withFileExtension("json");
+
+    preview.setFile({});                 // stop reading the file we are about to move
+    resultTile.setFile({});
+    const auto name = wav.getFileName();
+    bool ok = wav.moveToTrash();
+    if (sidecar.existsAsFile()) sidecar.moveToTrash();
+
+    keepButton.setEnabled(false);
+    discardButton.setEnabled(false);
+    revealButton.setEnabled(false);
+    statusLabel.setText(ok ? name + " - moved to Trash"
+                           : "could not move " + name + " to Trash",
+                        juce::dontSendNotification);
+    log(ok ? "discarded: " + name : "could not discard " + name);
+}
+
+void GenerateContent::cleanupUnkept() {
+    if (!outputFolder.isDirectory()) return;
+    // "Kept" is defined by the library, not by a local list -- the DB row is the record,
+    // so a file kept in an earlier session is still safe today.
+    juce::Array<juce::File> doomed;
+    juce::int64 bytes = 0;
+    for (const auto& f : outputFolder.findChildFiles(juce::File::findFiles, false, "*.wav")) {
+        if (database.findByPath(f.getFullPathName().toStdString()).has_value()) continue;
+        doomed.add(f);
+        bytes += f.getSize();
+    }
+    if (doomed.isEmpty()) {
+        statusLabel.setText("nothing to clean up - every generation here is kept",
+                            juce::dontSendNotification);
+        return;
+    }
+
+    const auto mb = juce::String(bytes / (1024.0 * 1024.0), 0);
+    juce::NativeMessageBox::showOkCancelBox(
+        juce::MessageBoxIconType::WarningIcon,
+        "Clean up " + juce::String(doomed.size()) + " unkept generation(s)?",
+        "Moves " + juce::String(doomed.size()) + " file(s) (" + mb + " MB) from\n"
+            + outputFolder.getFullPathName() + "\nto the Trash, with their .json recipes.\n\n"
+            "Anything you pressed Keep on is left alone.",
+        this,
+        juce::ModalCallbackFunction::create([this, doomed](int result) {
+            if (result == 0) return;                  // cancelled
+            int moved = 0;
+            for (const auto& f : doomed) {
+                const auto sidecar = f.withFileExtension("json");
+                if (f == resultTile.getFile()) { preview.setFile({}); resultTile.setFile({}); }
+                if (f.moveToTrash()) ++moved;
+                if (sidecar.existsAsFile()) sidecar.moveToTrash();
+            }
+            statusLabel.setText(juce::String(moved) + " file(s) moved to Trash",
+                                juce::dontSendNotification);
+            log("cleaned up " + juce::String(moved) + " unkept generation(s)");
+        }));
+}
+
 juce::var GenerateContent::buildLoraSpecs() {
     juce::Array<juce::var> specs;
     for (int i = 0; i < kLoraSlots; ++i) {
@@ -645,6 +716,7 @@ void GenerateContent::generate() {
         preview.setFile(wav);
         revealButton.setEnabled(true);
         keepButton.setEnabled(true);
+        discardButton.setEnabled(true);
         const auto ms = static_cast<int>(payload.getProperty("wall_ms", 0));
         statusLabel.setText(wav.getFileName() + " - done in "
                             + juce::String(ms / 1000.0, 1) + "s - drag the tile into your DAW",
@@ -904,13 +976,20 @@ void GenerateContent::resized() {
     buttons.removeFromLeft(4);
     revealButton.setBounds(buttons.removeFromLeft(115));
     buttons.removeFromLeft(4);
-    keepButton.setBounds(buttons.removeFromLeft(105));
-    buttons.removeFromLeft(4);
     stopButton.setBounds(buttons.removeFromLeft(70));
 
     datasetsLabel.setBounds(row(16, 3));
     progressBar.setBounds(row(12));
     preview.setBounds(row(110));
-    resultTile.setBounds(row(38));
+    {
+        auto line = row(38);
+        cleanupButton.setBounds(line.removeFromRight(92).withSizeKeepingCentre(92, 24));
+        line.removeFromRight(6);
+        discardButton.setBounds(line.removeFromRight(76).withSizeKeepingCentre(76, 24));
+        line.removeFromRight(4);
+        keepButton.setBounds(line.removeFromRight(60).withSizeKeepingCentre(60, 24));
+        line.removeFromRight(8);
+        resultTile.setBounds(line);
+    }
     logView.setBounds(r);
 }

@@ -142,8 +142,18 @@ private:
     // library that fills with rejects is worse than one that does not know about them.
     // Pressing this registers the file the way the scanner would, stores the recipe in
     // `human`, and files it under a "Generated" collection.
-    juce::TextButton keepButton { "Keep in mira" };
+    juce::TextButton keepButton { "Keep" };
     void keepResult();
+    // The counterpart to Keep. Output accumulates fast -- 40 files / 945 MB before this
+    // existed -- and pruning it by hand in Finder means opening each one to find out
+    // what it was. Both of these move to the TRASH, never unlink: a generation you
+    // cannot get back is a bad thing to make one click away.
+    juce::TextButton discardButton { "Discard" };
+    void discardResult();
+    // Sweeps the output folder of everything never Kept, so the routine case (generate
+    // ten, keep one) does not require ten decisions later.
+    juce::TextButton cleanupButton { "Clean up..." };
+    void cleanupUnkept();
     // Everything that produced the current result, captured at request time so Keep
     // cannot record a recipe that drifted from what was actually rendered.
     juce::var lastRecipe;
