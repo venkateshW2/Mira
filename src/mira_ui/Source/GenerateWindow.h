@@ -175,6 +175,12 @@ public:
         setContentOwned(new GenerateContent(laf, std::move(studioRoot), db), false);
         setResizable(true, false);
         centreWithSize(720, 700);
+        // Floats above the main window. This is a tool panel used ALONGSIDE the library
+        // -- you pick a file there, build a prompt here, and drag the result out to a
+        // DAW -- so ordinary sibling behaviour (drop behind on every click in the main
+        // window, then hunt for it in the Window menu) is wrong for it. Same reason a
+        // plugin's editor floats.
+        setAlwaysOnTop(true);
         setVisible(true);
         toFront(true);
     }
