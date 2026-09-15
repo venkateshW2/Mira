@@ -95,5 +95,23 @@ sit next to their explanation rather than under an abbreviation.
 
 ## Status
 
-Nothing here is implemented yet. Ordering by effect on output:
-**cfg and apg first**, then negative prompt, then the ergonomics (4-7).
+Implemented 2026-09-15 (commit `fb28806`): **1 cfg, 2 apg, 3 negative prompt,
+4 prepend-trigger, 5 seed randomise, 6 steps default, and the plain-language pass.**
+
+The cfg hypothesis was confirmed by measurement before shipping, not assumed. Same
+prompt, same seed 26, same LoRA (`xyr-step1000-epoch76`), same 8 steps, only cfg
+differing:
+
+```
+correlation cfg1 vs cfg7   0.2354
+rms                        0.1384 -> 0.3657   (2.6x fuller)
+```
+
+Bypassing the LoRA entirely at a fixed seed gives correlation 0.399 — so **cfg moved
+the output more than the adapter itself did.** At cfg 1.0 the guidance term was
+swamping every LoRA's contribution, which is the whole explanation for "all four
+sound the same", and nothing was ever wrong with the training.
+
+**Still open: 7, the A/B panel** — one prompt across N seeds or N checkpoints,
+auditioned in place. It is the one item that needs new UI rather than a new control,
+and it is the one that would have picked `dkt`'s best checkpoint in ten minutes.
