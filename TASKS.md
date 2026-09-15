@@ -2888,3 +2888,113 @@ single piece of work left and the one the user has raised most often.
       reproduce under repeated stress on two different libraries, not chasing further
       without a real repro — flagged and left here for if it ever recurs with more
       information (a specific file, a specific run condition) to go on.
+
+---
+
+## Phase 7 — meter, bar lines, and grid confidence
+
+Opened 2026-09-16. **Not a PRD phase** — like Phase 6, this is work the PRD's §9 plan did
+not anticipate, driven by what the 2026-09-15 groove work exposed and by a bar-detection
+tool a collaborator shared (`~/Downloads/deploy_onnx_image`).
+
+### The situation in one paragraph
+
+mira knows where the beats are. It does **not** know how many beats make a bar — there is
+no meter field anywhere in the analysis, so a 6/8 piece and a 4/4 piece are described
+identically. It also has **no confidence signal on the beat grid at all**, which is
+precisely how the flat-groove bug (Phase 6) survived unnoticed for so long. The
+collaborator's tool does both, and the parts that do them turn out not to need its
+heaviest dependency.
+
+### What was measured before any of this was planned (2026-09-16)
+
+The shared tool is `beatthis-final0.onnx` — **the same Beat This model mira already
+runs** — plus madmom's DBN for beat tracking, plus an original meter/bar layer.
+
+- **It runs natively on arm64.** The README's "x86_64 only" is about the Docker
+  container, not the code: three numpy files, onnxruntime, soundfile, soxr. Extracted
+  and run in `lab/.venv` at ~37x realtime, no Docker.
+- **madmom is not a C++ library** (this was assumed and is wrong): 37 `.py`, 4 Cython
+  `.so`, 69 `.pkl` inside the image. `ml/hmm.pyx` is Cython-compiled C; the state spaces
+  in `features/beats_hmm.py` and `features/downbeats.py` are pure Python. There is no
+  linkable C++ API — a port means reimplementing the Viterbi and the state-space
+  construction. Bounded, well-specified, but real work.
+- **Meter detection works, and reports when it doesn't.** On NIN: La Mer -> meter 6
+  (correct, bar spread 1.02x), The Becoming -> 6 (1.18x), The Frail -> flagged uneven at
+  2.43x rather than asserting, March Of The Pigs -> 4 (a miss; it alternates 7/8 and 4/4,
+  so arguably no single meter is right).
+- **On Two Fingers its grid loses to mira's fitted one, 8/8.** Measured neutrally, by
+  onset phase concentration against each grid: bardetect 1.15-1.26 peak/uniform, mira's
+  onset fit 1.27-2.53. Expected — it is Beat This underneath, which Phase 6 measured at
+  13% agreement with the real grid on this material. **This does not generalise past
+  halftime electronic**, which is the hardest case for beat tracking and the exact corpus
+  mira's onset fitter was built for.
+
+### The fact the plan turns on
+
+```python
+def detect_meter(feats, env, beats, snap=True) -> dict:
+```
+
+**Beats come in as an argument.** The meter/bar layer is beat-synchronous self-similarity
+plus autocorrelation over MFCC/chroma/mel, plus a folded accent profile — pure numpy, no
+DBN, no model, no madmom. It runs on *whatever grid it is given*, and mira already stores
+beats for every analysed file.
+
+So the valuable half is separable from the expensive half, and the best system is neither
+tool alone: **their meter layer on mira's fitted grid.**
+
+### Tasks, in the order value/effort says to do them
+
+**1. Meter detection (no madmom, no new model)**
+
+- [ ] Port `detect_meter` into `mira_core` beside `Groove` — same rule: pure arithmetic
+      over stored analysis, no audio, no models, so the UI can run it inline
+- [ ] Essentia already provides MFCC, chroma and mel; the port is mostly the
+      beat-synchronous similarity matrix, the ACF, and the accent folding
+- [ ] Run on mira's fitted grid (Groove.h) rather than `beat_this_beats`, since Phase 6
+      measured the fitted grid better on beat-driven material
+- [ ] Validate against NIN's 183 files — the corpus with real odd meters. La Mer (6/8)
+      and The Frail (6/8) are known cases; March Of The Pigs (7/8 + 4/4) is the known
+      hard one
+- [ ] Only then decide whether `meter` becomes a caption field. Same rule as everything
+      else: it must VARY across a corpus to be worth a slot (ANALYSIS.md §3), and on a
+      library that is ~90% 4/4 it may not
+
+**2. Grid confidence — `bar_spread`**
+
+- [ ] Adopt the collaborator's signal: ratio of longest to shortest bar. Their threshold
+      is >1.5 = "the meter may be right but the beat tracking drifted"
+- [ ] mira has no confidence number on its grid today. This is the single cheapest
+      defence against another silent-wrong-grid bug, and it is nearly free once meter
+      exists
+- [ ] Surface it in the waveform view next to the groove histogram, and gate any
+      meter-derived caption field on it
+
+**3. Bar lines and downbeat phase**
+
+- [ ] Port `choose_phase` / `bar_lines_from` — chooses the downbeat between tracker
+      downbeats and accent evidence, then lays bar lines at (phase mod meter)
+- [ ] Draw bar lines in the waveform view; mira currently numbers bars off
+      `beat_this_downbeats` with no phase reasoning at all
+
+**4. The DBN — last, and only if 1-3 prove out**
+
+- [ ] Reimplementing madmom's `ml/hmm` Viterbi plus `beats_hmm` state spaces in C++ is
+      the real cost here. Do not start it to unblock 1-3, which need none of it
+- [ ] Before committing: test bardetect's DBN grid against mira's fitted grid on
+      material that is NOT halftime electronic — NIN, LOTR, Last of Us — using the same
+      neutral onset-phase-concentration test. The Two Fingers result says nothing about
+      those, and a collaborator with real production experience of madmom reports it
+      accurate on ordinary and odd-meter music
+- [ ] Ask for the source folder the README mentions ("to change the code you need the
+      source folder, not this image") — licence and provenance need to be clear before
+      any of this ships, and the meter layer's own origin should be credited
+
+### Open question
+
+- [ ] Is the right grid per-file rather than global? Phase 6 showed the onset fit wins on
+      programmed beats; the collaborator's DBN may win on live drums and rubato. mira
+      already stores the evidence to choose between them per file (onset phase
+      concentration), so "pick the grid that locks the onsets best" is a measurable
+      policy rather than a preference

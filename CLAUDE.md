@@ -4,7 +4,7 @@ The index to every document in this repo: what each one is, whether it is curren
 when to read it. **Start here.** If you are picking the project up after a break, or you
 are an agent with no memory of the last session, this file is the entry point.
 
-**Last updated: 2026-09-15 (evening).** Keep the *Recent work* log at the bottom current — that is
+**Last updated: 2026-09-16.** Keep the *Recent work* log at the bottom current — that is
 this file's second job.
 
 ---
@@ -139,6 +139,28 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
+### 2026-09-16 — meter and bar detection assessed
+
+- Evaluated a collaborator's bar-detection tool (`~/Downloads/deploy_onnx_image`). It is
+  **the same Beat This model mira already runs**, plus madmom's DBN, plus an original
+  meter/bar layer. Written up as **[TASKS.md Phase 7](TASKS.md)**.
+- **The meter layer needs no madmom** — `detect_meter(feats, env, beats, ...)` takes beats
+  as an argument, so it runs on any grid, including mira's fitted one. That is the whole
+  plan: take the separable half, skip the expensive half.
+- **madmom is not a C++ library** (it was assumed to be): 37 `.py`, 4 Cython `.so`,
+  69 `.pkl`. No linkable API; a port means reimplementing the Viterbi and state spaces.
+- Meter detection verified working on NIN: La Mer -> 6 (spread 1.02x, correct),
+  The Frail -> self-flagged uneven rather than guessing. mira cannot do this at all today.
+- On Two Fingers its grid loses to mira's fitted grid 8/8 by neutral onset-phase
+  concentration — but that is the hardest case and the corpus the fitter was built for.
+  It says nothing about ordinary or odd-meter music.
+- Also measured and rejected this session: raising `kCaptionGenreThreshold` (the
+  `Experimental` catch-all has the HIGHEST median score, 0.178, so a higher bar kills the
+  specifics first), and `mtg_jamendo_genre` as a genre replacement (`idm` never once
+  clears 0.10 on 94 Amon Tobin files; `electronic` fires on 94/94). Jamendo is still worth
+  a narrow supplement for `hiphop`/`soundtrack`/`triphop`/`classical`, which Discogs-400
+  demonstrably misses.
+
 ### 2026-09-15 evening — first Amon Tobin run
 
 - **`amt` launched** on JarvisLabs (A30, 217.18.55.220): 94 files, 20,000 steps, batch 4,
@@ -205,4 +227,5 @@ Newest first. Keep this current — it is how the next session finds the thread.
 - Higher-step re-runs of `lou` and `dune`.
 - Decide the BPM octave convention for halftime material — see the 2026-09-15 evening
   entry. Affects captions, not grids, and needs a measurement rather than a preference.
-- TASKS.md Phase 6 — 29 items open.
+- TASKS.md Phase 6 — 29 items open; **Phase 7** (meter, bar lines, grid confidence) newly
+  opened 2026-09-16.
