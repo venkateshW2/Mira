@@ -222,8 +222,10 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     };
     addAndMakeVisible(seedRandomButton);
 
-    prependTriggerToggle.setToggleState(true, juce::dontSendNotification);
-    tip(prependTriggerToggle, "Put the trigger token at the front of the prompt automatically. Without it a LoRA barely applies.");
+    // Off by default: the trigger box holds whatever the last dataset prep used, which
+    // is usually NOT the LoRA now selected. Opt in per session rather than surprising.
+    prependTriggerToggle.setToggleState(false, juce::dontSendNotification);
+    tip(prependTriggerToggle, "Put the trigger box's token at the front of the prompt. Only applies when a LoRA is loaded -- CHECK the box matches that LoRA first.");
     addAndMakeVisible(prependTriggerToggle);
 
     tip(generateButton, "Generate with the settings above.");
@@ -481,13 +483,24 @@ void GenerateContent::generate() {
 
     auto req = new juce::DynamicObject();
     req->setProperty("cmd", "generate");
-    // Prepend the trigger unless the prompt already opens with it -- typing "dkt, ..."
-    // by hand and leaving the toggle on must not produce "dkt, dkt, ...".
+
+    const auto specs = buildLoraSpecs();
+
+    // Prepend the trigger, but ONLY when a LoRA is actually loaded. The trigger box
+    // defaults to "xyr" and is really a dataset-prep field, so prepending it
+    // unconditionally forces a stray Mad Max token onto every prompt -- including
+    // base-model generations that have no adapter to recognise it. That is harmless at
+    // cfg 1 (where nothing is followed closely) and actively destructive at cfg 4,
+    // which is exactly how it was first noticed. Skip it when the prompt already opens
+    // with the token, so typing "dkt, ..." by hand cannot yield "dkt, dkt, ...".
     auto promptText = promptEditor.getText().trim();
     const auto trig = triggerEditor.getText().trim();
-    if (prependTriggerToggle.getToggleState() && trig.isNotEmpty()
-        && !promptText.startsWithIgnoreCase(trig))
-        promptText = trig + ", " + promptText;
+    const bool prepended = prependTriggerToggle.getToggleState() && !specs.isVoid()
+                        && trig.isNotEmpty() && !promptText.startsWithIgnoreCase(trig);
+    if (prepended) promptText = trig + ", " + promptText;
+    // Never silently. A prompt that differs from what is in the box has to be visible,
+    // or a wrong trigger looks like a bad model.
+    if (prepended) log("prompt: " + promptText);
     req->setProperty("prompt", promptText);
     req->setProperty("cfg", cfgSlider.getValue());
     req->setProperty("apg", apgSlider.getValue());
@@ -498,7 +511,6 @@ void GenerateContent::generate() {
     req->setProperty("seed", static_cast<int>(seedSlider.getValue()));
     req->setProperty("out", wav.getFullPathName());
 
-    const auto specs = buildLoraSpecs();
     if (!specs.isVoid()) req->setProperty("loras", specs);
 
     if (initAudio.existsAsFile()) {
