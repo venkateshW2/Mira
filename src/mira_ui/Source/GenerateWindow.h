@@ -41,6 +41,10 @@ public:
     void resized() override;
     void paint(juce::Graphics&) override;
 
+    // Fired after Keep registers a file, so the library sidebar can pick up the new
+    // "Generated" collection without a restart.
+    std::function<void()> onLibraryChanged;
+
     // Replaces the prompt box contents (used by the file table's "Use Caption in SA3
     // Generate"). A trigger is NOT prepended here -- which LoRA you are about to use is
     // the slot picker's business, and the caption itself is trigger-free.
@@ -134,6 +138,15 @@ private:
     void refreshDatasets();
     juce::String triggerOfFolder(const juce::File& folder) const;
     juce::TextButton revealButton { "Show in Finder" };
+    // Keeping is deliberate, not automatic: most generations are throwaways, and a
+    // library that fills with rejects is worse than one that does not know about them.
+    // Pressing this registers the file the way the scanner would, stores the recipe in
+    // `human`, and files it under a "Generated" collection.
+    juce::TextButton keepButton { "Keep in mira" };
+    void keepResult();
+    // Everything that produced the current result, captured at request time so Keep
+    // cannot record a recipe that drifted from what was actually rendered.
+    juce::var lastRecipe;
     juce::TextButton outFolderButton { "Output folder..." };
     juce::TextEditor nameEditor;                 // base filename, blank = timestamp
     juce::File outputFolder;
@@ -180,7 +193,8 @@ public:
                                 juce::DocumentWindow::allButtons)
     {
         setUsingNativeTitleBar(true);
-        setContentOwned(new GenerateContent(laf, std::move(studioRoot), db), false);
+        content = new GenerateContent(laf, std::move(studioRoot), db);
+        setContentOwned(content, false);
         setResizable(true, false);
         centreWithSize(720, 700);
         // Floats above the main window. This is a tool panel used ALONGSIDE the library
@@ -194,6 +208,7 @@ public:
     }
 
     std::function<void()> onClosed;
+    GenerateContent* content = nullptr;
 
     void setPrompt(const juce::String& text) {
         if (auto* c = dynamic_cast<GenerateContent*>(getContentComponent())) c->setPrompt(text);

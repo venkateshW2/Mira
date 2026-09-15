@@ -1,5 +1,7 @@
 #include "GenerateWindow.h"
 
+#include "mira/scan/Scanner.h"
+
 #include "mira/caption/CaptionFields.h"
 #include "mira/caption/Sa3Renderer.h"
 
@@ -157,6 +159,11 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         tip(sl.minStep, "First step this LoRA applies to. Early steps shape structure.");
         tip(sl.maxStep, "Last step this LoRA applies to. Late steps shape timbre.");
     }
+
+    keepButton.setEnabled(false);
+    tip(keepButton, "Add this result to mira's library, under the \"Generated\" collection, with its full recipe.");
+    keepButton.onClick = [this] { keepResult(); };
+    addAndMakeVisible(keepButton);
 
     tip(buildPromptButton, "Build a prompt in the shape the LoRAs were trained on.");
     buildPromptButton.onClick = [this] {
@@ -430,6 +437,41 @@ void GenerateContent::addLoraFile() {
     });
 }
 
+// Registers the current result the way the scanner would, then stores the recipe in
+// `human` and files it under a "Generated" collection. Deliberately manual -- see the
+// keepButton comment in the header.
+void GenerateContent::keepResult() {
+    const auto wav = resultTile.getFile();
+    if (!wav.existsAsFile()) return;
+
+    const auto path = wav.getFullPathName().toStdString();
+    const auto hash = mira::sha256File(path);
+    database.upsertScannedFile(path, hash,
+                                wav.getLastModificationTime().toMilliseconds() / 1000,
+                                wav.getSize(),
+                                juce::Time::getCurrentTime().toMilliseconds() / 1000);
+
+    const auto record = database.findByPath(path);
+    if (!record.has_value()) { log("could not register " + wav.getFileName()); return; }
+
+    // Under one key, so it can never collide with a hand-edited human field and is
+    // trivially recognisable later as "mira made this".
+    if (!lastRecipe.isVoid())
+        database.setHumanField(record->id, "$.generated",
+                                juce::JSON::toString(lastRecipe, true).toStdString());
+
+    auto collection = database.findCollectionByName("Generated");
+    const auto id = collection.has_value() ? collection->id
+                                           : database.createCollection("Generated");
+    database.addFilesToCollection(id, { record->id });
+
+    if (onLibraryChanged) onLibraryChanged();
+    keepButton.setEnabled(false);
+    statusLabel.setText(wav.getFileName() + " - kept in mira, collection \"Generated\"",
+                        juce::dontSendNotification);
+    log("kept: " + wav.getFileName());
+}
+
 juce::var GenerateContent::buildLoraSpecs() {
     juce::Array<juce::var> specs;
     for (int i = 0; i < kLoraSlots; ++i) {
@@ -504,9 +546,26 @@ void GenerateContent::generate() {
     if (busy || worker == nullptr || !worker->isRunning()) return;
 
     outputFolder.createDirectory();
+    // "mira-20260915-095014.wav" says nothing about what made it. By convention every
+    // trained caption opens with its trigger(s) and only then starts "Key: value" pairs
+    // -- so the leading colon-free tokens ARE the triggers, and they are the single most
+    // useful thing to see in Finder or a DAW browser.
+    juce::StringArray triggers;
+    for (const auto& piece : juce::StringArray::fromTokens(promptEditor.getText(), ",", "")) {
+        const auto p = piece.trim();
+        if (p.isEmpty() || p.contains(":")) break;   // first Key: pair ends the triggers
+        triggers.add(juce::File::createLegalFileName(p));
+        if (triggers.size() >= 3) break;
+    }
+    juce::String autoName = (triggers.isEmpty() ? juce::String("mira") : triggers.joinIntoString("-"))
+                          + "-s" + juce::String(static_cast<int>(seedSlider.getValue()));
+    if (cfgSlider.getValue() != 1.0)                 // omitted when it is the default
+        autoName += "-cfg" + juce::String(cfgSlider.getValue(), 1);
+    autoName += "-" + juce::Time::getCurrentTime().formatted("%Y%m%d-%H%M%S");
+
     const auto base = nameEditor.getText().trim().isNotEmpty()
                           ? juce::File::createLegalFileName(nameEditor.getText().trim())
-                          : "mira-" + juce::Time::getCurrentTime().formatted("%Y%m%d-%H%M%S");
+                          : autoName;
     // Never silently overwrite a take someone might still want.
     auto wav = outputFolder.getChildFile(base + ".wav");
     for (int n = 2; wav.existsAsFile(); ++n)
@@ -525,6 +584,33 @@ void GenerateContent::generate() {
 
     const auto specs = buildLoraSpecs();
     if (!specs.isVoid()) req->setProperty("loras", specs);
+
+    {
+        auto* r = new juce::DynamicObject();
+        r->setProperty("prompt", promptEditor.getText().trim());
+        if (negativeEditor.getText().trim().isNotEmpty())
+            r->setProperty("negative_prompt", negativeEditor.getText().trim());
+        r->setProperty("seed", static_cast<int>(seedSlider.getValue()));
+        r->setProperty("cfg", cfgSlider.getValue());
+        r->setProperty("steps", static_cast<int>(stepsSlider.getValue()));
+        r->setProperty("seconds", secondsSlider.getValue());
+        // LoRAs by NAME as well as path -- a path goes stale the moment the file moves,
+        // and the name is what the dropdown showed when the choice was made.
+        juce::Array<juce::var> used;
+        for (int i = 0; i < kLoraSlots; ++i) {
+            const auto& sl = slots[static_cast<size_t>(i)];
+            const int sel = sl.box.getSelectedId();
+            if (sel <= 1 || sel - 1 > loraFiles.size()) continue;
+            auto* u = new juce::DynamicObject();
+            u->setProperty("name", loraFiles[sel - 2].getFileNameWithoutExtension());
+            u->setProperty("strength", sl.strength.getValue());
+            u->setProperty("gate", juce::var(juce::Array<juce::var>{
+                static_cast<int>(sl.minStep.getValue()), static_cast<int>(sl.maxStep.getValue()) }));
+            used.add(juce::var(u));
+        }
+        if (!used.isEmpty()) r->setProperty("loras", juce::var(used));
+        lastRecipe = juce::var(r);
+    }
 
     if (initAudio.existsAsFile()) {
         if (inpaintToggle.getToggleState()) {
@@ -546,9 +632,19 @@ void GenerateContent::generate() {
             statusLabel.setText("generation failed - see log", juce::dontSendNotification);
             return;
         }
+        // The recipe beside the audio. It exists because this information otherwise
+        // lives only in the log and dies with the session -- and a generation you cannot
+        // reproduce is a generation you cannot learn from.
+        if (auto* obj = lastRecipe.getDynamicObject()) {
+            obj->setProperty("file", wav.getFileName());
+            obj->setProperty("created", juce::Time::getCurrentTime().toISO8601(true));
+            obj->setProperty("wall_ms", payload.getProperty("wall_ms", 0));
+            wav.withFileExtension("json").replaceWithText(juce::JSON::toString(lastRecipe, false));
+        }
         resultTile.setFile(wav);
         preview.setFile(wav);
         revealButton.setEnabled(true);
+        keepButton.setEnabled(true);
         const auto ms = static_cast<int>(payload.getProperty("wall_ms", 0));
         statusLabel.setText(wav.getFileName() + " - done in "
                             + juce::String(ms / 1000.0, 1) + "s - drag the tile into your DAW",
@@ -807,6 +903,8 @@ void GenerateContent::resized() {
     encodeButton.setBounds(buttons.removeFromLeft(165));
     buttons.removeFromLeft(4);
     revealButton.setBounds(buttons.removeFromLeft(115));
+    buttons.removeFromLeft(4);
+    keepButton.setBounds(buttons.removeFromLeft(105));
     buttons.removeFromLeft(4);
     stopButton.setBounds(buttons.removeFromLeft(70));
 

@@ -2925,6 +2925,9 @@ public:
     {
         if (generateWindow != nullptr) { generateWindow->toFront(true); return; }
         generateWindow = std::make_unique<GenerateWindow>(laf, findStudioRoot(), *database);
+        generateWindow->content->onLibraryChanged = [this] {
+            if (folderTree != nullptr) folderTree->refresh();
+        };
         generateWindow->onClosed = [this] {
             juce::MessageManager::callAsync([this] { generateWindow.reset(); });
         };
