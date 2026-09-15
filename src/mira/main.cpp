@@ -904,7 +904,26 @@ int runAnalyze(const std::vector<std::string>& args) {
                 // Phase 6's finding that beat_this misreads the TEMPO of halftime
                 // electronic does not transfer to meter on ordinary material, and the
                 // per-file check for which grid to trust is Phase 7's open question.
-                if (runGroove && frames.frames > 0
+                // Check the grid before trusting it. beat_this's beats are used for meter
+                // because bar spread needs real, drifting beats -- but only when the audio
+                // actually supports them. On NIN's La Mer the onsets score 1.12x against
+                // beat_this's beats and 1.79x against the fitted grid, and meter bars drawn
+                // on the former lined up with nothing visible in the waveform.
+                //
+                // A tracker producing beats is not evidence that they are the right beats.
+                double beatGridScore = 0.0, fittedScore = 0.0;
+                if (runGroove && !c.routing.onsetTimes.empty() && !rhythm.beatThisBeats.empty()) {
+                    beatGridScore = mira::gridConcentration(c.routing.onsetTimes, rhythm.beatThisBeats);
+                    auto fitted = mira::analyzeGroove(c.routing.onsetTimes, std::nullopt, std::nullopt);
+                    if (fitted.grid.valid) fittedScore = fitted.grid.strength;
+                }
+                // Within 25% of the fitted grid's score is close enough: the two measure
+                // slightly different things (local interval vs global period), so demanding
+                // parity would reject grids that are merely less tidy, not wrong.
+                const bool beatGridSupported =
+                    beatGridScore > 1.15 && (fittedScore <= 0.0 || beatGridScore >= fittedScore * 0.75);
+
+                if (runGroove && frames.frames > 0 && beatGridSupported
                     && static_cast<int>(rhythm.beatThisBeats.size()) >= mira::kMeterMinBeats) {
                     std::vector<mira::MeterFeature> features;
                     auto add = [&](const char* name, const std::vector<float>& v, int dims) {
@@ -926,9 +945,24 @@ int runAnalyze(const std::vector<std::string>& args) {
                           << ",\"meter_bar_spread\":" << std::fixed << std::setprecision(3) << meter.barSpread
                           << ",\"meter_bar_count\":" << meter.barCount
                           << ",\"meter_strongest_feature\":\"" << meter.strongestFeature << "\"";
+                        m << ",\"meter_beat_grid_score\":" << std::fixed << std::setprecision(3) << beatGridScore
+                          << ",\"meter_fitted_grid_score\":" << std::fixed << std::setprecision(3) << fittedScore;
                         meterJson = m.str();
                     }
                     timer.mark("meter");
+                }
+
+                // Clear any stale meter left by an earlier analysis. Database.cpp merges
+                // with json_patch, so a field that simply STOPS being emitted survives
+                // forever -- which quietly defeats "omit rather than guess" at the storage
+                // layer. It is how La Mer kept reporting meter 6 after the grid check
+                // started rejecting its beat grid. JSON Merge Patch deletes any key whose
+                // value is null, so emitting nulls is the removal.
+                if (meterJson.empty() && runGroove) {
+                    meterJson = ",\"meter\":null,\"meter_pre_snap\":null,\"meter_acf\":null"
+                                ",\"meter_arbitrated\":null,\"meter_bar_spread\":null"
+                                ",\"meter_bar_count\":null,\"meter_strongest_feature\":null"
+                                ",\"meter_beat_grid_score\":null,\"meter_fitted_grid_score\":null";
                 }
 
                 if (rhythm.ok) {

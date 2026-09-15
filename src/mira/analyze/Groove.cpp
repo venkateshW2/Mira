@@ -160,6 +160,32 @@ double beatPhase(double t, double period, double gridPhase)
 
 } // namespace
 
+double gridConcentration(const std::vector<double>& onsetTimes,
+                         const std::vector<double>& beats)
+{
+    if (onsetTimes.size() < 8 || beats.size() < 4) return 0.0;
+
+    std::vector<int> histogram(kGroovePhaseBins, 0);
+    int counted = 0;
+    for (double onset : onsetTimes)
+    {
+        // Find the beat this onset follows. Real tracker beats are unevenly spaced, so the
+        // phase is taken against the LOCAL interval rather than a global period -- that is
+        // the whole reason to test detected beats separately from a fitted grid.
+        auto next = std::lower_bound(beats.begin(), beats.end(), onset);
+        if (next == beats.begin() || next == beats.end()) continue;
+        const double before = *(next - 1);
+        const double interval = *next - before;
+        if (interval <= 0.0) continue;
+        int bin = static_cast<int>((onset - before) / interval * kGroovePhaseBins);
+        histogram[static_cast<size_t>(std::clamp(bin, 0, kGroovePhaseBins - 1))] += 1;
+        ++counted;
+    }
+    if (counted < 8) return 0.0;
+    const int peak = *std::max_element(histogram.begin(), histogram.end());
+    return static_cast<double>(peak) * kGroovePhaseBins / counted;
+}
+
 GrooveResult analyzeGroove(const std::vector<double>& onsetTimes,
                            std::optional<double> essentiaBpm,
                            std::optional<double> beatThisBpm)

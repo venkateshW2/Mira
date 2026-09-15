@@ -127,6 +127,18 @@ struct GrooveResult {
 // `essentiaBpm` and `beatThisBpm` are `$.rhythm.essentia_bpm` / `$.rhythm.beat_this_bpm`;
 // either or both may be absent. They are used ONLY to choose the octave -- see the header
 // comment for why the period itself never comes from them.
+// How well a set of beat times explains the onsets: the peak/uniform ratio of the onset
+// phase histogram against that beat sequence. Same yardstick analyzeGroove uses on its own
+// fitted grid, so the two are directly comparable -- which is the point. It answers "does
+// the audio support this grid" for ANY grid, including one that came from a tracker.
+//
+// Built because drawing meter bars on beat_this's beats put them on a grid the audio does
+// not support: on NIN's La Mer the onsets score 1.79x against essentia's 85.4 BPM and only
+// 1.12x against beat_this's 93.0, and the bars visibly failed to line up with anything.
+// A grid has to be checked before it is drawn, not assumed because a tracker produced it.
+double gridConcentration(const std::vector<double>& onsetTimes,
+                         const std::vector<double>& beats);
+
 GrooveResult analyzeGroove(const std::vector<double>& onsetTimes,
                            std::optional<double> essentiaBpm,
                            std::optional<double> beatThisBpm);
