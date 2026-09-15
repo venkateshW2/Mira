@@ -139,6 +139,24 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
+### 2026-09-16 — meter shipped, and a confidently wrong grid fixed
+
+- **Meter detection built and surfaced** ([TASKS.md Phase 7](TASKS.md) tasks 1, 2, 2b).
+  Ported from the collaborator's tool, parity-verified on identical inputs, and now shown:
+  a read-only Meter row in File Details, green meter bars on the waveform, and bar spread
+  in the groove panel — red past 1.5, where the measurement says the beats drifted.
+- **`bar_spread` is mira's first confidence signal about its own beat grid.** Its absence
+  is how the flat-groove bug survived.
+- **Fixed a grid that was confidently wrong.** A 100 BPM loop (filename is ground truth)
+  reported 149.4 BPM at 2.33x strength. The onsets were right and both estimators were
+  right; `pickBeatOctave` only offered integer multiples, the fit had landed on 2/3 of the
+  beat, and nothing could reach 99.9 — so it fell through to a tempo prior and labelled
+  the guess "onsets". 23% of the library was getting its grid that way. Added 1.5, 2/3 and
+  0.75; an uncorroborated grid now derives nothing. Strength could not have caught this:
+  concentration was HIGHER at the wrong subdivision than at the true beat.
+- **`kMeterMinBeats` was too permissive** — a 16-beat loop "detected" a bar of 6 from 2.7
+  repetitions. The peak search now requires whole cycles.
+
 ### 2026-09-16 — meter and bar detection assessed
 
 - Evaluated a collaborator's bar-detection tool (`~/Downloads/deploy_onnx_image`). It is

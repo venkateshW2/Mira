@@ -71,6 +71,10 @@ private:
         // to "programmed" explains the word in a way repeating it cannot.
         juce::String groove, swing, lowEnd, motion;
         juce::String grooveRef, swingRef, lowEndRef, motionRef;
+        // Meter is measured but is NOT a caption field yet (TASKS.md Phase 7), so this
+        // row is read-only: there is nothing downstream for an override to change, and an
+        // editable box that silently does nothing is worse than no box.
+        juce::String meter, meterRef;
     };
 
     void reload();        // re-reads records + rebuilds every field from the DB
@@ -108,6 +112,7 @@ private:
     // and `human` outranks it (PRD §11). Clearing one back to empty leaves the
     // measured value showing, exactly as BPM already behaves.
     FieldRow grooveRow, swingRow, lowEndRow, motionRow;
+    FieldRow meterRow;
 
     // SA3 caption block — the rendered LoRA-training caption for this file, i.e. what the
     // whole analysis pipeline actually exists to produce. Read-only on purpose: it is a

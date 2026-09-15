@@ -126,6 +126,15 @@ public:
         juce::String octaveSource;  // which estimator picked the octave
         juce::String summary;       // one line: swing / pocket / syncopation, or why they're missing
         std::vector<double> phaseHistogram; // normalised to mean 1.0, so each bar IS a peak/uniform ratio
+
+        // Meter (Meter.h), measured against the DETECTED beats rather than this fitted
+        // grid -- see Meter.h on why bar spread is meaningless on a synthetic grid. 0
+        // when the file has none.
+        int meter = 0;
+        // Longest bar / shortest bar on the detected beats. Above kMeterSpreadWarn the
+        // grid drifted; this is the only confidence number mira has about its own beats,
+        // so it is drawn rather than buried.
+        double barSpread = 0.0;
     };
 
     void setGroove(GrooveOverlay newGroove);
@@ -142,6 +151,7 @@ public:
         bool onsets = true;
         bool grooveGrid = true;
         bool grooveHistogram = true;
+        bool meterBars = true;
     };
     LaneVisibility getLaneVisibility() const { return lanes; }
     void setLaneVisibility(LaneVisibility newVisibility);

@@ -414,6 +414,7 @@ enum ViewAction {
     kLaneOnsets,
     kLaneGrooveGrid,
     kLaneGrooveHistogram,
+    kLaneMeterBars,
     kClearSelection,
 };
 } // namespace
@@ -431,6 +432,7 @@ void WaveformView::addLaneItemsTo(juce::PopupMenu& menu) const
     menu.addItem(kLaneOnsets, "Onsets", !onsets.empty(), lanes.onsets);
     menu.addItem(kLaneGrooveGrid, "Groove grid", groove.valid, lanes.grooveGrid);
     menu.addItem(kLaneGrooveHistogram, "Groove histogram", groove.valid, lanes.grooveHistogram);
+    menu.addItem(kLaneMeterBars, "Meter bars", groove.meter > 1 && !beats.empty(), lanes.meterBars);
 }
 
 void WaveformView::buildViewMenu(juce::PopupMenu& menu) const
@@ -475,6 +477,7 @@ void WaveformView::applyLaneMenuResult(int result)
         case kLaneOnsets:  lanes.onsets = !lanes.onsets; break;
         case kLaneGrooveGrid: lanes.grooveGrid = !lanes.grooveGrid; break;
         case kLaneGrooveHistogram: lanes.grooveHistogram = !lanes.grooveHistogram; break;
+        case kLaneMeterBars: lanes.meterBars = !lanes.meterBars; break;
         default: return;
     }
     repaint();
@@ -941,6 +944,20 @@ void WaveformView::paintGrooveHistogram(juce::Graphics& g, juce::Rectangle<int> 
     g.setColour(MiraLookAndFeel::textFaint);
     g.drawText(groove.summary, footer, juce::Justification::centredLeft, false);
 
+    // Meter and bar spread share the footer's right edge. Bar spread is the only
+    // confidence number mira has about its own beat grid, so it is shown next to the
+    // grid's own picture rather than buried in the database -- and it turns red past the
+    // point where the measurement says the beats drifted.
+    if (groove.meter > 1)
+    {
+        juce::String meterText = juce::String(groove.meter) + "/bar";
+        if (groove.barSpread > 0.0)
+            meterText += "  " + juce::String(groove.barSpread, 2)
+                       + juce::String(juce::CharPointer_UTF8("\xc3\x97"));
+        g.setColour(groove.barSpread > 1.5 ? MiraLookAndFeel::warn : MiraLookAndFeel::textDim);
+        g.drawText(meterText, footer, juce::Justification::centredRight, false);
+    }
+
     auto plot = inner.reduced(0, 2);
     if (plot.getHeight() < 8) return;
 
@@ -1166,6 +1183,38 @@ void WaveformView::paint(juce::Graphics& g)
                                             static_cast<float>(gridArea.getBottom()));
                     }
                 }
+            }
+        }
+    }
+
+    // --- Meter bars -------------------------------------------------------------------
+    // Every `meter`-th DETECTED beat. Deliberately not derived from the fitted grid:
+    // Meter.h measures bar spread on detected beats precisely because a fitted grid is
+    // perfectly even and would make the drift invisible.
+    //
+    // HONEST LIMIT: the downbeat PHASE is not detected yet (Phase 7 task 3), so these are
+    // counted from the first beat, not from bar one. The SPACING is measured; where the
+    // bar starts is not. Drawn in green to keep them distinct from both the amber fitted
+    // grid and the teal beat_this downbeat ruler, so three different claims never read as
+    // one.
+    if (lanes.meterBars && groove.meter > 1 && beats.size() > static_cast<size_t>(groove.meter))
+    {
+        double spacingPx = 0.0;
+        if (beats.size() > 1)
+            spacingPx = (beats[1] - beats[0]) * groove.meter / visibleSeconds * gridArea.getWidth();
+        if (spacingPx >= 8.0)
+        {
+            // Above the spread threshold the bars are uneven enough that the tool itself
+            // says not to trust them -- draw them fainter rather than hiding them, since
+            // seeing a wrong grid is how the last two grid bugs were found.
+            const bool trustworthy = groove.barSpread > 0.0 && groove.barSpread <= 1.5;
+            g.setColour(MiraLookAndFeel::good.withAlpha(trustworthy ? 0.55f : 0.20f));
+            for (size_t i = 0; i < beats.size(); i += static_cast<size_t>(groove.meter))
+            {
+                if (beats[i] < viewStart || beats[i] > viewEnd) continue;
+                g.drawVerticalLine(secondsToX(beats[i], gridArea),
+                                    static_cast<float>(gridArea.getY()),
+                                    static_cast<float>(gridArea.getBottom()));
             }
         }
     }

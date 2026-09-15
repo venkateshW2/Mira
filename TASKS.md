@@ -2977,22 +2977,29 @@ tool alone: **their meter layer on mira's fitted grid.**
       is >1.5 = "the meter may be right but the beat tracking drifted"
 - [x] Stored as `$.rhythm.meter_bar_spread`. It discriminates on the first three files
       tried: 1.016 / 1.247 / 2.449, with The Frail correctly over the 1.5 line
-- [ ] Surface it in the waveform view next to the groove histogram
+- [x] Surface it in the waveform view next to the groove histogram
 - [ ] Surface it in the waveform view next to the groove histogram, and gate any
       meter-derived caption field on it
 
-**2b. Surface meter and bar spread — NOTHING SHOWS THEM YET**
+**2b. Surface meter and bar spread** — done 2026-09-16
 
 Meter is computed and stored (`$.rhythm.meter`, `$.rhythm.meter_bar_spread`) and is
 visible nowhere: not in File Details, not on the waveform, not in a caption. Stored-only
 is the same half-finished state `palette` and `timing` sat in for a week.
 
-- [ ] Add a read-only Meter row to File Details, showing the meter with its bar spread as
+- [x] Add a read-only Meter row to File Details, showing the meter with its bar spread as
       the reference line -- e.g. "analyzed: 6 beats/bar, bar spread 1.016x"
-- [ ] Draw bar lines on the waveform from meter + the detected beats, distinct from the
+- [x] Draw bar lines on the waveform from meter + the detected beats, distinct from the
       existing `beat_this_downbeats` ruler
-- [ ] Show bar spread beside the groove histogram, since it is the grid's confidence and
+- [x] Show bar spread beside the groove histogram, since it is the grid's confidence and
       belongs next to the grid's picture
+
+- [x] Found while surfacing it: `kMeterMinBeats` (12) was far too permissive. A 10-second
+      100 BPM drum loop is ~16 beats, and lag 6 has only 2.7 repetitions to judge from —
+      `DKP_100_drum_full_*` came back **meter 6** on plainly 4/4 material. The peak search
+      now requires `kMeterMinCycles` whole bars per candidate lag, and both loops read 4.
+      Parity with the reference is unaffected (its own MIN_CYCLES gates only the
+      arbitration contenders; extending it to the peak search is a deliberate addition)
 
 **3. Bar lines and downbeat phase**
 

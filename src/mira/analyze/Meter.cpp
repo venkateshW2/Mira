@@ -101,13 +101,25 @@ std::vector<double> autocorrelation(const std::vector<std::vector<double>>& sync
     return acf;
 }
 
-int acfPeak(const std::vector<double>& acf)
+// `beatCount` gates the search: a period needs kMeterMinCycles whole repetitions before
+// it means anything. Without this a 10-second loop (16 beats) can "detect" a bar of 6
+// from 2.7 repetitions, which is what a 100 BPM Dark Pop drum loop did -- it came back 6
+// where it is plainly 4. The reference applies the same constant, but only to the
+// arbitration contenders; applying it to the peak search as well is a deliberate
+// addition, not a porting slip.
+int acfPeak(const std::vector<double>& acf, int beatCount)
 {
-    int best = kMeterLagSkip;
+    int best = -1;
     double bestValue = -std::numeric_limits<double>::infinity();
     for (int i = kMeterLagSkip; i < static_cast<int>(acf.size()); ++i)
+    {
+        const int lag = i + 1;
+        if (beatCount / lag < kMeterMinCycles) continue;
         if (acf[static_cast<size_t>(i)] > bestValue) { bestValue = acf[static_cast<size_t>(i)]; best = i; }
-    return best + 1;
+    }
+    // Nothing had enough repetitions to judge -- the caller reports no meter rather than
+    // picking the least bad lag.
+    return best < 0 ? 0 : best + 1;
 }
 
 // The onset envelope sampled at each beat, normalised to its own maximum.
@@ -181,10 +193,16 @@ MeterResult detectMeter(const std::vector<MeterFeature>& features,
     for (size_t i = 0; i < features.size(); ++i)
     {
         const auto acf = autocorrelation(beatSync(features[i], beats, hopSeconds));
-        const int lag = acfPeak(acf);
+        const int lag = acfPeak(acf, static_cast<int>(beats.size()));
+        if (lag == 0) continue; // too few bars for this feature to have an opinion
         result.featureWinners.push_back(lag);
         const double value = acf[static_cast<size_t>(lag - 1)];
         if (value > bestPeakValue) { bestPeakValue = value; bestFeature = static_cast<int>(i); }
+    }
+    if (result.featureWinners.empty())
+    {
+        result.reason = "too few bars to judge a meter";
+        return result;
     }
     result.strongestFeature = features[static_cast<size_t>(bestFeature)].name;
     result.acfMeter = result.featureWinners[static_cast<size_t>(bestFeature)];

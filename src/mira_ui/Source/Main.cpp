@@ -1894,6 +1894,14 @@ private:
             overlay.octaveSource = juce::String(groove.grid.octaveSource);
             overlay.phaseHistogram = groove.grid.phaseHistogram;
 
+            // Meter comes from the stored analysis rather than being recomputed here:
+            // unlike the groove grid it needs the per-frame spectral features, which
+            // only the analyzer has. Nothing to recompute, just read what was measured.
+            if (auto m = database->jsonExtractDouble(record->machine, "$.rhythm.meter"))
+                overlay.meter = static_cast<int>(*m);
+            if (auto sp = database->jsonExtractDouble(record->machine, "$.rhythm.meter_bar_spread"))
+                overlay.barSpread = *sp;
+
             if (!groove.omittedReason.empty())
             {
                 overlay.summary = juce::String(groove.omittedReason);
