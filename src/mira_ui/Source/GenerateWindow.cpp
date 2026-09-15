@@ -172,11 +172,59 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         addAndMakeVisible(s);
     };
     setupNumber(secondsSlider, 10, 380, 1, 30,
-                "Output length. CHANGING THIS RELOADS THE MODEL (~44s). RAM grows with it.");
-    setupNumber(stepsSlider, 4, 50, 1, 8,
-                "Diffusion steps. 8 is the tuned default.");
+                "How long the result is. CHANGING THIS RELOADS THE MODEL (~44s), and RAM grows with it.");
+    // Raised from 8. 8 is a sketching value -- fine for "is this roughly right", too
+    // blurry to judge a LoRA by, which is what this window is mostly used for.
+    setupNumber(stepsSlider, 4, 100, 1, 24,
+                "How much work goes into each render. 8 = rough sketch, 24 = honest, 50+ = best it gets. Slower as it rises.");
     setupNumber(seedSlider, 0, 100000, 1, 26,
-                "Seed. Fix it when comparing anything.");
+                "The random starting point. Same seed + same prompt = the same result every time. Keep it fixed when comparing checkpoints.");
+    // 1.0 is the worker's default and means guidance OFF. 4 is a usable middle: the
+    // prompt is followed without the brittleness that sets in high up.
+    setupNumber(cfgSlider, 1.0, 12.0, 0.5, 4.0,
+                "How strictly it follows your words. 1 = ignores them (this was the old hidden default), 4-7 = follows properly, 10+ = literal and can get harsh.");
+    setupNumber(apgSlider, 1.0, 5.0, 0.1, 1.0,
+                "Smooths out the harshness when the dial above is high. Leave at 1 unless CFG is over ~7.");
+
+    auto name = [this](juce::Label& l, const juce::String& text) {
+        l.setText(text, juce::dontSendNotification);
+        l.setFont(juce::Font(12.0f));
+        addAndMakeVisible(l);
+    };
+    name(secondsName, "Length");
+    name(stepsName,   "Quality");
+    name(seedName,    "Seed");
+    name(cfgName,     "Follow prompt");
+    name(apgName,     "Smoothing");
+
+    auto hint = [this](juce::Label& l) {
+        l.setFont(juce::Font(11.0f));
+        l.setColour(juce::Label::textColourId, juce::Colours::grey);
+        addAndMakeVisible(l);
+    };
+    hint(cfgHint); hint(stepsHint);
+    cfgSlider.onValueChange   = [this] { updateHints(); };
+    stepsSlider.onValueChange = [this] { updateHints(); };
+    updateHints();
+
+    negativeLabel.setText("Avoid", juce::dontSendNotification);
+    negativeLabel.setFont(juce::Font(12.0f));
+    addAndMakeVisible(negativeLabel);
+    negativeEditor.setMultiLine(false);
+    negativeEditor.setTextToShowWhenEmpty("things to steer away from, e.g. vocals, singing, drums",
+                                           juce::Colours::grey);
+    tip(negativeEditor, "What you do NOT want. Leave empty for none. Only bites when Follow prompt is above 1.");
+    addAndMakeVisible(negativeEditor);
+
+    tip(seedRandomButton, "Roll a new seed. Use when judging a prompt; keep the seed fixed when judging a checkpoint.");
+    seedRandomButton.onClick = [this] {
+        seedSlider.setValue(juce::Random::getSystemRandom().nextInt(100000));
+    };
+    addAndMakeVisible(seedRandomButton);
+
+    prependTriggerToggle.setToggleState(true, juce::dontSendNotification);
+    tip(prependTriggerToggle, "Put the trigger token at the front of the prompt automatically. Without it a LoRA barely applies.");
+    addAndMakeVisible(prependTriggerToggle);
 
     tip(generateButton, "Generate with the settings above.");
     generateButton.onClick = [this] { generate(); };
@@ -433,7 +481,18 @@ void GenerateContent::generate() {
 
     auto req = new juce::DynamicObject();
     req->setProperty("cmd", "generate");
-    req->setProperty("prompt", promptEditor.getText());
+    // Prepend the trigger unless the prompt already opens with it -- typing "dkt, ..."
+    // by hand and leaving the toggle on must not produce "dkt, dkt, ...".
+    auto promptText = promptEditor.getText().trim();
+    const auto trig = triggerEditor.getText().trim();
+    if (prependTriggerToggle.getToggleState() && trig.isNotEmpty()
+        && !promptText.startsWithIgnoreCase(trig))
+        promptText = trig + ", " + promptText;
+    req->setProperty("prompt", promptText);
+    req->setProperty("cfg", cfgSlider.getValue());
+    req->setProperty("apg", apgSlider.getValue());
+    if (negativeEditor.getText().trim().isNotEmpty())
+        req->setProperty("negative_prompt", negativeEditor.getText().trim());
     req->setProperty("seconds", secondsSlider.getValue());
     req->setProperty("steps", static_cast<int>(stepsSlider.getValue()));
     req->setProperty("seed", static_cast<int>(seedSlider.getValue()));
@@ -645,6 +704,23 @@ void GenerateContent::log(const juce::String& line) {
     logView.insertTextAtCaret(line.trimEnd() + "\n");
 }
 
+// Turns the two numbers people actually have to reason about into words. The value is
+// still shown by the slider's own text box; this says what it MEANS.
+void GenerateContent::updateHints() {
+    const double c = cfgSlider.getValue();
+    cfgHint.setText(c <= 1.0  ? "off - prompt barely applies"
+                  : c <  3.0  ? "loose"
+                  : c <= 7.0  ? "follows properly"
+                              : "literal, may get harsh",
+                    juce::dontSendNotification);
+
+    const int s = static_cast<int>(stepsSlider.getValue());
+    stepsHint.setText(s <= 10 ? "rough sketch"
+                    : s <= 30 ? "honest render"
+                              : "best it gets, slow",
+                      juce::dontSendNotification);
+}
+
 void GenerateContent::paint(juce::Graphics& g) {
     g.fillAll(juce::Colour(0xff1a1a1a));
 }
@@ -674,9 +750,34 @@ void GenerateContent::resized() {
     }
     r.removeFromTop(4);
 
-    secondsSlider.setBounds(row(22));
-    stepsSlider.setBounds(row(22));
-    seedSlider.setBounds(row(22));
+    // Every numeric row is [name][slider][plain-language hint], so the window reads as
+    // labelled controls rather than a stack of anonymous bars.
+    auto named = [&row](juce::Label& nameLabel, juce::Slider& s,
+                        juce::Label* hintLabel = nullptr,
+                        juce::Component* trailing = nullptr) {
+        auto line = row(22);
+        nameLabel.setBounds(line.removeFromLeft(96));
+        if (trailing != nullptr) {
+            trailing->setBounds(line.removeFromRight(76).reduced(0, 1));
+            line.removeFromRight(6);
+        }
+        if (hintLabel != nullptr) {
+            hintLabel->setBounds(line.removeFromRight(150));
+            line.removeFromRight(6);
+        }
+        s.setBounds(line);
+    };
+    named(secondsName, secondsSlider);
+    named(stepsName,   stepsSlider, &stepsHint);
+    named(seedName,    seedSlider,  nullptr, &seedRandomButton);
+    named(cfgName,     cfgSlider,   &cfgHint);
+    named(apgName,     apgSlider);
+
+    auto neg = row(24);
+    negativeLabel.setBounds(neg.removeFromLeft(96));
+    prependTriggerToggle.setBounds(neg.removeFromRight(130));
+    neg.removeFromRight(6);
+    negativeEditor.setBounds(neg);
 
     auto a2a = row(24);
     initAudioButton.setBounds(a2a.removeFromLeft(100));
