@@ -138,12 +138,8 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
         sl.strength.setRange(0.0, 2.0, 0.05);
         sl.strength.setValue(1.0, juce::dontSendNotification);
-        // Rotary: strength is the one control here that is a continuous "how much of
-        // this" feel parameter rather than a count, which is exactly what a knob reads
-        // better than a bar. Steps/seed/length stay linear -- a knob showing "8" is no
-        // clearer than a bar showing "8", and a knob showing a 5-digit seed is worse.
-        sl.strength.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-        sl.strength.setTextBoxStyle(juce::Slider::TextBoxRight, false, 44, 18);
+        sl.strength.setSliderStyle(juce::Slider::LinearHorizontal);
+        sl.strength.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
         tip(sl.strength, "0 = base model (bypass), 1 = as trained, above 1 = overdriven.");
         addAndMakeVisible(sl.strength);
 
@@ -151,15 +147,13 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         // shape structure and arrangement, late steps shape timbre and texture -- so this
         // separates "did it change the music?" from "did it just recolour the surface?".
         for (auto* st : { &sl.minStep, &sl.maxStep }) {
+            st->setRange(1, 50, 1);
             st->setSliderStyle(juce::Slider::LinearHorizontal);
             st->setTextBoxStyle(juce::Slider::TextBoxRight, false, 40, 18);
             addAndMakeVisible(*st);
         }
         sl.minStep.setValue(1, juce::dontSendNotification);
-        // Range and value are BOTH set by syncLoraStepRanges(true) once stepsSlider
-        // exists -- this loop runs before setupNumber() has configured it, so reading
-        // it here yields JUCE's 0..10 default and clamps the gate to 1, which switches
-        // the adapter off after a single step. That is what shipped in 1fd066a.
+        sl.maxStep.setValue(8, juce::dontSendNotification);
         tip(sl.minStep, "First step this LoRA applies to. Early steps shape structure.");
         tip(sl.maxStep, "Last step this LoRA applies to. Late steps shape timbre.");
     }
@@ -178,75 +172,11 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         addAndMakeVisible(s);
     };
     setupNumber(secondsSlider, 10, 380, 1, 30,
-                "How long the result is. CHANGING THIS RELOADS THE MODEL (~44s), and RAM grows with it.");
-    // 8, NOT a "better" number. This is the value the pipeline was tuned at and the
-    // output people already like; the ceiling is raised to 100 so more is available,
-    // but a new control must never change what the old defaults produced. Shipping 24
-    // here silently altered every render and, worse, desynced the LoRA step gate below.
-    setupNumber(stepsSlider, 4, 100, 1, 8,
-                "How much work goes into each render. 8 is the tuned default. Higher is slower and not automatically better.");
+                "Output length. CHANGING THIS RELOADS THE MODEL (~44s). RAM grows with it.");
+    setupNumber(stepsSlider, 4, 50, 1, 8,
+                "Diffusion steps. 8 is the tuned default.");
     setupNumber(seedSlider, 0, 100000, 1, 26,
-                "The random starting point. Same seed + same prompt = the same result every time. Keep it fixed when comparing checkpoints.");
-    // Defaults to 1.0 -- the value every generation before this control existed used,
-    // so exposing the dial changes nothing until it is deliberately moved. 3-5 is worth
-    // trying; 7 clips ~5% of samples on this pipeline and is a ceiling, not a target.
-    setupNumber(cfgSlider, 1.0, 12.0, 0.5, 1.0,
-                "How strictly it follows your words. 1 = the long-standing default, 3-5 = follows harder, 7+ = literal and starts to clip.");
-    setupNumber(apgSlider, 1.0, 5.0, 0.1, 1.0,
-                "Smooths out the harshness when the dial above is high. Leave at 1 unless CFG is over ~7.");
-
-    auto name = [this](juce::Label& l, const juce::String& text) {
-        l.setText(text, juce::dontSendNotification);
-        l.setFont(juce::Font(12.0f));
-        addAndMakeVisible(l);
-    };
-    name(secondsName, "Length");
-    name(stepsName,   "Quality");
-    name(seedName,    "Seed");
-    name(cfgName,     "Follow prompt");
-    name(apgName,     "Smoothing");
-
-    auto hint = [this](juce::Label& l) {
-        l.setFont(juce::Font(11.0f));
-        l.setColour(juce::Label::textColourId, juce::Colours::grey);
-        addAndMakeVisible(l);
-    };
-    hint(cfgHint); hint(stepsHint);
-    cfgSlider.onValueChange   = [this] { updateHints(); };
-    stepsSlider.onValueChange = [this] { updateHints(); syncLoraStepRanges(); };
-    updateHints();
-    syncLoraStepRanges(true);   // first call: establish the range AND full coverage
-    applyAdvancedVisibility();
-
-    negativeLabel.setText("Avoid", juce::dontSendNotification);
-    negativeLabel.setFont(juce::Font(12.0f));
-    addAndMakeVisible(negativeLabel);
-    negativeEditor.setMultiLine(false);
-    negativeEditor.setTextToShowWhenEmpty("things to steer away from, e.g. vocals, singing, drums",
-                                           juce::Colours::grey);
-    tip(negativeEditor, "What you do NOT want. Leave empty for none. Only bites when Follow prompt is above 1.");
-    addAndMakeVisible(negativeEditor);
-
-    tip(seedRandomButton, "Roll a new seed. Use when judging a prompt; keep the seed fixed when judging a checkpoint.");
-    seedRandomButton.onClick = [this] {
-        seedSlider.setValue(juce::Random::getSystemRandom().nextInt(100000));
-    };
-    addAndMakeVisible(seedRandomButton);
-
-    // Off by default: the trigger box holds whatever the last dataset prep used, which
-    // is usually NOT the LoRA now selected. Opt in per session rather than surprising.
-    prependTriggerToggle.setToggleState(false, juce::dontSendNotification);
-    tip(prependTriggerToggle, "Put the trigger box's token at the front of the prompt. Only applies when a LoRA is loaded -- CHECK the box matches that LoRA first.");
-    addAndMakeVisible(prependTriggerToggle);
-
-    advancedButton.setClickingTogglesState(true);
-    tip(advancedButton, "Extra LoRA slots, step gating, and guidance. The defaults are the tuned ones -- you do not need these.");
-    advancedButton.onClick = [this] {
-        showAdvanced = advancedButton.getToggleState();
-        applyAdvancedVisibility();
-        resized();
-    };
-    addAndMakeVisible(advancedButton);
+                "Seed. Fix it when comparing anything.");
 
     tip(generateButton, "Generate with the settings above.");
     generateButton.onClick = [this] { generate(); };
@@ -503,34 +433,13 @@ void GenerateContent::generate() {
 
     auto req = new juce::DynamicObject();
     req->setProperty("cmd", "generate");
-
-    const auto specs = buildLoraSpecs();
-
-    // Prepend the trigger, but ONLY when a LoRA is actually loaded. The trigger box
-    // defaults to "xyr" and is really a dataset-prep field, so prepending it
-    // unconditionally forces a stray Mad Max token onto every prompt -- including
-    // base-model generations that have no adapter to recognise it. That is harmless at
-    // cfg 1 (where nothing is followed closely) and actively destructive at cfg 4,
-    // which is exactly how it was first noticed. Skip it when the prompt already opens
-    // with the token, so typing "dkt, ..." by hand cannot yield "dkt, dkt, ...".
-    auto promptText = promptEditor.getText().trim();
-    const auto trig = triggerEditor.getText().trim();
-    const bool prepended = prependTriggerToggle.getToggleState() && !specs.isVoid()
-                        && trig.isNotEmpty() && !promptText.startsWithIgnoreCase(trig);
-    if (prepended) promptText = trig + ", " + promptText;
-    // Never silently. A prompt that differs from what is in the box has to be visible,
-    // or a wrong trigger looks like a bad model.
-    if (prepended) log("prompt: " + promptText);
-    req->setProperty("prompt", promptText);
-    req->setProperty("cfg", cfgSlider.getValue());
-    req->setProperty("apg", apgSlider.getValue());
-    if (negativeEditor.getText().trim().isNotEmpty())
-        req->setProperty("negative_prompt", negativeEditor.getText().trim());
+    req->setProperty("prompt", promptEditor.getText());
     req->setProperty("seconds", secondsSlider.getValue());
     req->setProperty("steps", static_cast<int>(stepsSlider.getValue()));
     req->setProperty("seed", static_cast<int>(seedSlider.getValue()));
     req->setProperty("out", wav.getFullPathName());
 
+    const auto specs = buildLoraSpecs();
     if (!specs.isVoid()) req->setProperty("loras", specs);
 
     if (initAudio.existsAsFile()) {
@@ -736,63 +645,6 @@ void GenerateContent::log(const juce::String& line) {
     logView.insertTextAtCaret(line.trimEnd() + "\n");
 }
 
-// Turns the two numbers people actually have to reason about into words. The value is
-// still shown by the slider's own text box; this says what it MEANS.
-void GenerateContent::updateHints() {
-    const double c = cfgSlider.getValue();
-    cfgHint.setText(c <= 1.0  ? "off - prompt barely applies"
-                  : c <  3.0  ? "loose"
-                  : c <= 7.0  ? "follows properly"
-                              : "literal, may get harsh",
-                    juce::dontSendNotification);
-
-    const int s = static_cast<int>(stepsSlider.getValue());
-    stepsHint.setText(s <= 10 ? "rough sketch"
-                    : s <= 30 ? "honest render"
-                              : "best it gets, slow",
-                      juce::dontSendNotification);
-}
-
-// A LoRA's step gate is meaningless in the abstract: "steps 1-8" covers everything on
-// an 8-step schedule and only the first third of a 24-step one. Whenever the schedule
-// length changes, a gate that was covering the whole run must keep covering it --
-// otherwise raising quality silently switches the adapter off partway through, which
-// looks exactly like the LoRA having got worse.
-// One list, so "is this advanced?" is answered in a single place rather than scattered
-// through resized(). setVisible (not an empty setBounds) so hidden controls also leave
-// the keyboard focus order.
-void GenerateContent::applyAdvancedVisibility() {
-    const bool a = showAdvanced;
-    for (size_t i = 0; i < slots.size(); ++i) {
-        auto& sl = slots[i];
-        const bool slotShown = a || i == 0;        // slot 1 always; 2 and 3 are advanced
-        sl.label.setVisible(slotShown);
-        sl.box.setVisible(slotShown);
-        sl.strength.setVisible(slotShown);
-        sl.minStep.setVisible(a);                  // step gating is advanced, always
-        sl.maxStep.setVisible(a);
-    }
-    for (auto* comp : std::initializer_list<juce::Component*>{
-             &cfgName, &cfgSlider, &cfgHint, &apgName, &apgSlider,
-             &negativeLabel, &negativeEditor, &prependTriggerToggle,
-             &initAudioButton, &clearInitButton, &initLabel, &inpaintToggle })
-        comp->setVisible(a);
-    if (!a) { inpaintStart.setVisible(false); inpaintEnd.setVisible(false); }
-}
-
-void GenerateContent::syncLoraStepRanges(bool force) {
-    const auto steps = stepsSlider.getValue();
-    for (auto& sl : slots) {
-        // "Was it covering the whole run?" has to be asked against the OLD maximum,
-        // before the range moves.
-        const bool wasFullRange = sl.maxStep.getValue() >= sl.maxStep.getMaximum();
-        sl.minStep.setRange(1, steps, 1);
-        sl.maxStep.setRange(1, steps, 1);
-        if (force || wasFullRange || sl.maxStep.getValue() > steps)
-            sl.maxStep.setValue(steps, juce::dontSendNotification);
-    }
-}
-
 void GenerateContent::paint(juce::Graphics& g) {
     g.fillAll(juce::Colour(0xff1a1a1a));
 }
@@ -810,54 +662,22 @@ void GenerateContent::resized() {
 
     for (int i = 0; i < kLoraSlots; ++i) {
         auto& sl = slots[static_cast<size_t>(i)];
-        if (!sl.box.isVisible()) continue;          // collapsed slot takes no height
-        auto line = row(showAdvanced ? 24 : 30, 2);
+        auto line = row(22, 2);
         sl.label.setBounds(line.removeFromLeft(48));
-        sl.box.setBounds(line.removeFromLeft(200).withSizeKeepingCentre(200, 22));
-        line.removeFromLeft(8);
-        sl.strength.setBounds(line.removeFromLeft(110));
-        if (showAdvanced) {
-            line.removeFromLeft(8);
-            sl.minStep.setBounds(line.removeFromLeft(juce::jmax(70, line.getWidth() / 2 - 2))
-                                     .withSizeKeepingCentre(juce::jmax(70, line.getWidth() / 2 - 2), 20));
-            line.removeFromLeft(4);
-            sl.maxStep.setBounds(line.withSizeKeepingCentre(line.getWidth(), 20));
-        }
+        sl.box.setBounds(line.removeFromLeft(200));
+        line.removeFromLeft(4);
+        sl.strength.setBounds(line.removeFromLeft(150));
+        line.removeFromLeft(4);
+        sl.minStep.setBounds(line.removeFromLeft(juce::jmax(80, line.getWidth() / 2 - 2)));
+        line.removeFromLeft(4);
+        sl.maxStep.setBounds(line);
     }
     r.removeFromTop(4);
 
-    // Every numeric row is [name][slider][plain-language hint], so the window reads as
-    // labelled controls rather than a stack of anonymous bars.
-    auto named = [&row](juce::Label& nameLabel, juce::Slider& s,
-                        juce::Label* hintLabel = nullptr,
-                        juce::Component* trailing = nullptr) {
-        auto line = row(22);
-        nameLabel.setBounds(line.removeFromLeft(96));
-        if (trailing != nullptr) {
-            trailing->setBounds(line.removeFromRight(76).reduced(0, 1));
-            line.removeFromRight(6);
-        }
-        if (hintLabel != nullptr) {
-            hintLabel->setBounds(line.removeFromRight(150));
-            line.removeFromRight(6);
-        }
-        s.setBounds(line);
-    };
-    named(secondsName, secondsSlider);
-    named(stepsName,   stepsSlider, &stepsHint);
-    named(seedName,    seedSlider,  nullptr, &seedRandomButton);
-    if (showAdvanced) {
-        named(cfgName, cfgSlider, &cfgHint);
-        named(apgName, apgSlider);
+    secondsSlider.setBounds(row(22));
+    stepsSlider.setBounds(row(22));
+    seedSlider.setBounds(row(22));
 
-        auto neg = row(24);
-        negativeLabel.setBounds(neg.removeFromLeft(96));
-        prependTriggerToggle.setBounds(neg.removeFromRight(130));
-        neg.removeFromRight(6);
-        negativeEditor.setBounds(neg);
-    }
-
-    if (showAdvanced) {
     auto a2a = row(24);
     initAudioButton.setBounds(a2a.removeFromLeft(100));
     a2a.removeFromLeft(4);
@@ -873,7 +693,6 @@ void GenerateContent::resized() {
         inpaintEnd.setBounds(rng);
     } else {
         inpaintStart.setBounds({}); inpaintEnd.setBounds({});
-    }
     }
 
     auto out = row(24);
@@ -894,8 +713,6 @@ void GenerateContent::resized() {
     revealButton.setBounds(buttons.removeFromLeft(115));
     buttons.removeFromLeft(4);
     stopButton.setBounds(buttons.removeFromLeft(70));
-    buttons.removeFromLeft(4);
-    advancedButton.setBounds(buttons.removeFromLeft(90));
 
     datasetsLabel.setBounds(row(16, 3));
     progressBar.setBounds(row(12));

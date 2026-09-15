@@ -107,46 +107,6 @@ private:
     std::array<LoraSlot, kLoraSlots> slots;
     juce::TextButton addLoraButton { "Add LoRA file..." };
     juce::Slider secondsSlider, stepsSlider, seedSlider;
-
-    // Guidance. sa3_worker.py has always accepted cfg/apg/negative_prompt (see its
-    // _run_generation call) and this window never sent them, so every generation mira
-    // has ever made ran at the worker's default cfg=1.0 -- guidance effectively off,
-    // the prompt applied with no amplification. That is why four LoRAs trained on four
-    // different scores sounded nearly identical at a fixed seed: nothing was pushing
-    // the output away from what the base model would have done anyway. See
-    // sa3-studio/GENERATE-UI.md.
-    juce::Slider cfgSlider, apgSlider;
-    juce::TextEditor negativeEditor;
-    juce::Label negativeLabel;
-
-    // Every numeric control had only a value box and a tooltip, which meant the window
-    // read as a column of anonymous sliders. These name them on screen, and the two
-    // `Hint` labels translate the CURRENT value into words ("sketch" / "literal") --
-    // the number is meaningless to anyone who has not read the sampler source.
-    juce::Label secondsName, stepsName, seedName, cfgName, apgName;
-    juce::Label cfgHint, stepsHint;
-    void updateHints();
-    void syncLoraStepRanges(bool force = false);
-
-    // The trigger box is dataset-prep only (chooseEncodeFolder) and is never prepended
-    // at generation. Typing it by hand is easy to forget, and forgetting it silently
-    // produces base-model output -- the same failure mode as cfg=1.0, from the other
-    // end. Nine NIN sidecars were encoded under the wrong trigger for the mirror-image
-    // reason, so make the coupling explicit rather than remembered.
-    juce::ToggleButton prependTriggerToggle { "prepend trigger" };
-
-    // Comparing checkpoints is only valid at a fixed seed, so make "fixed" a visible
-    // state instead of a thing the user has to remember not to touch.
-    juce::TextButton seedRandomButton { "random" };
-    // Everything that is not "type a prompt, pick a LoRA, press Generate" lives behind
-    // this. The per-slot step gate in particular caused two separate regressions in one
-    // day purely by being visible and desyncable; it is an expert control and belongs
-    // off the default screen. The rule for what stays out here: if a sensible default
-    // exists and touching it usually makes things worse, it is advanced.
-    juce::TextButton advancedButton { "Advanced" };
-    bool showAdvanced = false;
-    void applyAdvancedVisibility();
-
     juce::TextButton generateButton { "Generate" };
     juce::TextButton encodeButton { "Prepare LoRA dataset..." };
     juce::TextEditor triggerEditor;
@@ -206,7 +166,7 @@ public:
         setUsingNativeTitleBar(true);
         setContentOwned(new GenerateContent(laf, std::move(studioRoot), db), false);
         setResizable(true, false);
-        centreWithSize(760, 790);
+        centreWithSize(720, 640);
         setVisible(true);
         toFront(true);
     }
