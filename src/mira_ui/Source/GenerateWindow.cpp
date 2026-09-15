@@ -138,8 +138,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
         sl.strength.setRange(0.0, 2.0, 0.05);
         sl.strength.setValue(1.0, juce::dontSendNotification);
-        sl.strength.setSliderStyle(juce::Slider::LinearHorizontal);
-        sl.strength.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
+        // Rotary: strength is the one control here that is a continuous "how much of
+        // this" feel parameter rather than a count, which is exactly what a knob reads
+        // better than a bar. Steps/seed/length stay linear -- a knob showing "8" is no
+        // clearer than a bar showing "8", and a knob showing a 5-digit seed is worse.
+        sl.strength.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+        sl.strength.setTextBoxStyle(juce::Slider::TextBoxRight, false, 44, 18);
         tip(sl.strength, "0 = base model (bypass), 1 = as trained, above 1 = overdriven.");
         addAndMakeVisible(sl.strength);
 
@@ -212,6 +216,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     stepsSlider.onValueChange = [this] { updateHints(); syncLoraStepRanges(); };
     updateHints();
     syncLoraStepRanges(true);   // first call: establish the range AND full coverage
+    applyAdvancedVisibility();
 
     negativeLabel.setText("Avoid", juce::dontSendNotification);
     negativeLabel.setFont(juce::Font(12.0f));
@@ -233,6 +238,15 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     prependTriggerToggle.setToggleState(false, juce::dontSendNotification);
     tip(prependTriggerToggle, "Put the trigger box's token at the front of the prompt. Only applies when a LoRA is loaded -- CHECK the box matches that LoRA first.");
     addAndMakeVisible(prependTriggerToggle);
+
+    advancedButton.setClickingTogglesState(true);
+    tip(advancedButton, "Extra LoRA slots, step gating, and guidance. The defaults are the tuned ones -- you do not need these.");
+    advancedButton.onClick = [this] {
+        showAdvanced = advancedButton.getToggleState();
+        applyAdvancedVisibility();
+        resized();
+    };
+    addAndMakeVisible(advancedButton);
 
     tip(generateButton, "Generate with the settings above.");
     generateButton.onClick = [this] { generate(); };
@@ -744,6 +758,28 @@ void GenerateContent::updateHints() {
 // length changes, a gate that was covering the whole run must keep covering it --
 // otherwise raising quality silently switches the adapter off partway through, which
 // looks exactly like the LoRA having got worse.
+// One list, so "is this advanced?" is answered in a single place rather than scattered
+// through resized(). setVisible (not an empty setBounds) so hidden controls also leave
+// the keyboard focus order.
+void GenerateContent::applyAdvancedVisibility() {
+    const bool a = showAdvanced;
+    for (size_t i = 0; i < slots.size(); ++i) {
+        auto& sl = slots[i];
+        const bool slotShown = a || i == 0;        // slot 1 always; 2 and 3 are advanced
+        sl.label.setVisible(slotShown);
+        sl.box.setVisible(slotShown);
+        sl.strength.setVisible(slotShown);
+        sl.minStep.setVisible(a);                  // step gating is advanced, always
+        sl.maxStep.setVisible(a);
+    }
+    for (auto* comp : std::initializer_list<juce::Component*>{
+             &cfgName, &cfgSlider, &cfgHint, &apgName, &apgSlider,
+             &negativeLabel, &negativeEditor, &prependTriggerToggle,
+             &initAudioButton, &clearInitButton, &initLabel, &inpaintToggle })
+        comp->setVisible(a);
+    if (!a) { inpaintStart.setVisible(false); inpaintEnd.setVisible(false); }
+}
+
 void GenerateContent::syncLoraStepRanges(bool force) {
     const auto steps = stepsSlider.getValue();
     for (auto& sl : slots) {
@@ -774,15 +810,19 @@ void GenerateContent::resized() {
 
     for (int i = 0; i < kLoraSlots; ++i) {
         auto& sl = slots[static_cast<size_t>(i)];
-        auto line = row(22, 2);
+        if (!sl.box.isVisible()) continue;          // collapsed slot takes no height
+        auto line = row(showAdvanced ? 24 : 30, 2);
         sl.label.setBounds(line.removeFromLeft(48));
-        sl.box.setBounds(line.removeFromLeft(200));
-        line.removeFromLeft(4);
-        sl.strength.setBounds(line.removeFromLeft(150));
-        line.removeFromLeft(4);
-        sl.minStep.setBounds(line.removeFromLeft(juce::jmax(80, line.getWidth() / 2 - 2)));
-        line.removeFromLeft(4);
-        sl.maxStep.setBounds(line);
+        sl.box.setBounds(line.removeFromLeft(200).withSizeKeepingCentre(200, 22));
+        line.removeFromLeft(8);
+        sl.strength.setBounds(line.removeFromLeft(110));
+        if (showAdvanced) {
+            line.removeFromLeft(8);
+            sl.minStep.setBounds(line.removeFromLeft(juce::jmax(70, line.getWidth() / 2 - 2))
+                                     .withSizeKeepingCentre(juce::jmax(70, line.getWidth() / 2 - 2), 20));
+            line.removeFromLeft(4);
+            sl.maxStep.setBounds(line.withSizeKeepingCentre(line.getWidth(), 20));
+        }
     }
     r.removeFromTop(4);
 
@@ -806,15 +846,18 @@ void GenerateContent::resized() {
     named(secondsName, secondsSlider);
     named(stepsName,   stepsSlider, &stepsHint);
     named(seedName,    seedSlider,  nullptr, &seedRandomButton);
-    named(cfgName,     cfgSlider,   &cfgHint);
-    named(apgName,     apgSlider);
+    if (showAdvanced) {
+        named(cfgName, cfgSlider, &cfgHint);
+        named(apgName, apgSlider);
 
-    auto neg = row(24);
-    negativeLabel.setBounds(neg.removeFromLeft(96));
-    prependTriggerToggle.setBounds(neg.removeFromRight(130));
-    neg.removeFromRight(6);
-    negativeEditor.setBounds(neg);
+        auto neg = row(24);
+        negativeLabel.setBounds(neg.removeFromLeft(96));
+        prependTriggerToggle.setBounds(neg.removeFromRight(130));
+        neg.removeFromRight(6);
+        negativeEditor.setBounds(neg);
+    }
 
+    if (showAdvanced) {
     auto a2a = row(24);
     initAudioButton.setBounds(a2a.removeFromLeft(100));
     a2a.removeFromLeft(4);
@@ -830,6 +873,7 @@ void GenerateContent::resized() {
         inpaintEnd.setBounds(rng);
     } else {
         inpaintStart.setBounds({}); inpaintEnd.setBounds({});
+    }
     }
 
     auto out = row(24);
@@ -850,6 +894,8 @@ void GenerateContent::resized() {
     revealButton.setBounds(buttons.removeFromLeft(115));
     buttons.removeFromLeft(4);
     stopButton.setBounds(buttons.removeFromLeft(70));
+    buttons.removeFromLeft(4);
+    advancedButton.setBounds(buttons.removeFromLeft(90));
 
     datasetsLabel.setBounds(row(16, 3));
     progressBar.setBounds(row(12));

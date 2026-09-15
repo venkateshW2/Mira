@@ -138,6 +138,15 @@ private:
     // Comparing checkpoints is only valid at a fixed seed, so make "fixed" a visible
     // state instead of a thing the user has to remember not to touch.
     juce::TextButton seedRandomButton { "random" };
+    // Everything that is not "type a prompt, pick a LoRA, press Generate" lives behind
+    // this. The per-slot step gate in particular caused two separate regressions in one
+    // day purely by being visible and desyncable; it is an expert control and belongs
+    // off the default screen. The rule for what stays out here: if a sensible default
+    // exists and touching it usually makes things worse, it is advanced.
+    juce::TextButton advancedButton { "Advanced" };
+    bool showAdvanced = false;
+    void applyAdvancedVisibility();
+
     juce::TextButton generateButton { "Generate" };
     juce::TextButton encodeButton { "Prepare LoRA dataset..." };
     juce::TextEditor triggerEditor;
