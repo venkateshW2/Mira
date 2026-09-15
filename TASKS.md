@@ -2981,6 +2981,19 @@ tool alone: **their meter layer on mira's fitted grid.**
 - [ ] Surface it in the waveform view next to the groove histogram, and gate any
       meter-derived caption field on it
 
+**2b. Surface meter and bar spread — NOTHING SHOWS THEM YET**
+
+Meter is computed and stored (`$.rhythm.meter`, `$.rhythm.meter_bar_spread`) and is
+visible nowhere: not in File Details, not on the waveform, not in a caption. Stored-only
+is the same half-finished state `palette` and `timing` sat in for a week.
+
+- [ ] Add a read-only Meter row to File Details, showing the meter with its bar spread as
+      the reference line -- e.g. "analyzed: 6 beats/bar, bar spread 1.016x"
+- [ ] Draw bar lines on the waveform from meter + the detected beats, distinct from the
+      existing `beat_this_downbeats` ruler
+- [ ] Show bar spread beside the groove histogram, since it is the grid's confidence and
+      belongs next to the grid's picture
+
 **3. Bar lines and downbeat phase**
 
 - [ ] Port `choose_phase` / `bar_lines_from` — chooses the downbeat between tracker
@@ -3009,6 +3022,29 @@ tool alone: **their meter layer on mira's fitted grid.**
       then `diagnose()`'s rule (accents arbitrate whenever two foldable candidates
       disagree) is too eager and should require the accents to be *strong*
       (`kMeterAccentWeakF`) before they overrule a feature majority
+
+### Build onsets from mira's own frames instead of a second Essentia pass
+
+Raised 2026-09-16, and it is a good catch. `Router.cpp` runs Essentia's `OnsetRate`,
+which does its own framing and its own full pass over the audio. Meanwhile
+`Descriptors.cpp` already computes **spectral flux per frame** in the shared
+Windowing->Spectrum pass -- and flux is *the* standard onset detection function. mira is
+computing the same quantity twice, with different framing, and throwing one away.
+
+- [ ] Peak-pick onsets from the flux mira already has, and drop the separate `OnsetRate`
+      pass. Same measurement, one less trip over the audio
+- [ ] **The real prize is precision.** `OnsetRate`'s hop quantises onsets to ~11.6 ms,
+      which is exactly why `pocket` is measured but never captioned: the middle two thirds
+      of the Amon Tobin corpus spans -2.4 to +2.0 ms, i.e. inside a single step
+      (ANALYSIS.md §5). Running the flux at hop 256 (5.8 ms) would halve that, and at 128
+      (2.9 ms) quarter it. That is the difference between "pocket is rounding" and
+      "pocket is a caption field"
+- [ ] Validate the new onsets the same way the grid was validated: they must still land on
+      sixteenths of a known grid. `DKP_100_*` loops are ground truth by filename -- the
+      current onsets sit ~10 ms early on those, consistently, which is the hop latency
+      this task is about removing
+- [ ] Re-check `kGrooveMinOnsets` afterwards: a finer hop finds more onsets, so the
+      threshold that currently gates short loops out may want moving
 
 ### Open question
 
