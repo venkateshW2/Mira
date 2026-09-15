@@ -126,6 +126,7 @@ private:
     juce::Label secondsName, stepsName, seedName, cfgName, apgName;
     juce::Label cfgHint, stepsHint;
     void updateHints();
+    void syncLoraStepRanges();
 
     // The trigger box is dataset-prep only (chooseEncodeFolder) and is never prepended
     // at generation. Typing it by hand is easy to forget, and forgetting it silently

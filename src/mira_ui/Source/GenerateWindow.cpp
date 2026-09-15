@@ -147,13 +147,17 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         // shape structure and arrangement, late steps shape timbre and texture -- so this
         // separates "did it change the music?" from "did it just recolour the surface?".
         for (auto* st : { &sl.minStep, &sl.maxStep }) {
-            st->setRange(1, 50, 1);
+            st->setRange(1, stepsSlider.getMaximum(), 1);
             st->setSliderStyle(juce::Slider::LinearHorizontal);
             st->setTextBoxStyle(juce::Slider::TextBoxRight, false, 40, 18);
             addAndMakeVisible(*st);
         }
         sl.minStep.setValue(1, juce::dontSendNotification);
-        sl.maxStep.setValue(8, juce::dontSendNotification);
+        // Full coverage, and it must TRACK the step count -- see syncLoraStepRanges().
+        // This used to be a hardcoded 8, matching the old steps default. Raising the
+        // steps default to 24 left the gate at 8, so the adapter ran for the first
+        // third of the schedule and the base model painted over it for the rest.
+        sl.maxStep.setValue(stepsSlider.getValue(), juce::dontSendNotification);
         tip(sl.minStep, "First step this LoRA applies to. Early steps shape structure.");
         tip(sl.maxStep, "Last step this LoRA applies to. Late steps shape timbre.");
     }
@@ -204,8 +208,9 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     };
     hint(cfgHint); hint(stepsHint);
     cfgSlider.onValueChange   = [this] { updateHints(); };
-    stepsSlider.onValueChange = [this] { updateHints(); };
+    stepsSlider.onValueChange = [this] { updateHints(); syncLoraStepRanges(); };
     updateHints();
+    syncLoraStepRanges();
 
     negativeLabel.setText("Avoid", juce::dontSendNotification);
     negativeLabel.setFont(juce::Font(12.0f));
@@ -731,6 +736,22 @@ void GenerateContent::updateHints() {
                     : s <= 30 ? "honest render"
                               : "best it gets, slow",
                       juce::dontSendNotification);
+}
+
+// A LoRA's step gate is meaningless in the abstract: "steps 1-8" covers everything on
+// an 8-step schedule and only the first third of a 24-step one. Whenever the schedule
+// length changes, a gate that was covering the whole run must keep covering it --
+// otherwise raising quality silently switches the adapter off partway through, which
+// looks exactly like the LoRA having got worse.
+void GenerateContent::syncLoraStepRanges() {
+    const auto steps = stepsSlider.getValue();
+    for (auto& sl : slots) {
+        const bool wasFullRange = sl.maxStep.getValue() >= sl.maxStep.getMaximum();
+        sl.minStep.setRange(1, steps, 1);
+        sl.maxStep.setRange(1, steps, 1);
+        if (wasFullRange || sl.maxStep.getValue() > steps)
+            sl.maxStep.setValue(steps, juce::dontSendNotification);
+    }
 }
 
 void GenerateContent::paint(juce::Graphics& g) {
