@@ -177,16 +177,19 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     };
     setupNumber(secondsSlider, 10, 380, 1, 30,
                 "How long the result is. CHANGING THIS RELOADS THE MODEL (~44s), and RAM grows with it.");
-    // Raised from 8. 8 is a sketching value -- fine for "is this roughly right", too
-    // blurry to judge a LoRA by, which is what this window is mostly used for.
-    setupNumber(stepsSlider, 4, 100, 1, 24,
-                "How much work goes into each render. 8 = rough sketch, 24 = honest, 50+ = best it gets. Slower as it rises.");
+    // 8, NOT a "better" number. This is the value the pipeline was tuned at and the
+    // output people already like; the ceiling is raised to 100 so more is available,
+    // but a new control must never change what the old defaults produced. Shipping 24
+    // here silently altered every render and, worse, desynced the LoRA step gate below.
+    setupNumber(stepsSlider, 4, 100, 1, 8,
+                "How much work goes into each render. 8 is the tuned default. Higher is slower and not automatically better.");
     setupNumber(seedSlider, 0, 100000, 1, 26,
                 "The random starting point. Same seed + same prompt = the same result every time. Keep it fixed when comparing checkpoints.");
-    // 1.0 is the worker's default and means guidance OFF. 4 is a usable middle: the
-    // prompt is followed without the brittleness that sets in high up.
-    setupNumber(cfgSlider, 1.0, 12.0, 0.5, 4.0,
-                "How strictly it follows your words. 1 = ignores them (this was the old hidden default), 4-7 = follows properly, 10+ = literal and can get harsh.");
+    // Defaults to 1.0 -- the value every generation before this control existed used,
+    // so exposing the dial changes nothing until it is deliberately moved. 3-5 is worth
+    // trying; 7 clips ~5% of samples on this pipeline and is a ceiling, not a target.
+    setupNumber(cfgSlider, 1.0, 12.0, 0.5, 1.0,
+                "How strictly it follows your words. 1 = the long-standing default, 3-5 = follows harder, 7+ = literal and starts to clip.");
     setupNumber(apgSlider, 1.0, 5.0, 0.1, 1.0,
                 "Smooths out the harshness when the dial above is high. Leave at 1 unless CFG is over ~7.");
 
