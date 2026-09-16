@@ -72,6 +72,7 @@ and should be read that way; do not "update" them, write a new one.
 
 | doc | what it is |
 |---|---|
+| [ACESTEP-INFERENCE-PLAN.md](ACESTEP-INFERENCE-PLAN.md) | **ACE-Step 1.5 research + a phased plan to run generation inside mira with no Python sidecar.** 2026-09-16. Proposal — nothing built. Phase 0 is a half-day listening test that can kill it |
 | [NOTES.md](NOTES.md) | UI research (SonikSearch, Tuva), SA3 caption format findings, underfit tag-key behaviour |
 | [sa3-studio/PACKAGING.md](sa3-studio/PACKAGING.md) | embed Python or port SA3 to C++? Measured 2026-09-13 |
 | [sa3-studio/SA3-INFERENCE-AND-TRAINING.md](sa3-studio/SA3-INFERENCE-AND-TRAINING.md) | how SA3 training and inference work, verified against source, 2026-09-12 |

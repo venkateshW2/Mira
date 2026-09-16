@@ -74,6 +74,28 @@ private:
         bool multi = false;
     };
 
+    // The picker is a SHORTCUT INTO the text box, never the source of truth: build()
+    // reads the text and nothing else. So anything that writes the text behind the
+    // picker's back -- Clear, Randomise -- has to put the picker back in step, or it sits
+    // showing a value the field no longer holds.
+    //
+    // That is not merely cosmetic. A ComboBox does NOT fire onChange when you re-select
+    // what is already selected, so a stale picker makes the value it is stuck on
+    // UNPICKABLE: choose "tonal", press Clear, choose "tonal" again -- nothing happens,
+    // and the row looks broken. Call this after every programmatic write to `value`.
+    static void syncPicker(Field& f);
+
+    // Nineteen fields at 27px need 513px; the layout gave them ~414. removeFromTop on an
+    // exhausted rectangle returns an empty one, so the last four -- Motion, Keyscale, BPM
+    // and the free-text tail -- were laid out at zero height: present, invisible, and
+    // reported as "BPM and key are missing from the prompt builder". They were never
+    // missing. A Viewport means adding a field can never again silently delete one.
+    struct FieldsHolder : juce::Component {
+        void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff1a1a1a)); }
+    };
+    FieldsHolder fieldsHolder;
+    juce::Viewport fieldsView;
+
     const MiraLookAndFeel& laf;
     juce::Label headerLabel;
     std::vector<std::unique_ptr<Field>> fields;
@@ -104,7 +126,7 @@ public:
         content = existing;
         setContentNonOwned(content, false);
         setResizable(true, false);
-        centreWithSize(660, 560);
+        centreWithSize(660, 680);   // tall enough for all 19 rows; the Viewport covers smaller screens
         setAlwaysOnTop(true);
         setVisible(true);
         toFront(true);

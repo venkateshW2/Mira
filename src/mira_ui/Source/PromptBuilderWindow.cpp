@@ -25,6 +25,11 @@ PromptBuilderContent::PromptBuilderContent(const MiraLookAndFeel& l, juce::File 
     headerLabel.setColour(juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible(headerLabel);
 
+    // Every field row is added to fieldsHolder, not to `this`, so the list scrolls.
+    fieldsView.setViewedComponent(&fieldsHolder, false);
+    fieldsView.setScrollBarsShown(true, false);
+    addAndMakeVisible(fieldsView);
+
     // Order here is the order they are emitted in. underfit shuffles tag order during
     // training, so this is a readability choice, not a correctness one.
     // multi: blending two LoRAs means both their triggers in one prompt, and picking
@@ -64,7 +69,7 @@ PromptBuilderContent::PromptBuilderContent(const MiraLookAndFeel& l, juce::File 
     addAndMakeVisible(constructButton);
 
     clearButton.onClick = [this] {
-        for (auto& f : fields) f->value.clear();
+        for (auto& f : fields) { f->value.clear(); syncPicker(*f); }
         previewLabel.setText({}, juce::dontSendNotification);
     };
     addAndMakeVisible(clearButton);
@@ -124,10 +129,10 @@ PromptBuilderContent::Field& PromptBuilderContent::addField(const juce::String& 
 
     f.label.setText(shown, juce::dontSendNotification);
     f.label.setFont(juce::Font(12.0f));
-    addAndMakeVisible(f.label);
+    fieldsHolder.addAndMakeVisible(f.label);
 
     f.value.setMultiLine(false);
-    addAndMakeVisible(f.value);
+    fieldsHolder.addAndMakeVisible(f.value);
 
     if (vocabKey.isNotEmpty()) {
         const auto values = byFrequency(vocabKey);
@@ -161,10 +166,25 @@ PromptBuilderContent::Field& PromptBuilderContent::addField(const juce::String& 
                     fp->value.setText(picked);   // picker stays on the chosen item
                 }
             };
-            addAndMakeVisible(f.picker);
+            fieldsHolder.addAndMakeVisible(f.picker);
         }
     }
     return f;
+}
+
+void PromptBuilderContent::syncPicker(Field& f) {
+    if (f.picker.getNumItems() == 0) return;   // free-text row (BPM, the tail): no picker
+
+    // Multi fields always return to their "+ add..." prompt -- they are an ADD action and
+    // have no single current value to show. Single fields point at whatever the text now
+    // says, or back to "-- none --" when it says nothing or something hand-typed.
+    int id = 1;
+    const auto text = f.value.getText().trim();
+    if (!f.multi && text.isNotEmpty()) {
+        for (int i = 0; i < f.picker.getNumItems(); ++i)
+            if (f.picker.getItemText(i) == text) { id = f.picker.getItemId(i); break; }
+    }
+    f.picker.setSelectedId(id, juce::dontSendNotification);
 }
 
 PromptBuilderContent::Vocab PromptBuilderContent::pooled(const juce::String& field) const {
@@ -232,6 +252,9 @@ void PromptBuilderContent::randomise() {
         }
         f->value.setText(picked.joinIntoString(", "), juce::dontSendNotification);
     }
+    // Every branch above wrote straight into the text box, so each picker may now be
+    // showing something the field no longer says. Put them back in step.
+    for (auto& f : fields) syncPicker(*f);
     previewLabel.setText("rolled - edit anything, then Construct", juce::dontSendNotification);
 }
 
@@ -264,9 +287,20 @@ void PromptBuilderContent::resized() {
     previewLabel.setBounds(r.removeFromBottom(46));
     r.removeFromBottom(6);
 
+    // The rows go inside the Viewport, sized to what they ACTUALLY need rather than to
+    // what happens to be left over -- that is the whole fix. When the window is tall
+    // enough the holder matches it exactly and no scrollbar appears.
+    fieldsView.setBounds(r);
+    constexpr int kRowHeight = 27;   // 24 for the row + 3 of gap
+    const int needed = static_cast<int>(fields.size()) * kRowHeight;
+    const bool scrolls = needed > r.getHeight();
+    fieldsHolder.setSize(r.getWidth() - (scrolls ? fieldsView.getScrollBarThickness() : 0),
+                         juce::jmax(needed, r.getHeight()));
+
+    auto inner = fieldsHolder.getLocalBounds();
     for (auto& f : fields) {
-        auto line = r.removeFromTop(24);
-        r.removeFromTop(3);
+        auto line = inner.removeFromTop(24);
+        inner.removeFromTop(3);
         f->label.setBounds(line.removeFromLeft(86));
         if (f->picker.getNumItems() > 0) {
             f->picker.setBounds(line.removeFromLeft(190).reduced(0, 1));
