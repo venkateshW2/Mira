@@ -281,6 +281,7 @@ add_executable(mira
   mira/analyze/Router.cpp
   mira/analyze/ActiveRegions.cpp
   mira/analyze/Descriptors.cpp
+  mira/analyze/Onsets.cpp
   mira/analyze/Mir.cpp
   mira/analyze/Key.cpp
   mira/analyze/Chords.cpp

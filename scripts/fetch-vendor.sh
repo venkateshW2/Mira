@@ -17,6 +17,16 @@
 #     construction/destruction within one process is not a safe pattern). Patched to a
 #     function-local static Env (construct once for the process, never churn) instead of
 #     a per-instance member — see the comment at that patch site for the full story.
+#   - vendor/beat_this_cpp/Source/beat_this_api.{h,cpp}: added `process_audio_both()`,
+#     which decodes BOTH postprocessors (madmom-compatible DBN and the minimal
+#     peak-picker) from ONE model pass, plus the `decode_dbn`/`decode_minimal` helpers
+#     and `Impl::logits` it is factored out of. mira needs both grids to run the
+#     grid-stability cross-check (Mir.cpp): below 0.90 stability the minimal grid is
+#     decoded too and the steadier one wins. Running the network twice to see both would
+#     be pure waste. **Without this patch mira does not compile** -- Mir.cpp calls
+#     process_audio_both directly.
+#     Apply with:
+#       git -C vendor/beat_this_cpp apply ../../scripts/vendor-patches/beat_this_cpp-process_audio_both.patch
 # Check whether upstream has fixed any of these before re-patching.
 set -euo pipefail
 

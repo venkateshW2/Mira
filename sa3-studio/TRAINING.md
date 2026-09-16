@@ -304,6 +304,24 @@ curl -s -X POST http://127.0.0.1:8787/api/datasets/import \
 
 `mode` is `preencoded_import` for latents made elsewhere (mira's MLX pre-encode), which
 **symlinks** a shadow under `state/datasets/<name>/latents/<model>/` — no extra disk.
+
+> **Never rsync into the shadow.** Learned 2026-09-17 by doing it. The shadow is symlinks
+> the import created; writing real files into it leaves the registration describing
+> content that is no longer there, and `num_files` stale. To change a dataset's contents,
+> replace the folder under `/home/workspace/datasets/` and **re-import** — the API call
+> is the only supported way to change what a dataset record points at.
+>
+> **A dataset cannot be deleted while any run references it.** `POST /api/datasets/<id>/delete`
+> returns `{"error": "Cannot delete: dataset is in use by training run(s): amt"}`. Delete
+> the run first, or import the replacement under a new name. Importing under a new name is
+> usually right anyway — it keeps the old run's history intact for comparison.
+>
+> **Re-analysis must come BEFORE re-tagging.** `retag-latents.py` rewrites captions *from
+> the mira database*; it cannot fix a corpus whose database rows are stale. Trent Reznor /
+> Atticus was encoded 2026-09-16 with sidecars showing `groove: programmed` on nearly every
+> file — not a measurement, but the old Essentia-onset artefact being periodic. Check
+> `$.rhythm.beat_grid_stability` exists and the onset rate is ~9/s (not ~2-5/s) before
+> trusting any caption.
 `underfit_native_import` registers in place; `bare_import` is for raw latents with no
 sidecars. Delete a bad record with `POST /api/datasets/<id>/delete`.
 
@@ -721,6 +739,48 @@ half the size, so every cue was shown 1.9x more often. `dkt` is good through ste
 7,000-8,000 (1,000-1,142 exposures) and gone by 10,000.
 
 **Working target: 700-900 exposures per cue.** Then choose inside that range by ear.
+
+> ### ⚠️ SUPERSEDED 2026-09-17 — count repeats per WINDOW, not exposures per cue
+>
+> Everything above is measured on two datasets, **both film scores** (Mad Max 52 cues,
+> Dark Knight 28). It does not transfer to a large or a short-crop corpus, because it
+> counts how often a FILE was drawn and says nothing about how often the model saw the
+> same 30 seconds.
+>
+> ```
+> windows        = sum over files of max(1, duration / crop_seconds)
+> repeats/window = max_steps * batch / windows
+> ```
+>
+> | run | files | steps | crop | windows | repeats/window | verdict |
+> |---|---|---|---|---|---|---|
+> | `xyr-short` Mad Max | 52 | 10,000 | 512 | 255 | **157** | best LoRA to date |
+> | `dkt` Dark Knight | 28 | 10,000 | 512 | 177 | **227** | memorised |
+> | `amt` v1 Amon Tobin | 94 | 20,000 | 512 | 565 | **142** | weak |
+>
+> **This reverses the reading of `amt` v1.** On exposures-per-cue it looked deep at 833 —
+> mid-target, so "more steps will overfit". On repeats-per-window it sits at 142, BELOW
+> the best LoRA's 157: slightly UNDER-trained. Amon's corpus is 448 minutes against Dark
+> Knight's 140, and exposures-per-cue is blind to that.
+>
+> **The crop decides whether a step count is safe.** `amt` at 35,000 steps is 158
+> repeats/window at crop 320 and 248 at crop 512 — past `dkt`'s memorisation line. Same
+> steps, opposite outcome.
+>
+> **Sampling is uniform over FILES, not duration**, so a short file's single window is
+> drawn as often as a long file's forty. Files with fewer than 4 distinct windows are the
+> ones actually being memorised; set the crop to clear them. At crop 512 Last of Us had
+> **41 of 58** files in that state.
+>
+> Step timing, calibrated from two measured A30 points (1.23 s/it @ 512, 3.17 s/it @ 2048):
+> `t = 0.584 + 0.00126 * seq`. Fixed overhead dominates at short crops, so halving the
+> crop drops step time only ~20%, not 50%. Validated on `amt-v2`: predicted 0.99 s/it at
+> crop 320, measured 1.02.
+>
+> **157 repeats/window is still n=1** — it comes from `xyr-short` alone. `amt-v2` and the
+> Atticus run are what test whether it transfers off film scores.
+>
+> Full sizing table per dataset: TASKS.md Phase 8.
 
 Worked examples at batch 4:
 

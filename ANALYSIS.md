@@ -135,7 +135,7 @@ That discipline is what caught the groove bug described in §6.
 
 | field | words | measured from | thresholds |
 |---|---|---|---|
-| `groove` | organic / steady / programmed | onset phase histogram peak/uniform | 1.75, 2.65 |
+| `groove` | organic / steady / programmed | onset phase histogram peak/uniform, measured against the DETECTED beats | 1.90, 2.45 |
 | `swing` | straight / light swing / swung | position of the off-beat 8th | 0.51, 0.55 |
 | `low_end` | light / balanced / heavy | 20–80 Hz share of spectral energy | 0.20, 0.34 |
 | `motion` | static / shifting / morphing | mean frame-to-frame spectral flux | 0.14, 0.20 |
@@ -145,7 +145,16 @@ anywhere at all; the most rigidly programmed track in the calibration corpus rea
 This is the axis that separates programmed from played, and nothing else captures it.
 
 **`swing`** — where the off-beat 8th actually sits inside the beat. 50% is dead straight,
-66.7% is full triplet swing. Anything above ~54% is audible. This could not be measured
+66.7% is full triplet swing. Anything above ~54% is audible.
+
+Its two thresholds are the **one pair in this document that is not a measured p33/p66**,
+and that is deliberate. On the Amon corpus the tertiles are 0.494 and 0.504: cutting
+there would call a third of the library "swung" on an off-beat sitting 0.5% late, about
+a millisecond at 86 BPM. That is not swing, it is noise. The cuts stay on audibility
+(0.51 / 0.55), and the corpus comes out 68 straight / 13 light swing / 0 swung — nothing
+reaches 0.55 because nothing in it actually swings. **By §3's own rule `swing` is a weak
+field here**, carrying anything but "straight" on 13 of 81 files. It earns its slot only
+when a corpus that genuinely swings is measured. This could not be measured
 before: `beat_this_beats` holds *beats*, so an 8th-note swing is invisible to it no matter
 how the arithmetic is done.
 
@@ -167,11 +176,15 @@ drop if four turn out to be too many.
 
 Stored in `files.machine`, deliberately absent from every caption:
 
-- **`pocket`** (mean signed offset from the nearest 16th). The middle two thirds of the
-  calibration corpus spans −2.4 to +2.0 ms, while the onset detector quantises at
-  ~11.6 ms (Essentia `OnsetRate`, hop 512 @ 44.1 kHz). **Two thirds of the files sit
-  inside a single quantisation step** — the field would be measuring rounding, not feel.
-  Only the ±30 ms tails are real. Revisit if onsets ever get finer.
+- **`pocket`** (mean signed offset from the nearest 16th). Held back originally because
+  the middle two thirds of the corpus spanned −2.4 to +2.0 ms while Essentia's
+  `OnsetRate` quantised at ~11.6 ms — two thirds of the files sat inside a single
+  quantisation step, so the field measured rounding rather than feel.
+  **The onsets did get finer (2026-09-17).** `mira::detectOnsets` runs at hop 256
+  (5.8 ms at 44.1 kHz), halving the step. That removes the original objection, but the
+  field is still uncaptioned pending a fresh measurement of its spread against the new
+  onsets — the point of §5 is that a field earns a slot by varying, and that has not been
+  re-measured yet. Open in TASKS.md Phase 7.
 - **`flux_stddev`** — r=0.71 with `flux_mean`. The same axis twice.
 - **`syncopation`** — r=−0.46 with `groove`. Add only if `groove` alone does not respond.
 - **`onset_times`** — the raw evidence, kept so grids can be re-derived later without
@@ -185,31 +198,68 @@ first.
 
 ## 6. The BPM correction
 
-`bpm` now prefers the tempo of the grid the **onsets** lock to, when they lock at all.
+> **Rewritten 2026-09-17.** The version of this section written on 2026-09-15 is
+> retracted below rather than deleted, because how it was wrong is the useful part.
 
-Measured over the 94-file Amon Tobin / Two Fingers corpus, against the grid found by
-maximising onset phase concentration:
+`bpm` is `60 / median(beat interval)` over `beat_this`'s detected beats — the
+reference implementation's `bpm_of`, unchanged. It is gated on `beat_grid_stability`
+(the share of beat intervals within 25% of the median): below 0.90 the grid is not one
+grid, and **no BPM is emitted at all**. On the Amon Tobin corpus that omits 36 of 93.
 
-| estimator | agrees with the fitted grid |
+**A wrong BPM is worse than no BPM**: it teaches a false association rather than simply
+omitting one. That principle survived; the measurement under it did not.
+
+### What the 2026-09-15 version claimed, and why it was wrong
+
+It claimed `bpm` should prefer a grid fitted to the onsets, on this evidence:
+
+| estimator | agreed with the fitted grid |
 |---|---|
 | `essentia_bpm` | 77 / 94 (82%) |
 | `beat_this_bpm` | 12 / 94 (13%) |
 
-`beat_this` remains the default everywhere else — it is the better estimator on songs,
-which is what it was chosen for — but it is unreliable on programmed electronic material.
-Two Fingers is a ~79.5 BPM catalogue it reported as 86.5, 90.8, 104.8, 127.0 and 130.2
-across one record.
+and that against `beat_this_beats` the onset phase histogram was **flat on all 94 files**
+(median peak/uniform 1.17, ceiling 1.36), while the fitted grid scored 1.93 and won 94
+of 94.
 
-**A wrong BPM is worse than no BPM**: it teaches a false association rather than simply
-omitting one.
+**Every one of those numbers was measured against onsets that were themselves wrong.**
+They came from Essentia's `OnsetRate`, which inherits Essentia's tempo error. Tested
+against six tracks whose tempo the user knows, those onsets phase-locked to the true
+tempo at R = 0.001–0.024 — zero — and instead peaked near a constant 159 BPM across five
+unrelated songs. A constant answer across different music is an algorithm artefact.
 
-The same measurement also exposed why the groove fields could not be built earlier. Using
-`beat_this_beats` as the grid, the onset phase histogram was **flat on all 94 files**
-(median peak/uniform 1.17, ceiling 1.36) — so swing read 0.54–0.57 for everything, an
-orchestral title cue scoring identically to a programmed halftime beat. Fitting the grid
-to the onsets instead gives a median of 1.93 and a maximum of 6.93, and wins on **94 of
-94**. Files analyzed without `--groove` have no `onset_times` and keep the old behaviour
-exactly.
+So the table above says only that `essentia_bpm` agrees with a grid fitted to Essentia's
+own onsets, which is circular. And the fitted grid "won" because the artefact is
+periodic, and a constant-period search finds a clean period in anything periodic.
+
+### The same measurement, redone with correct onsets
+
+`mira::detectOnsets` (Onsets.h) replaced `OnsetRate`: one STFT, log-mel, positive first
+difference, adaptive-threshold peak picking, hop 256, centred frames. No tempo model
+anywhere upstream of it. Re-measuring the identical quantity on the identical 94 files:
+
+| grid | 2026-09-15 (Essentia onsets) | 2026-09-17 (own onsets) |
+|---|---|---|
+| `beat_this_beats` | 1.17 median — "flat, the null result" | **2.18 median** |
+| grid fitted to onsets | 1.93 median — "wins 94/94" | **1.23 median** |
+
+Exactly backwards. The detected beats are the better grid, and `analyzeGrooveOnGrid`
+now measures groove, swing, pocket and syncopation against them. A constant period
+cannot follow a performance; detected beats can.
+
+**What stands from the old section:** the flat-histogram bug was real, swing genuinely
+did read 0.54–0.57 for everything, and an orchestral cue genuinely did score the same as
+a programmed beat. The cause was misdiagnosed as the grid when it was the onsets.
+
+### The lesson, stated plainly
+
+Every check that passed in the old version compared one estimator against another, or
+against a grid derived from the same onsets. Those share assumptions, so they can agree
+and be wrong together — and they were, for a week. The bug was found in under an hour
+once it was measured against tempos a human knew.
+
+**A measurement that has only ever been checked against its own inputs has not been
+checked.**
 
 ---
 
@@ -277,8 +327,11 @@ puts one value on all 94 files, which by §3 makes the word useless. The split:
 | Material, World, Harmonic language, Signature | folder — constant, the artist's identity |
 | Groove, Swing, Low end, Motion, BPM | per file — they vary, which is what makes them controls |
 
-Across the calibration corpus: `groove` lands 34% / 32% / 15% across its three buckets
-(19% omitted), `swing` 27% / 27% / 28%, and **all nine** groove × swing combinations
+Across the calibration corpus (re-measured 2026-09-17 against the corrected onsets):
+`groove` lands 19% / 33% / 34% across its three buckets (14% omitted, gated on grid
+strength), `swing` is 73% straight / 14% light swing / 0% swung (14% omitted). The older
+figures below describe the pre-2026-09-17 measurement and no longer hold: `groove` 34% /
+32% / 15%, `swing` 27% / 27% / 28%, and **all nine** groove × swing combinations
 occur. That spread is the whole reason these are worth captioning.
 
 ---
@@ -289,14 +342,17 @@ Off by default; each costs something.
 
 | flag | adds | cost |
 |---|---|---|
-| `--groove` | `onset_times`, so groove/swing/BPM can be fitted | free (Essentia already produces them); ~12 KB JSON per 5-min track |
+| (default since 2026-09-17) | `onset_times` from mira's own flux, so groove/swing can be measured against the beat grid | a real pass over the audio at hop 256, no longer free; ~24 KB JSON per 5-min track. `--no-groove` opts out |
 | `--recheck-tempo` | Essentia's own BPM alongside beat_this | small |
 | `--dclap` | second embedding space, for `similar --text` | 27% of analysis time |
 | `--chords` | chord changes | 15.0s on a 5:08 song |
 | `--transcribe` | note events | 3.7s on a 5:08 song |
 
-**Run `--groove` and `--recheck-tempo` on anything beat-driven.** Between them they are
-what makes the groove fields and the corrected BPM possible, and they cost almost nothing.
+**Onsets are on by default now; `--recheck-tempo` is still worth it on anything
+beat-driven.** Onsets stopped being a free by-product of Essentia when detection moved to
+mira's own flux, but they are the evidence the beat grid is checked against, so every
+rhythmic file should be producing them. `--no-groove` is for bulk one-shot scans where
+none of it means anything.
 
 ---
 

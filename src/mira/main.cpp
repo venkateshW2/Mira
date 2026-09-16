@@ -97,7 +97,7 @@ void printUsage() {
         "        index files, no analysis; --as stem declares them delivery stems (§12.3)\n"
         "  mira analyze [--db <path>] [--force] [--limit N] [--content-type <type>]\n"
         "               [--paths-from <file>] [--dclap] [--chords] [--transcribe]\n"
-        "               [--recheck-tempo] [--groove] [--verbose] [--progress-stages]\n"
+        "               [--recheck-tempo] [--no-groove] [--verbose] [--progress-stages]\n"
         "        --paths-from <file>: analyze exactly the files listed (one path per\n"
         "        line), always re-analyzing regardless of analyzed_at, ignoring --force/\n"
         "        --content-type/--limit; a path not already scanned is skipped\n"
@@ -112,11 +112,12 @@ void printUsage() {
         "        Essentia's RhythmExtractor2013 for comparison (bpm_ratio); --dclap adds\n"
         "        the second (DCLAP) embedding space, off by default because it is 27% of a\n"
         "        file's analysis and feeds only `mira similar --embedding dclap`/--text,\n"
-        "        never a caption or a label; --groove stores every onset's time\n"
-        "        (onset_times) so swing/pocket/syncopation can be derived against the\n"
-        "        beat grid -- costs no extra analysis time, since Essentia already\n"
-        "        produces them on the way to onset_count, but adds ~12 KB of JSON per\n"
-        "        5-minute track; --chords and\n"
+        "        never a caption or a label; onsets (onset_times) and the groove\n"
+        "        measurements over them are ON BY DEFAULT -- they are mira's own flux\n"
+        "        detection (not Essentia's, which inherited a tempo error) and they are\n"
+        "        what the beat grid gets checked against; --no-groove skips them for a\n"
+        "        bulk scan of one-shots, saving ~12 KB of JSON per 5-minute track;\n"
+        "        --chords and\n"
         "        --transcribe are opt-in (15.0s/3.7s on a 5:08 song, vs 0.4s for key alone\n"
         "        — see TASKS.md); --content-type requires --force; --progress-stages\n"
         "        prints machine-readable `starting:`/`stage:` lines to stdout (what\n"
@@ -425,12 +426,22 @@ int runAnalyze(const std::vector<std::string>& args) {
     bool runTranscription = false;
     bool progressStages = false;
     bool runRecheckTempo = false;
-    // --groove. Stores every onset's time alongside the beat grid, which is what makes
-    // swing/pocket/syncopation computable later (Router.h explains why). Costs no extra
-    // analysis time -- Essentia already produces these on the way to onset_count -- but
-    // adds roughly 12 KB of JSON per five-minute track, so it is opt-in rather than
-    // silently fattening every row in a library that will never ask a groove question.
-    bool runGroove = false;
+    // Onsets and the groove measurements over them. DEFAULT ON since 2026-09-17, where
+    // it was opt-in (`--groove`) before.
+    //
+    // It was opt-in because the onsets were Essentia's, cost nothing extra to keep, and
+    // were worth ~12 KB of JSON per five-minute track only if someone was going to ask a
+    // groove question. That reasoning no longer holds in either direction. mira now
+    // computes its own onset envelope (Onsets.h) because Essentia's inherited a tempo
+    // error, so the onsets are a real analysis stage rather than a free by-product --
+    // and they are the evidence the beat grid is checked against, which is a question
+    // every rhythmic file should be answering whether or not anyone asked it. A grid
+    // with nothing to check it against is exactly what let a confidently wrong tempo
+    // stand for a week.
+    //
+    // `--no-groove` still turns it off, for a bulk scan of one-shots where none of it
+    // means anything.
+    bool runGroove = true;
     std::optional<std::string> contentTypeFilter;
     std::optional<int> limit;
     // mira_ui's Analyze button (TASKS.md Phase 5): "for selected files or the folder" —
@@ -460,7 +471,9 @@ int runAnalyze(const std::vector<std::string>& args) {
         } else if (arg == "--recheck-tempo") {
             runRecheckTempo = true;
         } else if (arg == "--groove") {
-            runGroove = true;
+            runGroove = true; // kept so existing scripts and the UI keep working
+        } else if (arg == "--no-groove") {
+            runGroove = false;
         } else if (arg == "--content-type" && i + 1 < args.size()) {
             contentTypeFilter = args[++i];
         } else if (arg == "--limit" && i + 1 < args.size()) {

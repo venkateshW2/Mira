@@ -2893,34 +2893,44 @@ single piece of work left and the one the user has raised most often.
 
 ## Phase 7 — meter, bar lines, and grid confidence
 
-> ## ⛔ OPEN BUG — start here (2026-09-16)
+> ## ✅ THE TEMPO BUG — closed 2026-09-17, 6/6 against the user's ground truth
 >
-> **The tempo detection is wrong, and it is confidently wrong.** Stated by the user on
-> tracks whose tempo they know:
+> Settled the way the 2026-09-16 note said to settle it: the user supplied six tracks with
+> the tempo they know, and every stage was measured against THAT list rather than against
+> another estimator. Four independent faults, all fixed. See CLAUDE.md's 2026-09-17 entry
+> for the table and the reasoning; the short version:
 >
-> > *"the tempo detection is not correct and its confidently showing wrong... I know the
-> > tempo of the song and its wrong — essentia is wrong and onset cant come from essentia
-> > because it detecting tempo wrong period. the meter algorithm also your doing is wrong."*
+> - [x] Onsets came from Essentia's `OnsetRate` and inherited its tempo error -- the
+>       user's exact claim, confirmed at R = 0.001-0.024 against their tempos. Replaced by
+>       `mira::detectOnsets` (`src/mira/analyze/Onsets.h`): own flux, hop 256, centred
+>       frames, no tempo model anywhere upstream of it
+> - [x] `beat_this_bpm` was the MEAN beat interval, averaging across two octaves. Now an
+>       octave-folded least-squares fit (`fitBeatPeriod`), which also escapes the 50 fps
+>       quantisation that makes 87 BPM unreportable by any median
+> - [x] Octave chosen by a log prior at 120 BPM (`pickTempoOctave`), labelled a prior.
+>       Downbeats measured and found useless for this -- the DBN halves the bar with the
+>       beat
+> - [x] `gridStability` stored: 0.99/1.00/1.00 on the correct grids, 0.64/0.67/0.85 on the
+>       wrong ones. mira's first confidence signal about its own beats
+> - [x] Cross-check against the minimal grid below 0.90 stability, both decoded from one
+>       model pass (`process_audio_both`)
+> - [x] madmom needed no porting -- `vendor/beat_this_cpp` already carries a
+>       madmom-compatible DBN whose config and activation match the reference exactly
 >
-> **Everything below this line is suspect until that is settled**, because all of it —
-> groove, swing, the fitted grid, meter — is built on the tempo and the onsets.
+> **Still open, and this is where to pick up:**
 >
-> **Why the evening's measurements did not settle it:** every one of them compared an
-> estimator against another estimator, or against a grid derived from the same onsets.
-> Those can all agree and still be wrong together. No test this session used a tempo a
-> human knows to be correct, except the `DKP_100_*` loops (tempo in the filename) — and
-> that one was decisive in minutes.
->
-> **Do first, before touching any code:**
->
-> - [ ] Get a list of tracks from the user with the tempo they KNOW each one is
-> - [ ] Measure `essentia_bpm`, `beat_this_bpm`, the fitted grid and the raw onsets
->       against that list — not against each other
-> - [ ] Then decide what is broken. On the table: onsets come from Essentia's `OnsetRate`
->       (the user's specific claim is that they inherit its tempo error), the octave
->       choice in `pickBeatOctave`, and the meter port in `Meter.cpp`
->
-> Do not defend the measurement. If it is wrong on a track the user knows, it is wrong.
+> - [ ] **Look at the bars ruler in a running MIRA.** Written, wired, compiles, NOT seen
+>       rendering (convention 8). Right-click the waveform -> Ruler -> "in bars"
+> - [ ] **Re-analyse the library.** Only the six ground-truth tracks have been re-run.
+>       Everything else still carries Essentia onsets and a mean-interval tempo, so every
+>       stored `groove`/`swing`/`pocket`/`low_end`/`motion` is measured against the old
+>       artefact
+> - [ ] Re-check `kGrooveMinOnsets` and every threshold in `CaptionFields.h` derived from
+>       onsets -- the distributions they were set from no longer exist
+> - [ ] Surface `beat_grid_stability` in File Details and on the waveform, and gate the
+>       groove fields on it
+> - [ ] Widen the ground-truth list past six Amon Tobin / Two Fingers tracks. Six is six
+>       more than before, but it is one artist
 
 
 Opened 2026-09-16. **Not a PRD phase** — like Phase 6, this is work the PRD's §9 plan did
@@ -2991,7 +3001,9 @@ tool alone: **their meter layer on mira's fitted grid.**
       electronic is a different failure from reading the wrong METER on ordinary material
 - [ ] Validate across all 183 NIN files (spot-checked 3 so far, below) — the corpus with real odd meters. La Mer (6/8)
       and The Frail (6/8) are known cases; March Of The Pigs (7/8 + 4/4) is the known
-      hard one
+      hard one. **BLOCKED until NIN is re-analysed** (2026-09-17): all 183 were analysed
+      under Essentia onsets and a mean-interval tempo, so any meter measured against that
+      grid is measuring the old artefact. Re-analysis queued behind Amon
 - [x] Parity-checked against the reference on identical inputs: meter, pre-snap, ACF
       winner, per-feature votes, strongest feature and the arbitration flag all match
       exactly on 4/4 NIN tracks, including both arbitration cases
@@ -3008,8 +3020,12 @@ tool alone: **their meter layer on mira's fitted grid.**
 - [x] Stored as `$.rhythm.meter_bar_spread`. It discriminates on the first three files
       tried: 1.016 / 1.247 / 2.449, with The Frail correctly over the 1.5 line
 - [x] Surface it in the waveform view next to the groove histogram
-- [ ] Surface it in the waveform view next to the groove histogram, and gate any
-      meter-derived caption field on it
+- [x] Surfaced 2026-09-17 as `grid NN%` in the ruler's own readout, beside the BPM and
+      the meter, amber below 90% -- not in the groove panel, which is a diagnostic and is
+      now off by default. It qualifies every line on screen, so it is always visible
+- [ ] Gate any meter-derived caption field on it -- MOOT until there is one. Task 1's
+      last item ("only then decide whether `meter` becomes a caption field") is still
+      open, and on a library that is ~90% 4/4 it may never earn a slot (ANALYSIS.md §3)
 
 **2b. Surface meter and bar spread** — done 2026-09-16
 
@@ -3031,17 +3047,37 @@ is the same half-finished state `palette` and `timing` sat in for a week.
       Parity with the reference is unaffected (its own MIN_CYCLES gates only the
       arbitration contenders; extending it to the peak search is a deliberate addition)
 
-**3. Bar lines and downbeat phase**
+**3. Bar lines and downbeat phase** — done 2026-09-17
 
-- [ ] Port `choose_phase` / `bar_lines_from` — chooses the downbeat between tracker
-      downbeats and accent evidence, then lays bar lines at (phase mod meter)
-- [ ] Draw bar lines in the waveform view; mira currently numbers bars off
-      `beat_this_downbeats` with no phase reasoning at all
+- [x] Port `choose_phase` / `bar_lines_from` — `mira::choosePhase` in `Meter.h`/`Meter.cpp`.
+      Downbeat residues narrow beat 1 down; the accents pick between what is left, and
+      the accents are ALWAYS asked when the downbeats sit on more than one position,
+      because on a 6 they land on two positions at 50% each and that is a tie rather
+      than confidence. Returns the bar lines, their median length and their spread
+- [x] Draw bar lines in the waveform view. **This was the whole "the grids don't align
+      with the waveform" problem**, and the fix is one line of the reference:
+      `bar_lines = beats[phase::meter]` -- every meter-th DETECTED beat, not a grid laid
+      out from the BPM. A BPM grid is a straight line and a performance is not, so it can
+      agree at exactly one point and drifts away either side of it. Bar lines that ARE
+      beats sit on the music by construction
+- [x] The ruler numbers the same array the grid draws, so a bar number and its own line
+      can no longer land in different places (they could, and did)
+- [x] Three view bugs found while doing it, all of which made the grid invisible rather
+      than wrong: it was painted BEFORE the waveform so the near-white peaks covered it;
+      it was drawn in `text` at 18% alpha, i.e. light-on-light; and the ruler was 18 px,
+      with no room for a number beside a tick. Grid now paints last, bars are amber at
+      75%, beats are dark, ruler is 22 px with a tinted band
+- [x] Bar labels snap to a power-of-two step (1, 5, 9, 17...) rather than "whatever fits
+      since the last one", which was putting numbers on bars 37, 41, 45
 
 **4. The DBN — last, and only if 1-3 prove out**
 
-- [ ] Reimplementing madmom's `ml/hmm` Viterbi plus `beats_hmm` state spaces in C++ is
-      the real cost here. Do not start it to unblock 1-3, which need none of it
+- [x] **No port needed -- it was already there.** `vendor/beat_this_cpp/Source/DBNPostprocessor.cpp`
+      is a madmom-compatible Viterbi, and its config (55-215 BPM, beats_per_bar {3,4},
+      transition_lambda 100, fps 50) and its activation formula (`max(bp - dp, eps/2)`,
+      the subtraction the reference warns about getting wrong) match the reference
+      exactly. mira had been calling it with `use_dbn=true` all along. The failure was
+      never the DBN; it was what mira did with its output
 - [ ] Before committing: test bardetect's DBN grid against mira's fitted grid on
       material that is NOT halftime electronic — NIN, LOTR, Last of Us — using the same
       neutral onset-phase-concentration test. The Two Fingers result says nothing about
@@ -3068,20 +3104,34 @@ which does its own framing and its own full pass over the audio. Meanwhile
 Windowing->Spectrum pass -- and flux is *the* standard onset detection function. mira is
 computing the same quantity twice, with different framing, and throwing one away.
 
-- [ ] Peak-pick onsets from the flux mira already has, and drop the separate `OnsetRate`
-      pass. Same measurement, one less trip over the audio
-- [ ] **The real prize is precision.** `OnsetRate`'s hop quantises onsets to ~11.6 ms,
+- [x] Done 2026-09-17, and for a stronger reason than saving a pass: the `OnsetRate`
+      onsets were measuring an artefact. `mira::detectOnsets` (`Onsets.h`) computes its
+      own log-mel flux at hop 256 with centred frames and adaptive-threshold peak
+      picking. NOT reusing `computeSpectralAverages`' frames -- those run at hop 1024
+      (23.2 ms), which is COARSER than the Essentia pass being removed
+- [x] **The real prize is precision.** `OnsetRate`'s hop quantises onsets to ~11.6 ms,
       which is exactly why `pocket` is measured but never captioned: the middle two thirds
       of the Amon Tobin corpus spans -2.4 to +2.0 ms, i.e. inside a single step
       (ANALYSIS.md §5). Running the flux at hop 256 (5.8 ms) would halve that, and at 128
       (2.9 ms) quarter it. That is the difference between "pocket is rounding" and
       "pocket is a caption field"
-- [ ] Validate the new onsets the same way the grid was validated: they must still land on
+- [x] Validated: onset phase concentration against the beat grid went from FLAT on all
+      94 files (median 1.17, ceiling 1.36) to 1.33-3.07, with a visible 16th-note comb on
+      Deep Jinx and Marine Machines. Original note kept -- they must still land on
       sixteenths of a known grid. `DKP_100_*` loops are ground truth by filename -- the
       current onsets sit ~10 ms early on those, consistently, which is the hop latency
       this task is about removing
-- [ ] Re-check `kGrooveMinOnsets` afterwards: a finer hop finds more onsets, so the
-      threshold that currently gates short loops out may want moving
+- [x] Re-checked and moved, 2026-09-17: **40 -> 80**. The number encodes a DURATION ("15
+      seconds of even sparse material") and the rate underneath it doubled --
+      onsets/second over the 94-file corpus is now min 5.61 / median 9.32 / max 12.43,
+      against ~4.8 median before. At 40 the floor had quietly become 4.3 s of median
+      material, permissive enough to fit a "grid" to a one-bar fragment. 15 s at the
+      sparsest observed rate is 84, so 80 restores the original intent
+- [x] `kGrooveMinGridStrength` re-measured too, and KEPT at 1.50 with a new
+      justification recorded. Against `beat_this_beats` the phase histogram now reads
+      min 1.22 / p33 1.94 / median 2.20 / max 3.87, so the old 1.17 "null" sits below the
+      worst file in the corpus. 1.50 now means "the bottom ~12%" rather than "the midpoint
+      between a null and a result" -- same number, different reason, written down as such
 
 ### Open question
 
@@ -3090,3 +3140,159 @@ computing the same quantity twice, with different framing, and throwing one away
       already stores the evidence to choose between them per file (onset phase
       concentration), so "pick the grid that locks the onsets best" is a measurable
       policy rather than a preference
+
+---
+
+## Phase 8 — four LoRAs, sized by window repetition
+
+Opened 2026-09-17. **Not a PRD phase.** The training plan that came out of measuring the
+existing runs on the right unit, after the tempo work made the captions trustworthy.
+
+### The unit, and why the old one was wrong
+
+TRAINING.md §7.1 counts **exposures per cue** (`max_steps / steps_per_epoch`) and targets
+700-900. That number was measured on TWO datasets, both film scores — Mad Max (52 cues)
+and Dark Knight (28). It does not survive contact with a 448-minute experimental corpus,
+because it counts how often a FILE was drawn and says nothing about how often the model
+saw the same 30 seconds.
+
+**Count repeats per distinct window instead:**
+
+```
+windows        = sum over files of max(1, duration / crop_seconds)
+repeats/window = max_steps * batch / windows
+```
+
+Measured on the runs already judged:
+
+| run | files | steps | crop | windows | repeats/window | verdict |
+|---|---|---|---|---|---|---|
+| `xyr-short` Mad Max | 52 | 10,000 | 512 | 255 | **157** | best LoRA to date |
+| `dkt` Dark Knight | 28 | 10,000 | 512 | 177 | **227** | memorised |
+| `amt` Amon Tobin | 94 | 20,000 | 512 | 565 | **142** | weak |
+
+**This reverses the reading of `amt`.** On exposures-per-cue it looked deep at 833 (mid
+target window, so "more steps will overfit"). On repeats-per-window it sits at 142, BELOW
+the best LoRA's 157 — slightly under-trained, not over. Amon's corpus is 448 minutes
+against Dark Knight's 140, and exposures-per-cue is blind to that.
+
+**The crop decides whether a step count is safe.** `amt` at 35,000 steps is 157
+repeats/window at crop 320 and 248 at crop 512 — past `dkt`'s memorisation line. Same
+steps, opposite outcome.
+
+### Crop chosen per dataset, by its short-file problem
+
+Sampling is uniform over FILES, not over duration, so a short file's single window is
+drawn as often as a long file's forty. Files with fewer than 4 distinct windows are the
+ones actually being memorised, and the crop is set to clear them:
+
+| id | set | files | min | crop | sec | windows | **steps** | <4 windows 512 -> chosen |
+|---|---|---|---|---|---|---|---|---|
+| `amt` | Amon Tobin | 94 | 448 | 320 | 29.7 | 904 | **35,500** | 13 -> 1 |
+| `tar` | Reznor/Atticus | 96 | 402 | 256 | 23.8 | 1015 | **40,000** | 3 -> 3 |
+| `lou` | Last of Us | 58 | 157 | 192 | 17.8 | 527 | **20,500** | 41 -> 3 |
+| `trn` | TRON | 56 | 155 | 192 | 17.8 | 522 | **20,500** | ? -> 1 |
+
+`lou` is the dataset this most matters for: 41 of its 58 files had fewer than 4 windows at
+crop 512. Those were not being learned from, they were being copied.
+
+Step timing is calibrated from two measured points on the A30 (1.23 s/it @ 512, 3.17 s/it
+@ 2048), giving `t = 0.584 + 0.00126 * seq`. Fixed overhead dominates at short crops, so
+halving the crop drops step time only ~20%, not 50%.
+
+### Deliberately NOT trained
+
+- [x] **`nin`** — 183 files, 880 min, would be 69,500 steps and ~19 h alone. Its analysis
+      IS wrong (old onsets, mean-interval tempo) and is being left that way: the LoRA
+      trained off it is good, and the LoRA is the deliverable. Known-wrong on purpose
+- [x] **`lrt`** — at crop 256 it already has zero short-window files and a 222 s median
+      cue. Shortening the crop buys nothing and costs the long orchestral arc
+- [x] **`dune`** — dropped from this round. No latents exist locally and its 38 files are
+      a small, short-file-heavy set that wants its own measurement first
+
+### Tasks
+
+**Local prep**
+
+- [ ] **`amt` only is mine.** Re-analysis in flight 2026-09-17. `lou`, `tron` and `trn`
+      are the user's — they will run mira themselves with the settings they want, so do
+      not analyse, retag or encode those sets unasked
+- [ ] Re-measure the `groove`/`swing` caption tertiles against the new onsets and update
+      `CaptionFields.h`. **Do this BEFORE retagging** or the captions bake in tertiles
+      derived from onsets that no longer exist. `low_end`/`motion` are spectral and
+      unaffected
+- [ ] `amt`: `scripts/retag-latents.py` — the `.npy` are audio latents, the audio
+      has not changed, so re-encoding would reproduce bit-identical files. Rewrites the
+      caption half only
+- [ ] `lou`, `tron`, `trn`: the user's to prepare (`retag-latents.py` for `lou`, which
+      has latents; `pre_encode_mlx.py --codec same-l` for `tron` and `trn`, which do not)
+- [ ] Verify tags actually render by running underfit's own tag reader ON THE BOX before
+      starting any run. The 2026-09-15 trap: three of eight datasets silently flagged
+      `status: error` for a missing `details.json`
+
+**Server**
+
+- [ ] Clear the box of the old datasets and latents before uploading — `amt` is being done
+      fresh, not merged over the old set. The user starts the box and supplies the IP;
+      nothing is uploaded before that
+- [ ] `rsync -a` each dataset up, then register and clear the scan cache
+
+**Runs**
+
+- [ ] `amt` at crop 320, 35,500 steps (or higher — "30k or more, let's see")
+- [ ] `tar` (Reznor/Atticus) at crop 256, 40,000 steps
+- [ ] `lou` at crop 192, 20,500 steps
+- [ ] `trn` (TRON) at crop 192, 20,500 steps
+- [ ] Keep every checkpoint; compare at equal prompt and seed, not equal step number
+- [ ] **157 repeats/window is n=1.** `amt` and `trn` are the two runs that test whether it
+      transfers off film scores. If they land well the unit is proven; if not, it moves
+
+### Encoded 2026-09-16, and what was wrong with both — found 2026-09-17
+
+The user encoded `trent-atticus--latents.zip` (96 files) and `TRON--latents.zip` (56).
+Both are structurally complete — npy + sidecar + `details.json` — and **neither was
+usable as delivered.** Triggers are `tar` (Atticus) and `trn` (TRON).
+
+- [ ] **Atticus had never been re-analysed.** 0 of 96 rows carried
+      `$.rhythm.beat_grid_stability`, and its onset rate was **2.12/s against the new
+      pipeline's ~9.3/s** — still Essentia onsets and mean-interval tempos. Its sidecars
+      read `groove: programmed` on nearly every file, which is not a measurement: the old
+      fitted-period grid scores high on periodic noise, and the artefact is periodic.
+      A word that never varies is absorbed into the trigger (ANALYSIS.md §3).
+      *User re-running the analysis 2026-09-17.*
+- [ ] **TRON was analysed correctly but captioned by the old code path.** Onsets good
+      (10.5/s, grid stability median 0.99, the cross-check picked the minimal grid on
+      8 of 56) — but only **11 of 56** sidecars carry `groove`, because they were written
+      before `analyzeGrooveOnGrid` existed. Measured directly, **~39 of 56 should have
+      it.** Needs `retag-latents.py` only; the `.npy` are fine.
+- [ ] **Neither zip contains stand-in `.wav`.** Without them `_scan_audio_tags` finds no
+      audio, the tag modal posts `tag_keys: []`, and every caption is silently discarded
+      while training still appears to work.
+- [ ] Re-measure the groove tertiles against these corpora before retagging. 1.90/2.45
+      is Amon's, and the three distributions are not alike:
+      TRON median 1.87, Atticus 1.26 (on stale onsets), Amon 2.15. This is the
+      "calibrate against a second corpus" thread finally getting a second corpus.
+
+### Second instance — `sa3-b`, created 2026-09-17
+
+- [x] `jl create --gpu A30 --num-gpus 1 --storage 50 --name sa3-b --region IN2
+      --http-ports 8787`. Public IP **217.18.55.45**, dashboard
+      `https://0f93255077551.notebooksn.jarvislabs.net`
+- [x] Instance-local storage, NOT a persistent filesystem — deliberately identical to the
+      working box. `jl filesystem list` shows none; `/home` is RBD/XFS, which is not a
+      cluster filesystem and **cannot be mounted read-write by two instances at once**
+- [x] Provisioned by copying box A directly rather than re-running `jarvis-setup.sh`:
+      24 GB HF cache + `underfit` + `.venv` + `stable-audio-3`, pulled box-to-box over the
+      public IP. Avoids needing `HF_TOKEN` for the gated repos, and is far faster than a
+      second 24 GB download. The venv copies cleanly because both boxes use the identical
+      path `/home/workspace/underfit/.venv`
+- [x] Verified: torch 2.7.1+cu128, CUDA true, A30 detected. 32 GB used, 19 GB free
+- [ ] A one-way SSH key was added to box A's `authorized_keys` so B could pull. Remove it
+      when the copying is done
+
+**Two GPUs do NOT make one run faster.** underfit gives each finetune a single GPU
+(`CUDA_VISIBLE_DEVICES={gpu}`, singular); there is no DDP or `world_size` anywhere in
+`lora_train.py`. A second GPU runs a second training at full speed, which is the actual
+win: ~19.5 h sequential becomes ~10.1 h. Multi-GPU IS used for encoding (`gpu_str` is a
+comma-joined list). Do not put two runs on one A30 — VRAM fits (7.1 of 24 GB) but the GPU
+already sits at 98% utilisation, so both would roughly halve in speed.

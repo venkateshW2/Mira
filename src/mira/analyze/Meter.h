@@ -105,4 +105,40 @@ MeterResult detectMeter(const std::vector<MeterFeature>& features,
                         const std::vector<double>& beats,
                         double hopSeconds);
 
+// --- Where bar 1 falls, and the bar lines that follow from it --------------------
+//
+// Ported from the reference tool's `choose_phase` / `bar_lines_from`, which mira never
+// had: it drew bar lines straight off `beat_this_downbeats` with no phase reasoning at
+// all, and the ruler numbered bars off the same unevenly-spaced list, so the numbers and
+// the lines could land in different places.
+//
+// The reference's rule, unchanged: the tracker's downbeats usually narrow beat 1 down to
+// one position within the bar; the accents pick between what is left. The ORDER matters
+// and is deliberate -- if the downbeats sit on more than one position the accents are
+// always asked, because on a 6 the downbeats land on two positions at 50% each and that
+// is a tie, not confidence.
+//
+// And the part that answers "why don't the bar lines sit on the music": bar lines are
+// `beats[phase::meter]` -- every meter-th DETECTED beat. Not a grid laid out from a BPM.
+// A BPM grid is a straight line and the music is not, so it can only ever agree at one
+// point and drift away either side of it.
+constexpr double kPhaseMinAgreement = 0.5;  // trust the downbeats when they agree this much
+constexpr double kPhaseCandCoverage = 0.15; // a bar position this popular stays in the running
+
+struct PhaseResult {
+    bool valid = false;
+    int phase = 0;              // index into `beats` of the first downbeat
+    double agreement = 0.0;     // share of downbeats landing on the winning position
+    std::string source;         // "downbeats", "accent among downbeat residues", or the fallback
+    std::vector<double> barLines;
+    double barMedianSeconds = 0.0;
+    double barSpread = 0.0;     // longest bar / shortest bar
+};
+
+PhaseResult choosePhase(const std::vector<double>& beats,
+                        const std::vector<double>& downbeats,
+                        const std::vector<float>& onsetEnvelope,
+                        double hopSeconds,
+                        int meter);
+
 } // namespace mira

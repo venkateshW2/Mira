@@ -229,11 +229,38 @@ constexpr int kCaptionTimingMinBeats = 16;
 constexpr double kCaptionPaletteMinMass = 0.05;
 
 // Groove and sound-design tertiles, measured on the 94-file Amon Tobin / Two Fingers
-// corpus (see the field comments above for the full distributions). Rounded off the
-// measured p33/p66 rather than picked: groove 1.73/2.67, swing 0.509/0.552,
-// low_end 0.202/0.335, motion 0.141/0.198.
-constexpr double kCaptionGrooveOrganicMax = 1.75;      // onset phase histogram peak/uniform
-constexpr double kCaptionGrooveProgrammedMin = 2.65;
+// corpus. RE-MEASURED 2026-09-17 after the onsets moved off Essentia (Onsets.h) and the
+// groove grid moved onto the detected beats (Groove.h's analyzeGrooveOnGrid).
+//
+//   groove strength   min 1.21  p33 1.90  median 2.15  p66 2.45  max 3.80   (was 1.73/2.67)
+//   swing             min 0.419 p33 0.494 median 0.499 p66 0.504 max 0.545
+//   low_end           min 0.006 p33 0.202 median 0.256 p66 0.335 max 0.587   (unchanged)
+//   motion            min 0.019 p33 0.141 median 0.167 p66 0.198 max 0.352   (unchanged)
+//
+// low_end and motion are spectral and did not move a digit -- they never touched the
+// onsets. That they are byte-identical is the control that says the re-measurement of
+// the other two is real rather than an artefact of re-running everything.
+constexpr double kCaptionGrooveOrganicMax = 1.90;      // onset phase histogram peak/uniform
+constexpr double kCaptionGrooveProgrammedMin = 2.45;
+
+// SWING IS DELIBERATELY NOT CUT AT ITS TERTILES, and this is the one place in this file
+// where a threshold is not a measured p33/p66.
+//
+// The corpus tertiles are 0.494 and 0.504. Cutting there would put a third of the library
+// in "swung" on the strength of the off-beat 8th sitting 0.5% late -- which is roughly a
+// millisecond at 86 BPM, is not audible, and is not swing. The middle two thirds of the
+// distribution spans 0.494..0.504: this corpus is straight, and the honest description of
+// a straight corpus is that almost every file is straight.
+//
+// So these stay on AUDIBILITY instead: 0.5 is dead straight, 0.667 is a full triplet, and
+// ~0.54 is where swing starts being hearable (Groove.h). At 0.51/0.55 the corpus comes out
+// 68 straight / 13 light swing / 0 swung, and nothing reaches 0.55 because nothing in it
+// actually swings -- max is 0.545.
+//
+// NOTE FOR THE NEXT CORPUS: by ANALYSIS.md §3's own rule -- a word is only worth a slot
+// if it varies -- `swing` is a weak field here. 13 of 81 files carry anything but
+// "straight". It earns its place only if a corpus that genuinely swings is measured and
+// the field separates it.
 constexpr double kCaptionSwingStraightMax = 0.51;      // position of the off-beat 8th in the beat
 constexpr double kCaptionSwingSwungMin = 0.55;
 constexpr double kCaptionLowEndLightMax = 0.20;        // 20-80 Hz share of spectral energy

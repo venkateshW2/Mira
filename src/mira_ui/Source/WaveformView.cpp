@@ -413,6 +413,8 @@ enum ViewAction {
     kZoomOut,
     kZoomFit,
     kLaneRuler,
+    kRulerTime,
+    kRulerBars,
     kLaneBarGrid,
     kLaneSpans,
     kLaneChords,
@@ -430,7 +432,15 @@ void WaveformView::addLaneItemsTo(juce::PopupMenu& menu) const
     // isTicked only means "switched on"; isEnabled means "this file has the data".
     // Separating them is the point -- a ticked-but-greyed item says "on, but this file
     // has no chords", which is a different thing from "you turned it off".
-    menu.addItem(kLaneRuler, "Time ruler", thumbnail.getTotalLength() > 0.0, lanes.ruler);
+    bool haveRulerData = thumbnail.getTotalLength() > 0.0;
+    menu.addItem(kLaneRuler, "Ruler", haveRulerData, lanes.ruler);
+    // The two ruler modes as a radio pair rather than one "show bars" toggle: they are
+    // alternatives, and a menu that says so needs no explaining. Bars is greyed with no
+    // downbeats, because a bar ruler with nothing to count is just a blank strip.
+    menu.addItem(kRulerTime, "    in time", haveRulerData && lanes.ruler,
+                 lanes.rulerMode == RulerMode::Time);
+    menu.addItem(kRulerBars, "    in bars", haveRulerData && lanes.ruler && !downbeats.empty(),
+                 lanes.rulerMode == RulerMode::Bars);
     menu.addItem(kLaneBarGrid, "Bar grid", !downbeats.empty(), lanes.barGrid);
     menu.addItem(kLaneSpans, "Active spans", !activeSpans.empty(), lanes.spans);
     menu.addItem(kLaneChords, "Chords", !chords.empty(), lanes.chords);
@@ -476,6 +486,8 @@ void WaveformView::applyLaneMenuResult(int result)
     switch (result)
     {
         case kLaneRuler:   lanes.ruler = !lanes.ruler; break;
+        case kRulerTime:   lanes.rulerMode = RulerMode::Time; break;
+        case kRulerBars:   lanes.rulerMode = RulerMode::Bars; break;
         case kLaneBarGrid: lanes.barGrid = !lanes.barGrid; break;
         case kLaneSpans:   lanes.spans = !lanes.spans; break;
         case kLaneChords:  lanes.chords = !lanes.chords; break;
@@ -854,6 +866,32 @@ void WaveformView::mouseMove(const juce::MouseEvent& e)
         setMouseCursor(juce::MouseCursor::NormalCursor);
 }
 
+double WaveformView::gridBeatSeconds() const
+{
+    double bpm = groove.beatGridBpm > 0.0 ? groove.beatGridBpm : groove.bpm;
+    return bpm > 0.0 ? 60.0 / bpm : 0.0;
+}
+
+std::vector<double> WaveformView::barLineTimes() const
+{
+    std::vector<double> lines;
+    int meter = groove.meter > 1 ? groove.meter : 4;
+    if (beats.empty()) return lines;
+    // Phase: the beat nearest the first detected downbeat. The full choose_phase rule
+    // (accents arbitrating when the downbeats are split) lives in mira_core's Meter.h
+    // and is what the analyzer stores; this is the same answer whenever the downbeats
+    // agree, which is the ordinary case.
+    size_t phase = 0;
+    if (!downbeats.empty()) {
+        auto nearest = std::min_element(beats.begin(), beats.end(),
+            [d = downbeats.front()](double a, double b) { return std::abs(a - d) < std::abs(b - d); });
+        phase = static_cast<size_t>(std::distance(beats.begin(), nearest)) % static_cast<size_t>(meter);
+    }
+    for (size_t i = phase; i < beats.size(); i += static_cast<size_t>(meter))
+        lines.push_back(beats[i]);
+    return lines;
+}
+
 bool WaveformView::layoutRulerContains(juce::Point<int> position) const
 {
     auto ruler = computeLanes().ruler;
@@ -1086,47 +1124,182 @@ void WaveformView::paint(juce::Graphics& g)
     if (!layout.ruler.isEmpty())
     {
         auto ruler = layout.ruler;
-        g.setColour(MiraLookAndFeel::surface2);
+        bool barsMode = lanes.rulerMode == RulerMode::Bars && !downbeats.empty()
+                        && gridBeatSeconds() > 0.0;
+        // The bar ruler gets its own tinted band, the way every DAW's does. It is not
+        // decoration: it says at a glance which of the two scales you are reading, and
+        // it gives the numbers a consistent ground so a bar number crossing a bright
+        // part of the view does not change legibility.
+        g.setColour(barsMode ? MiraLookAndFeel::accent.withAlpha(0.18f)
+                             : MiraLookAndFeel::surface2);
         g.fillRect(ruler);
         g.setColour(MiraLookAndFeel::border);
         g.drawHorizontalLine(ruler.getBottom() - 1, static_cast<float>(ruler.getX()),
                               static_cast<float>(ruler.getRight()));
 
-        double tick = chooseTickSeconds(visibleSeconds, ruler.getWidth());
         g.setFont(juce::Font(juce::FontOptions(9.5f)));
-        for (double t = std::ceil(viewStart / tick) * tick; t <= viewEnd; t += tick)
+
+        // One readout, always on, at the ruler's right edge: the tempo every line on
+        // screen is drawn from, the meter, and how much the grid can be trusted. It
+        // lives here rather than in the groove panel because the groove panel is a
+        // diagnostic that is now off by default, while this question -- "is what I am
+        // looking at real" -- applies to every file.
+        if (groove.beatGridBpm > 0.0)
         {
-            int x = secondsToX(t, ruler);
-            g.setColour(MiraLookAndFeel::textFaint);
-            g.drawVerticalLine(x, static_cast<float>(ruler.getBottom() - 5),
-                                static_cast<float>(ruler.getBottom() - 1));
-            g.setColour(MiraLookAndFeel::textDim);
-            // Sub-second ticks need the fraction, or every label on a zoomed-in view
-            // reads as the same second repeated.
-            auto label = tick < 1.0
-                             ? formatTime(t, false) + juce::String(t - std::floor(t), 1).substring(1)
-                             : formatTime(t);
-            g.drawText(label, x + 3, ruler.getY(), 46, ruler.getHeight() - 4,
-                        juce::Justification::centredLeft, false);
+            juce::String readout = juce::String(groove.beatGridBpm, 1) + " BPM";
+            if (groove.meter > 1) readout += "  " + juce::String(groove.meter) + "/bar";
+            if (groove.gridStability > 0.0)
+                readout += "  grid " + juce::String(juce::roundToInt(groove.gridStability * 100)) + "%";
+            bool shaky = groove.gridStability > 0.0 && groove.gridStability < kGridStabilityWarn;
+            g.setColour(shaky ? MiraLookAndFeel::warn : MiraLookAndFeel::textDim);
+            g.drawText(readout, ruler.withTrimmedRight(4), juce::Justification::centredRight, false);
+        }
+
+        if (barsMode)
+        {
+            // --- Bar numbers -------------------------------------------------------
+            // Bar 1 is the first DETECTED downbeat, and bars are counted off the
+            // downbeats themselves rather than laid out from a BPM. That is the whole
+            // value of this view: a synthetic grid always looks right, and detected
+            // downbeats walking away from the music is exactly the picture a wrong
+            // tempo makes. If the numbers drift off the hits, the tempo is wrong, and
+            // nobody has to read a BPM readout to find that out.
+            //
+            // Anything before the first downbeat is a pickup, and is left unnumbered
+            // rather than given a bar 0 -- mira does not know how long the pickup is
+            // meant to be, and a confident wrong number is the failure mode this whole
+            // session is about.
+            // Counted off the SAME tempo-derived grid the bar lines are drawn from
+            // (gridBeatSeconds), anchored at the first detected downbeat. Numbering off
+            // the raw downbeat list instead is what let the ruler and the lines below it
+            // disagree -- the downbeats are unevenly spaced whenever the tracker
+            // wobbled, so bar 12's number and bar 12's line ended up in different places.
+            // The ruler numbers the SAME bar lines the grid draws (barLineTimes), so the
+            // number and the line are the same object and cannot drift apart.
+            auto barLines = barLineTimes();
+            int beatsPerBar = groove.meter > 1 ? groove.meter : 4;
+            double beatSeconds = gridBeatSeconds();
+
+            // Label every Nth bar, where N is a ROUND number of bars chosen to fit the
+            // zoom -- 1, 2, 4, 8, 16, 32. Cubase does this, and the reason is legibility
+            // rather than taste: thinning by "whatever fits since the last label drawn"
+            // puts numbers on arbitrary bars (37, 41, 45), which reads as noise. Snapping
+            // to a power of two means the labels are always 1, 9, 17, 25 -- the eye can
+            // count in them and find bar 33 without reading every number.
+            double barPx = barLines.size() > 1
+                ? (barLines[1] - barLines[0]) / visibleSeconds * ruler.getWidth() : 0.0;
+            int labelEvery = 1;
+            while (barPx > 0.0 && barPx * labelEvery < kMinBarNumberSpacing && labelEvery < 256)
+                labelEvery *= 2;
+
+            bool showBeats = (beatSeconds / visibleSeconds * ruler.getWidth()) >= kMinBeatNumberSpacing;
+            for (size_t bi = 0; bi < barLines.size(); ++bi)
+            {
+                double t = barLines[bi];
+                if (t > viewEnd) break;
+                int barNumber = static_cast<int>(bi) + 1;
+                if (t >= viewStart)
+                {
+                    int x = secondsToX(t, ruler);
+                    g.setColour(MiraLookAndFeel::textFaint);
+                    g.drawVerticalLine(x, static_cast<float>(ruler.getY() + 2),
+                                        static_cast<float>(ruler.getBottom() - 1));
+                    if ((barNumber - 1) % labelEvery == 0)
+                    {
+                        // Bars bold and bright, beats plain and dim -- the same
+                        // hierarchy Cubase uses, and the reason "8" reads as a bar
+                        // while "8.2" reads as a subdivision of it without being
+                        // labelled as one.
+                        g.setFont(juce::Font(juce::FontOptions(9.5f).withStyle("Bold")));
+                        g.setColour(MiraLookAndFeel::text);
+                        g.drawText(juce::String(barNumber), x + 3, ruler.getY(), 40,
+                                    ruler.getHeight() - 4, juce::Justification::centredLeft, false);
+                        g.setFont(juce::Font(juce::FontOptions(9.5f)));
+                    }
+                }
+
+                if (!showBeats || labelEvery > 1) continue;
+                // Beats within this bar, again taken from the detected beats rather than
+                // subdivided out of a BPM.
+                double nextBar = (bi + 1 < barLines.size()) ? barLines[bi + 1] : viewEnd;
+                int b = 0;
+                for (double bt : beats)
+                {
+                    if (bt <= t || bt >= nextBar) continue;
+                    ++b;
+                    if (b >= beatsPerBar) break;
+                    if (bt < viewStart || bt > viewEnd) continue;
+                    int bx = secondsToX(bt, ruler);
+                    g.setColour(MiraLookAndFeel::textFaint);
+                    g.drawVerticalLine(bx, static_cast<float>(ruler.getBottom() - 5),
+                                        static_cast<float>(ruler.getBottom() - 1));
+                    g.setColour(MiraLookAndFeel::textDim);
+                    g.drawText(juce::String(barNumber) + "." + juce::String(b + 1),
+                                bx + 3, ruler.getY(), 40, ruler.getHeight() - 4,
+                                juce::Justification::centredLeft, false);
+                }
+            }
+        }
+        else
+        {
+            double tick = chooseTickSeconds(visibleSeconds, ruler.getWidth());
+            for (double t = std::ceil(viewStart / tick) * tick; t <= viewEnd; t += tick)
+            {
+                int x = secondsToX(t, ruler);
+                g.setColour(MiraLookAndFeel::textFaint);
+                g.drawVerticalLine(x, static_cast<float>(ruler.getBottom() - 5),
+                                    static_cast<float>(ruler.getBottom() - 1));
+                g.setColour(MiraLookAndFeel::textDim);
+                // Sub-second ticks need the fraction, or every label on a zoomed-in view
+                // reads as the same second repeated.
+                auto label = tick < 1.0
+                                 ? formatTime(t, false) + juce::String(t - std::floor(t), 1).substring(1)
+                                 : formatTime(t);
+                g.drawText(label, x + 3, ruler.getY(), 46, ruler.getHeight() - 4,
+                            juce::Justification::centredLeft, false);
+            }
         }
     }
 
-    // --- Bar grid ------------------------------------------------------------------
-    // Drawn from the analysis' own detected downbeats, never from a grid laid out off the
-    // BPM scalar: a synthetic grid drifts against anything that isn't metronomic, which is
-    // exactly the through-composed material this is most needed for. Beat lines only
-    // appear once they are far enough apart to mean anything, so a zoomed-out 37-minute
-    // file doesn't turn into a solid block of lines.
     auto gridArea = layout.ruler.isEmpty() ? waveformBounds
                                             : waveformBounds.withTop(layout.ruler.getBottom());
-    if (lanes.barGrid && !downbeats.empty())
+    // White/near-white waveform -- "the waveform not orange in colour, use white".
+    g.setColour(MiraLookAndFeel::text);
+    thumbnail.drawChannels(g, layout.peaks.reduced(0, 4), viewStart, viewEnd, 1.0f);
+
+    // The grid goes ON TOP of the waveform, and this is not a style choice.
+    //
+    // It used to be drawn before the waveform, which meant the white waveform painted
+    // straight over it: on any dense track the lane fills with near-white peaks and the
+    // grid was completely invisible. The whole point of the grid is to be compared
+    // against the hits by eye -- "look at the screengrab, the song is not in tempo, they
+    // don't align to the bars" -- and that comparison is impossible if one of the two
+    // things is hidden behind the other. Every DAW draws it this way round.
+    // --- Bar grid ------------------------------------------------------------------
+    // Laid out FROM THE REPORTED TEMPO, anchored at the first detected downbeat. It used
+    // to be drawn from the detected downbeats themselves, on the reasoning that a
+    // synthetic grid drifts against anything not metronomic. True, and it is now the
+    // reason to draw it this way round: **the drift is the thing worth seeing.** If the
+    // tempo is wrong, this grid walks off the music within a few bars and the eye catches
+    // it instantly. Drawing the detected downbeats instead hides exactly that, because
+    // detected downbeats sit on the music by construction whether or not the tempo that
+    // gets printed, captioned and trained on is right.
+    //
+    // It also means the grid, the ruler's bar numbers and the BPM readout are one claim
+    // rather than three, which is what made the old view unreadable.
+    if (lanes.barGrid && !beats.empty())
     {
+        auto barLines = barLineTimes();
         double beatSpacingPx = beats.size() > 1
             ? (beats[1] - beats[0]) / visibleSeconds * gridArea.getWidth() : 0.0;
 
+        // DARK lines, not light ones. The waveform is near-white and fills the lane, so
+        // a light grid at low alpha reads on the background and disappears the instant it
+        // crosses a peak -- which is exactly where it needs to be legible. Drawing dark
+        // means the line is visible on the waveform AND on the surface behind it.
         if (beatSpacingPx >= 14.0)
         {
-            g.setColour(MiraLookAndFeel::text.withAlpha(0.05f));
+            g.setColour(MiraLookAndFeel::surface.withAlpha(0.45f));
             for (double beat : beats)
             {
                 if (beat < viewStart || beat > viewEnd) continue;
@@ -1135,31 +1308,21 @@ void WaveformView::paint(juce::Graphics& g)
             }
         }
 
-        // Bar numbers thin out against the LAST ONE ACTUALLY DRAWN, not against an
-        // estimated spacing. The estimate used downbeats[1]-downbeats[0] as representative,
-        // which is wrong whenever a stem's downbeats are unevenly spread: STRINGS.wav opens
-        // with a long silence, so its first two downbeats are minutes apart, the estimate
-        // came out huge, and every one of its downbeats got numbered -- rendering the whole
-        // ruler as overlapping digits at Fit zoom. Tracking the last drawn x is correct for
-        // any distribution.
-        int barNumber = 0;
-        int lastNumberX = std::numeric_limits<int>::min();
-        g.setFont(juce::Font(juce::FontOptions(9.5f)));
-        for (double downbeat : downbeats)
+        // Bar LINES only. The numbers used to be drawn here too, painted into the
+        // ruler's rectangle from outside it -- which is why they read as a stripe of
+        // digits with no scale rather than as a ruler. The ruler owns bar numbering now
+        // (see RulerMode::Bars above), so this lane draws the lines and nothing else and
+        // the two cannot disagree about which bar is which.
+        // Bar lines: every `beatsPerBar` beats of that same grid. Brighter than the beat
+        // lines, and the only other thing drawn here.
+        // Bar lines in the accent colour and fully opaque: they are the ones being read
+        // against the music, and they have to survive crossing a white peak.
+        g.setColour(MiraLookAndFeel::accent.withAlpha(0.75f));
+        for (double t : barLines)
         {
-            ++barNumber;
-            if (downbeat < viewStart || downbeat > viewEnd) continue;
-            int x = secondsToX(downbeat, gridArea);
-            g.setColour(MiraLookAndFeel::text.withAlpha(0.13f));
-            g.drawVerticalLine(x, static_cast<float>(gridArea.getY()),
+            if (t < viewStart || t > viewEnd) continue;
+            g.drawVerticalLine(secondsToX(t, gridArea), static_cast<float>(gridArea.getY()),
                                 static_cast<float>(gridArea.getBottom()));
-            if (!layout.ruler.isEmpty() && x - lastNumberX >= kMinBarNumberSpacing)
-            {
-                lastNumberX = x;
-                g.setColour(MiraLookAndFeel::active);
-                g.drawText(juce::String(barNumber), x + 2, layout.ruler.getY() - 1, 30, 11,
-                            juce::Justification::centredLeft, false);
-            }
         }
     }
 
@@ -1242,9 +1405,6 @@ void WaveformView::paint(juce::Graphics& g)
         }
     }
 
-    // White/near-white waveform -- "the waveform not orange in colour, use white".
-    g.setColour(MiraLookAndFeel::text);
-    thumbnail.drawChannels(g, layout.peaks.reduced(0, 4), viewStart, viewEnd, 1.0f);
 
     // --- Onset lane ------------------------------------------------------------------
     // The raw evidence. Ticks are split into two tiers by how far each onset sits from the

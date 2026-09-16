@@ -350,9 +350,17 @@ void applyShapeFields(Database& db, const std::string& machine, CaptionFields& f
     if (includeRhythm) {
         auto onsets = db.jsonDoubleArray(machine, "$.onset_times");
         if (!onsets.empty()) {
-            auto groove = analyzeGroove(onsets,
-                                        db.jsonExtractDouble(machine, "$.rhythm.essentia_bpm"),
-                                        db.jsonExtractDouble(machine, "$.rhythm.beat_this_bpm"));
+            // Measured against the DETECTED beats where there are any, and only against
+            // a period fitted from the onsets where there are not. Groove.h has the
+            // measurement that reversed this preference; the short version is that the
+            // fitted grid only ever won because the old Essentia onsets were periodic in
+            // the wrong place, and with correct onsets it loses 1.23 median to 2.18.
+            auto beats = db.jsonDoubleArray(machine, "$.rhythm.beat_this_beats");
+            auto groove = beats.size() >= 4
+                ? analyzeGrooveOnGrid(onsets, beats)
+                : analyzeGroove(onsets,
+                                db.jsonExtractDouble(machine, "$.rhythm.essentia_bpm"),
+                                db.jsonExtractDouble(machine, "$.rhythm.beat_this_bpm"));
             // omittedReason non-empty means the onsets never locked to any grid, so there
             // is no beat for a swing or a groove to be measured against.
             if (groove.omittedReason.empty()) {

@@ -1903,6 +1903,8 @@ private:
                 overlay.barSpread = *sp;
             if (auto bb = database->jsonExtractDouble(record->machine, "$.rhythm.beat_this_bpm"))
                 overlay.beatGridBpm = *bb;
+            if (auto gs = database->jsonExtractDouble(record->machine, "$.rhythm.beat_grid_stability"))
+                overlay.gridStability = *gs;
 
             if (!groove.omittedReason.empty())
             {

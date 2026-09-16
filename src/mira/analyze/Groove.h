@@ -61,15 +61,41 @@ constexpr double kGrooveMinPeriodSeconds = 0.28;
 constexpr double kGrooveMaxPeriodSeconds = 1.20;
 
 // Below this many onsets there is not enough evidence to fit a period at all; the result
-// comes back invalid rather than confidently wrong. 40 is roughly 15 seconds of even
-// sparse material, and the sparsest track in the calibration corpus carried 1.7 onsets
-// per beat.
-constexpr int kGrooveMinOnsets = 40;
+// comes back invalid rather than confidently wrong.
+//
+// RE-MEASURED 2026-09-17, and it had to be: the number encodes a DURATION, and the
+// onset rate underneath it doubled when detection moved off Essentia's `OnsetRate` to
+// mira's own flux at hop 256 (Onsets.h). The intent has always been "roughly 15 seconds
+// of even sparse material". Measured over the same 94-file Amon Tobin corpus:
+//
+//     onsets/second   min 5.61   p10 7.44   median 9.32   max 12.43   (was ~4.8 median)
+//
+// At 40, the floor had quietly become 4.3 seconds of median material -- permissive
+// enough to fit a "grid" to a one-bar fragment. 15 s at the SPARSEST observed rate
+// (5.61/s) is 84 onsets, so 80 restores the original intent at the new resolution.
+//
+// This is the failure mode conventions 2 and 4 in CLAUDE.md are about: a threshold is a
+// statement about a distribution, and it stops being true the moment the distribution
+// moves underneath it.
+constexpr int kGrooveMinOnsets = 80;
 
-// A fitted grid whose phase histogram is this flat is not a grid -- it is the null
-// result that `beat_this` produced on all 94 files. Metrics derived from it would be
-// noise wearing a number's clothes, so they are omitted instead. Set at the midpoint of
-// the two measured medians (1.17 flat, 1.93 fitted).
+// A fitted grid whose phase histogram is this flat is not a grid -- it is a null result.
+// Metrics derived from it would be noise wearing a number's clothes, so they are omitted
+// instead.
+//
+// ORIGINALLY set at the midpoint of two medians measured with Essentia's onsets: 1.17
+// (the flat null `beat_this` produced on all 94 files) and 1.93 (mira's fitted grid).
+//
+// RE-MEASURED 2026-09-17 with the new onsets, against `beat_this_beats` on the same 94
+// files: min 1.22, p33 1.94, median 2.20, p66 2.49, max 3.87. The old 1.17 "null" is now
+// below the worst file in the corpus -- better onsets moved the whole distribution up,
+// which is the point of them. Rejection counts at candidate thresholds:
+//
+//     1.3 -> 2/94     1.4 -> 6/94     1.5 -> 11/94     1.6 -> 16/94
+//
+// Kept at 1.50. It now sits near the 12th percentile rather than at a midpoint between
+// a null and a result, which is a different justification for the same number and is
+// recorded as such rather than left looking like the old one still holds.
 constexpr double kGrooveMinGridStrength = 1.50;
 
 struct GrooveGrid {
@@ -142,5 +168,35 @@ double gridConcentration(const std::vector<double>& onsetTimes,
 GrooveResult analyzeGroove(const std::vector<double>& onsetTimes,
                            std::optional<double> essentiaBpm,
                            std::optional<double> beatThisBpm);
+
+// Same measurements, but against a beat grid the caller already has (`beats` in seconds,
+// ascending) rather than a period fitted from the onsets.
+//
+// ADDED 2026-09-17, and it REVERSES Phase 6. Phase 6 measured `beat_this_beats` flat at
+// 1.17 median peak/uniform against mira's fitted grid's 1.93, and concluded the fitted
+// grid won 94 of 94. Re-measured on the same 94 files with the onsets corrected
+// (Onsets.h -- the old ones came from Essentia and were tracking its tempo error):
+//
+//     beat_this_beats   min 1.22   p33 1.92   median 2.18   p66 2.46   max 3.84
+//     fitted grid       min 1.04   p33 1.16   median 1.23   p66 1.34   max 2.94
+//
+// Exactly backwards. The fitted grid only ever looked better because it was fitting the
+// artefact: Essentia's onsets clustered near 159 BPM on five unrelated songs, and a
+// constant-period search finds a clean period in that because the artefact IS periodic.
+// Give the fitter real onsets and it loses, because a constant period cannot follow a
+// performance and the detected beats can.
+//
+// The practical consequence was 72 of 94 files falling below kGrooveMinGridStrength, so
+// two thirds of the corpus lost `groove` and `swing` entirely.
+//
+// Phase 6's other findings stand -- the flat-histogram bug was real and the tempo it
+// produced was wrong. What is retracted is the conclusion about WHICH grid to prefer,
+// which was drawn from a measurement whose input was broken.
+//
+// The grid returned carries the MEDIAN beat interval as its period so callers that draw
+// it keep working, but every phase is measured against the actual bracketing beats, so
+// drift is followed rather than averaged away.
+GrooveResult analyzeGrooveOnGrid(const std::vector<double>& onsetTimes,
+                                 const std::vector<double>& beats);
 
 } // namespace mira

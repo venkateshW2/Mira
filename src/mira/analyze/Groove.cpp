@@ -282,4 +282,112 @@ GrooveResult analyzeGroove(const std::vector<double>& onsetTimes,
     return result;
 }
 
+GrooveResult analyzeGrooveOnGrid(const std::vector<double>& onsetTimes,
+                                 const std::vector<double>& beats)
+{
+    GrooveResult result;
+
+    if (static_cast<int>(onsetTimes.size()) < kGrooveMinOnsets)
+    {
+        result.omittedReason = "too few onsets";
+        return result;
+    }
+    if (beats.size() < 4)
+    {
+        result.omittedReason = "no beat grid";
+        return result;
+    }
+
+    std::vector<double> onsets = onsetTimes;
+    std::sort(onsets.begin(), onsets.end());
+
+    // Phase of each onset WITHIN ITS OWN BEAT: which two beats bracket it, and how far
+    // between them it sits. This is the whole difference from the fitted-period version
+    // -- a constant period drifts away from a performance, and this cannot, because each
+    // onset is measured against the beats actually either side of it.
+    std::vector<double> phases;
+    phases.reserve(onsets.size());
+    for (double t : onsets)
+    {
+        auto next = std::upper_bound(beats.begin(), beats.end(), t);
+        if (next == beats.begin() || next == beats.end()) continue;
+        const double lo = *(next - 1), hi = *next;
+        const double width = hi - lo;
+        if (width <= 0.0) continue;
+        phases.push_back((t - lo) / width);
+    }
+    if (static_cast<int>(phases.size()) < kGrooveMinOnsets)
+    {
+        result.omittedReason = "too few onsets inside the beat grid";
+        return result;
+    }
+
+    std::vector<double> intervals;
+    for (size_t i = 1; i < beats.size(); ++i) intervals.push_back(beats[i] - beats[i - 1]);
+    std::sort(intervals.begin(), intervals.end());
+    const double medianInterval = intervals[intervals.size() / 2];
+
+    GrooveGrid& grid = result.grid;
+    grid.periodSeconds = medianInterval;
+    grid.phaseSeconds = beats.front();
+    grid.bpm = medianInterval > 0.0 ? 60.0 / medianInterval : 0.0;
+    grid.octaveSource = "beat_grid";
+    grid.valid = true;
+
+    grid.phaseHistogram.assign(kGroovePhaseBins, 0.0);
+    for (double phase : phases)
+    {
+        int bin = std::clamp(static_cast<int>(phase * kGroovePhaseBins), 0, kGroovePhaseBins - 1);
+        grid.phaseHistogram[static_cast<size_t>(bin)] += 1.0;
+    }
+    const double perBin = static_cast<double>(phases.size()) / kGroovePhaseBins;
+    for (double& count : grid.phaseHistogram) count /= perBin;
+    grid.strength = *std::max_element(grid.phaseHistogram.begin(), grid.phaseHistogram.end());
+
+    // Circular concentration over the same phases, for parity with the fitted version's
+    // own objective.
+    double sumSin = 0.0, sumCos = 0.0;
+    for (double phase : phases)
+    {
+        sumSin += std::sin(2.0 * M_PI * phase);
+        sumCos += std::cos(2.0 * M_PI * phase);
+    }
+    grid.resultant = std::hypot(sumSin, sumCos) / static_cast<double>(phases.size());
+
+    result.onsetsPerBeat = static_cast<double>(phases.size())
+                         / static_cast<double>(beats.size() - 1);
+
+    if (grid.strength < kGrooveMinGridStrength)
+    {
+        result.omittedReason = "no grid lock";
+        return result;
+    }
+
+    // Identical arithmetic to analyzeGroove below this line -- only the source of `phase`
+    // differs, which is the point.
+    double offBeatSum = 0.0;
+    int offBeatCount = 0;
+    double signedOffsetSum = 0.0;
+    int offBeatCells = 0;
+    for (double phase : phases)
+    {
+        if (phase > 0.25 && phase < 0.75)
+        {
+            offBeatSum += phase;
+            ++offBeatCount;
+        }
+        const double cells = phase * 4.0;
+        const double nearest = std::round(cells);
+        signedOffsetSum += (cells - nearest) / 4.0;
+        if (static_cast<int>(nearest) % 4 != 0) ++offBeatCells;
+    }
+
+    if (offBeatCount >= kGrooveMinOnsets / 4)
+        result.swing = offBeatSum / offBeatCount;
+    result.pocket = signedOffsetSum / static_cast<double>(phases.size());
+    result.syncopation = static_cast<double>(offBeatCells) / static_cast<double>(phases.size());
+
+    return result;
+}
+
 } // namespace mira

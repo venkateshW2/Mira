@@ -1,0 +1,262 @@
+diff --git a/Source/beat_this_api.cpp b/Source/beat_this_api.cpp
+index d8b869e..b982f88 100644
+--- a/Source/beat_this_api.cpp
++++ b/Source/beat_this_api.cpp
+@@ -18,15 +18,38 @@
+ #include "CDSPResampler.h"
+ namespace BeatThis {
+ 
++// Local patch (see scripts/fetch-vendor.sh's header comment for the other documented
++// patches this project applies after a fresh clone): a per-BeatThis-instance Ort::Env
++// was constructed and destroyed on every file analyzeRhythm() processes (i.e. every file
++// in a library, by default, not opt-in). Once mira grew enough separate ONNX-backed
++// analyzers that each also constructed its own Env, this Env churn reliably corrupted
++// memory (Ort::Env owns process-global state; repeated construction/destruction across
++// a process is not a safe pattern). mira's own analyzers were fixed to share one
++// process-lifetime Env (src/mira/analyze/OrtEnv.h); this one can't reuse that one
++// directly without leaking mira's own headers into an unrelated vendored library's
++// build, so it gets its own function-local static instead — same "construct once for
++// the life of the process" fix, just self-contained to this file.
++namespace {
++Ort::Env& sharedBeatThisEnv() {
++    static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "beat_this_cpp_api");
++    return env;
++}
++} // namespace
++
+ // Pimpl implementation
+ class BeatThis::Impl {
+ public:
+-    Ort::Env env;
++    Ort::Env& env;
+     std::unique_ptr<Ort::Session> session;
+     bool use_dbn;
+ 
++    // Audio -> the network's beat and downbeat logits. Defined out of line, below the
++    // decoders it shares helpers with.
++    std::pair<std::vector<float>, std::vector<float>> logits(
++        const std::vector<float>& audio_data, int samplerate, int channels);
++
+     explicit Impl(const std::string& onnx_model_path, bool use_dbn_)
+-        : env(ORT_LOGGING_LEVEL_WARNING, "beat_this_cpp_api"), use_dbn(use_dbn_) {
++        : env(sharedBeatThisEnv()), use_dbn(use_dbn_) {
+         // Check if file exists
+         std::ifstream file_check(onnx_model_path);
+         if (!file_check.good()) {
+@@ -132,6 +155,51 @@ namespace {
+         return beat_counts;
+     }
+ 
++    // --- the two postprocessors, both reading the same logits --------------------
++    //
++    // Split out of process_audio so process_audio_both can run each once over a single
++    // model pass. Neither touches audio: given the network's beat and downbeat logits,
++    // each is a pure decode.
++
++    // madmom-compatible Viterbi over a joint tempo/bar state space (55-215 BPM,
++    // beats_per_bar {3,4}, transition_lambda 100). Gives real downbeats and a tempo
++    // model, at the cost of being ABLE to change pulse level mid-track when the
++    // activations favour it -- which is why the caller must check grid stability.
++    BeatResult decode_dbn(const std::vector<float>& beat_logits_f,
++                          const std::vector<float>& db_logits_f) {
++        std::vector<double> beat_logits_d(beat_logits_f.begin(), beat_logits_f.end());
++        std::vector<double> db_logits_d(db_logits_f.begin(), db_logits_f.end());
++
++        auto combined_act = DBNPostprocessor::logits_to_combined_act(beat_logits_d, db_logits_d);
++        DBNPostprocessor dbn;
++        auto dbn_result = dbn.process(combined_act);
++
++        // DBN returns beat_numbers directly; no conversion needed
++        std::vector<float> beats;
++        std::vector<float> downbeats;
++        std::vector<int> beat_counts;
++        for (size_t i = 0; i < dbn_result.times.size(); ++i) {
++            float t = static_cast<float>(dbn_result.times[i]);
++            beats.push_back(t);
++            beat_counts.push_back(dbn_result.beat_numbers[i]);
++            if (dbn_result.beat_numbers[i] == 1)
++                downbeats.push_back(t);
++        }
++        return BeatResult{std::move(beats), std::move(downbeats), std::move(beat_counts)};
++    }
++
++    // Peak-pick the logits directly: max-pool +/-70 ms, keep peaks above 0, snap each
++    // downbeat to its nearest beat. No tempo model, so it cannot impose a wrong one --
++    // and cannot smooth over a passage the network reads badly either.
++    BeatResult decode_minimal(const std::vector<float>& beat_logits,
++                              const std::vector<float>& db_logits) {
++        Postprocessor postprocessor;
++        auto times = postprocessor.process(beat_logits, db_logits);
++        std::vector<int> beat_counts = calculate_beat_counts(times.first, times.second);
++        return BeatResult{std::move(times.first), std::move(times.second),
++                          std::move(beat_counts)};
++    }
++
+     // Helper function to resample audio using r8brain (high quality, MIT license)
+     bool resample_audio(const std::vector<float>& in_buffer, int in_rate,
+                        std::vector<float>& out_buffer, int out_rate) {
+@@ -181,74 +249,61 @@ namespace {
+     }
+ }
+ 
+-BeatResult BeatThis::process_audio(const std::vector<float>& audio_data, 
+-                                  int samplerate, int channels) {
+-    try {
+-        // Convert to mono
+-        auto mono_audio = convert_to_mono(audio_data, channels);
+-        
+-        // Resample if necessary
+-        std::vector<float> resampled_buffer;
+-        constexpr int target_samplerate = 22050;
+-        
+-        if (samplerate != target_samplerate) {
+-            if (!resample_audio(mono_audio, samplerate, resampled_buffer, target_samplerate)) {
+-                throw std::runtime_error("Failed to resample audio");
+-            }
+-            // Release mono_audio early (~42 MB for 4-min stereo) — no longer needed after resampling
+-            std::vector<float>().swap(mono_audio);
+-        } else {
+-            resampled_buffer = std::move(mono_audio);
++// Everything up to the logits: mono, resample to 22.05k, log-mel, the network. The
++// expensive part, and the part both postprocessors share.
++std::pair<std::vector<float>, std::vector<float>> BeatThis::Impl::logits(
++    const std::vector<float>& audio_data, int samplerate, int channels) {
++    // Convert to mono
++    auto mono_audio = convert_to_mono(audio_data, channels);
++
++    // Resample if necessary
++    std::vector<float> resampled_buffer;
++    constexpr int target_samplerate = 22050;
++
++    if (samplerate != target_samplerate) {
++        if (!resample_audio(mono_audio, samplerate, resampled_buffer, target_samplerate)) {
++            throw std::runtime_error("Failed to resample audio");
+         }
++        // Release mono_audio early (~42 MB for 4-min stereo) — no longer needed after resampling
++        std::vector<float>().swap(mono_audio);
++    } else {
++        resampled_buffer = std::move(mono_audio);
++    }
+ 
+-        // Compute Mel Spectrogram
+-        MelSpectrogram spect_computer;
+-        auto spectrogram = spect_computer.compute(resampled_buffer);
++    // Compute Mel Spectrogram
++    MelSpectrogram spect_computer;
++    auto spectrogram = spect_computer.compute(resampled_buffer);
+ 
+-        // Run Inference
+-        InferenceProcessor processor(*(pImpl->session), pImpl->env);
+-        auto beat_downbeat_logits = processor.process_spectrogram(spectrogram);
++    // Run Inference
++    InferenceProcessor processor(*session, env);
++    return processor.process_spectrogram(spectrogram);
++}
+ 
++BeatResult BeatThis::process_audio(const std::vector<float>& audio_data, 
++                                  int samplerate, int channels) {
++    try {
++        auto beat_downbeat_logits = pImpl->logits(audio_data, samplerate, channels);
+         if (pImpl->use_dbn) {
+-            // DBN post-processing (madmom-compatible Viterbi beat tracking)
+-            const auto& beat_logits_f = beat_downbeat_logits.first;
+-            const auto& db_logits_f = beat_downbeat_logits.second;
+-            std::vector<double> beat_logits_d(beat_logits_f.begin(), beat_logits_f.end());
+-            std::vector<double> db_logits_d(db_logits_f.begin(), db_logits_f.end());
+-
+-            auto combined_act = DBNPostprocessor::logits_to_combined_act(beat_logits_d, db_logits_d);
+-            DBNPostprocessor dbn;
+-            auto dbn_result = dbn.process(combined_act);
+-
+-            // DBN returns beat_numbers directly; no conversion needed
+-            std::vector<float> beats;
+-            std::vector<float> downbeats;
+-            std::vector<int> beat_counts;
+-            for (size_t i = 0; i < dbn_result.times.size(); ++i) {
+-                float t = static_cast<float>(dbn_result.times[i]);
+-                beats.push_back(t);
+-                beat_counts.push_back(dbn_result.beat_numbers[i]);
+-                if (dbn_result.beat_numbers[i] == 1)
+-                    downbeats.push_back(t);
+-            }
+-            return BeatResult{std::move(beats), std::move(downbeats), std::move(beat_counts)};
++            return decode_dbn(beat_downbeat_logits.first, beat_downbeat_logits.second);
+         }
++        return decode_minimal(beat_downbeat_logits.first, beat_downbeat_logits.second);
+ 
+-        // Minimal post-processing (default)
+-        Postprocessor postprocessor;
+-        auto beat_downbeat_times = postprocessor.process(
+-            beat_downbeat_logits.first, beat_downbeat_logits.second);
+-
+-        // Calculate beat counts
+-        std::vector<int> beat_counts = calculate_beat_counts(
+-            beat_downbeat_times.first, beat_downbeat_times.second);
+-
+-        return BeatResult{
+-            std::move(beat_downbeat_times.first),
+-            std::move(beat_downbeat_times.second),
+-            std::move(beat_counts)
+-        };
++    } catch (const Ort::Exception& e) {
++        std::cerr << "ONNX Runtime error: " << e.what() << std::endl;
++        std::cerr << "Error code: " << e.GetOrtErrorCode() << std::endl;
++        throw std::runtime_error("ONNX Runtime error: " + std::string(e.what()));
++    } catch (const std::exception& e) {
++        std::cerr << "Processing error: " << e.what() << std::endl;
++        throw std::runtime_error("Processing error: " + std::string(e.what()));
++    }
++}
+ 
++BeatResultPair BeatThis::process_audio_both(const std::vector<float>& audio_data,
++                                            int samplerate, int channels) {
++    try {
++        auto l = pImpl->logits(audio_data, samplerate, channels);
++        return BeatResultPair{decode_dbn(l.first, l.second),
++                              decode_minimal(l.first, l.second)};
+     } catch (const Ort::Exception& e) {
+         std::cerr << "ONNX Runtime error: " << e.what() << std::endl;
+         std::cerr << "Error code: " << e.GetOrtErrorCode() << std::endl;
+diff --git a/Source/beat_this_api.h b/Source/beat_this_api.h
+index 657645e..4d740a0 100644
+--- a/Source/beat_this_api.h
++++ b/Source/beat_this_api.h
+@@ -13,9 +13,22 @@ struct BeatResult {
+     std::vector<int> beat_counts; // Beat numbers for each beat (1 = downbeat, 2,3,4... = other beats)
+ };
+ 
++// Both postprocessors decoded from ONE model pass over the audio.
++//
++// The DBN and the minimal peak-picker read the same logits, so running the network twice
++// to see both grids would be pure waste -- and seeing both is the point. The DBN's
++// 55-215 BPM state space lets it change pulse level partway through a track, which is a
++// legitimate decoding but produces a grid that is internally inconsistent; the minimal
++// grid cannot do that, because it has no tempo model at all. Which one is steadier is a
++// per-file question with a measurable answer, so the caller gets both and decides.
++struct BeatResultPair {
++    BeatResult dbn;
++    BeatResult minimal;
++};
++
+ class BeatThis {
+ public:
+-    explicit BeatThis(const std::string& onnx_model_path);
++    explicit BeatThis(const std::string& onnx_model_path, bool use_dbn = true);
+     ~BeatThis();
+ 
+     // Move semantics
+@@ -33,6 +46,14 @@ public:
+         int channels = 1
+     );
+ 
++    // Run the network once and decode the audio with BOTH postprocessors. Costs one
++    // extra Viterbi/peak-pick over already-computed logits, not a second model pass.
++    BeatResultPair process_audio_both(
++        const std::vector<float>& audio_data,
++        int samplerate,
++        int channels = 1
++    );
++
+     // Overload for raw pointer interface
+     BeatResult process_audio(
+         const float* audio_data,

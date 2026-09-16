@@ -4,7 +4,7 @@ The index to every document in this repo: what each one is, whether it is curren
 when to read it. **Start here.** If you are picking the project up after a break, or you
 are an agent with no memory of the last session, this file is the entry point.
 
-**Last updated: 2026-09-16 (late).** Keep the *Recent work* log at the bottom current — that is
+**Last updated: 2026-09-17.** Keep the *Recent work* log at the bottom current — that is
 this file's second job.
 
 ---
@@ -139,6 +139,58 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
+### 2026-09-17 — the tempo was wrong, and now it is not
+
+The user gave six tracks with the tempo they know each one to be. Measured against that
+list rather than against another estimator, the whole rhythm stack failed at once. Four
+separate faults, each fixed and each re-measured against the same six.
+
+| track | theirs | mira before | mira now |
+|---|---|---|---|
+| Smurf (feat) | 86 | 127.0 | **86.49** |
+| Smurf (instr) | 86 | 130.2 | **86.49** |
+| Marine Machines | 97 | 96.5 | **97.01** |
+| Surge | 87 | 86.4 | **86.49** |
+| Crunch Rhythm | 87 | 149.4 | **86.00** |
+| Deep Jinx | 86 | 86.0 | **85.99** |
+
+- **The onsets came from Essentia and inherited its tempo error.** The user said so
+  outright and was right. Against their tempos the stored onsets phase-locked at
+  R = 0.001-0.024 -- zero, on 599-1278 onsets per file -- and instead peaked at 158-178
+  BPM on five unrelated songs. A near-constant answer across different music is an
+  algorithm artefact. Everything downstream was measuring it.
+  **`mira::detectOnsets`** (`src/mira/analyze/Onsets.h`) replaces `OnsetRate`: one STFT,
+  log-mel, positive first difference, adaptive-threshold peak picking, hop 256 (5.8 ms,
+  half `OnsetRate`'s step), centred frames. Onset phase concentration against the beat
+  grid went from **flat on all 94 files (median 1.17, ceiling 1.36)** to 1.33-3.07.
+- **The tempo was a MEAN of beat intervals, across two octaves.** On Smurf the DBN's beat
+  list holds a 0.70 s cluster (86 BPM) and a 0.35 s cluster (172); the mean is 127, a
+  tempo occurring nowhere in the song. The collaborator's tool uses the median. mira now
+  does better than either: **`fitBeatPeriod`** octave-folds the intervals and
+  least-squares fits one period, because the network runs at 50 fps and 87 BPM (0.690 s)
+  falls exactly between the 0.68 and 0.70 bins -- no median of quantised intervals can
+  ever report it. The fit resolves the period to under a millisecond.
+- **`pickTempoOctave`** folds the fit to the octave nearest 120 BPM in log space. This is
+  a PRIOR and is labelled one. The downbeats are no help: the DBN halves the bar along
+  with the beat (Smurf reports bars of 1.42 s), so bar/4 repeats the same error. Measured,
+  not assumed. Right 6/6, and it will be wrong somewhere near 70/140 -- the open
+  octave-convention thread.
+- **`gridStability`** is mira's first honest confidence number about its own beats: the
+  share of intervals within 25% of the median. It separates the six completely --
+  0.99/1.00/1.00 on the correct grids, 0.64/0.67/0.85 on the wrong ones. Straight from
+  the collaborator's `grid_stability`. Its absence is how a confidently wrong tempo stood.
+- **Cross-check adopted**: below 0.90 stability the minimal peak-picked grid is decoded
+  too and the steadier wins (`process_audio_both` -- both postprocessors off ONE model
+  pass). It fires on exactly the three bad tracks. On these three the minimal grid is also
+  bad, so the DBN is kept -- but the flag is now raised either way.
+- **madmom did not need porting.** `vendor/beat_this_cpp/Source/DBNPostprocessor.cpp` is
+  already a madmom-compatible Viterbi, and its config and activation formula match the
+  reference exactly. The failure was never the DBN; it was what mira did with its output.
+- **Bars ruler in the waveform** (`WaveformView::RulerMode`): bar numbers off the detected
+  downbeats, `bar.beat` once beats are legible, radio-paired with the time ruler in the
+  lane menu. A pickup before the first downbeat is left unnumbered rather than given a
+  bar 0. **Written and compiling; not yet seen rendering.**
+
 ### 2026-09-16 — meter shipped, and a confidently wrong grid fixed
 
 - **Meter detection built and surfaced** ([TASKS.md Phase 7](TASKS.md) tasks 1, 2, 2b).
@@ -237,12 +289,19 @@ Newest first. Keep this current — it is how the next session finds the thread.
 
 ## ⛔ Start here next session
 
-**The tempo detection is wrong and confidently wrong** — the user's finding, on tracks
-whose tempo they know. Everything built on it (groove, swing, the fitted grid, meter) is
-suspect until settled. **Get their ground-truth tempos before measuring anything**, and do
-not defend the pipeline with internal consistency checks: every test on 2026-09-16
-compared one estimator to another or to a grid derived from the same onsets, which can
-agree and be wrong together. Full note at [TASKS.md Phase 7](TASKS.md).
+**Four LoRAs to train, and only four: `amt`, `lou`, `tron`, `trn`.** Everything else is
+either already good or deliberately left alone. The decision and the sizing are in
+[TASKS.md Phase 8](TASKS.md); the short version is below.
+
+- **`nin` is NOT being redone.** Its 183 files were analysed under the old onsets and a
+  mean-interval tempo, so the analysis is wrong — but the LoRA trained off it is good, and
+  a good LoRA is the deliverable. Known-wrong and left alone on purpose, not an oversight.
+- **`lrt` is not being retrained either.** At crop 256 it already has zero short-window
+  files and a median cue of 222 s; shortening the crop costs the long orchestral arc,
+  which is the point of LOTR.
+- Local prep (re-analysis of all four sets) is queued and running. After it lands:
+  re-measure the `groove`/`swing` tertiles, then `scripts/retag-latents.py` for the sets
+  that already have latents, and `pre_encode_mlx.py` for the two that do not.
 
 ## Open threads
 

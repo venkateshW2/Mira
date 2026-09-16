@@ -138,23 +138,63 @@ public:
         // The tempo of the grid the meter bars are actually drawn on (beat_this), which
         // is NOT necessarily `bpm` above (the fitted grid). Shown when they disagree.
         double beatGridBpm = 0.0;
+        // `$.rhythm.beat_grid_stability` -- the share of beat intervals within 25% of the
+        // median. Below kGridStabilityWarn the tracker changed pulse level partway
+        // through and the grid drawn from this tempo is not one grid. Drawn in the ruler
+        // rather than in a panel, because it qualifies every line on screen.
+        double gridStability = 0.0;
     };
 
     void setGroove(GrooveOverlay newGroove);
 
     // Which lanes the user has switched off, independent of whether the current file has
     // data for them (a lane with no data never renders regardless).
+    // What the ruler counts in. mira showed clock time and nothing else, and on a piece
+    // of music that is the wrong unit for most questions asked of it: "where does the
+    // second chorus start" has the answer "bar 33", not "1:34.2". The bar numbers that
+    // did exist were drawn on the grid lines down the lanes, thinned out to whatever fit,
+    // and never in the ruler itself.
+    //
+    // Bars also makes a wrong tempo visible instead of arguable: if the tempo is wrong
+    // the bar numbers walk off the music, and the eye catches that in a second where it
+    // will never catch it in a BPM readout.
+    enum class RulerMode
+    {
+        Time, // m:ss, with a fractional part once the ticks go under a second
+        Bars  // bar numbers, and bar.beat once the beats are far enough apart to read
+    };
+
     struct LaneVisibility
     {
         bool ruler = true;
+        // BARS by default. This is a music tool and bars are the unit its questions are
+        // asked in -- "where does the second chorus start" has the answer "bar 33", not
+        // "1:34.2". The paint code falls back to time ticks on its own for any file with
+        // no downbeats (a one-shot, an unanalysed file), so this costs nothing where
+        // bars are meaningless.
+        RulerMode rulerMode = RulerMode::Bars;
         bool barGrid = true;
         bool spans = true;
         bool chords = true;
         bool notes = true;
         bool onsets = true;
-        bool grooveGrid = true;
-        bool grooveHistogram = true;
-        bool meterBars = true;
+        // The three DIAGNOSTIC layers, off by default since 2026-09-17.
+        //
+        // With all of them on, the waveform carried four different claims about where
+        // the beat is -- detected downbeats, the fitted groove grid, the meter's own bar
+        // lines, and the ruler -- in four colours, none of them labelled as the answer.
+        // The user's words: "there are a lot of things that don't align... multiple
+        // things now confusing." That is a fair description and it was the view's fault,
+        // not the data's. A picture showing four rival hypotheses at once is a debugging
+        // tool, and debugging tools should be opt-in.
+        //
+        // What is left on is one grid and the evidence for it: bar lines from the
+        // reported tempo, numbered in the ruler from the same tempo, and the onsets they
+        // are supposed to land on. If the lines drift off the hits, the tempo is wrong --
+        // which is the one question this view exists to answer.
+        bool grooveGrid = false;
+        bool grooveHistogram = false;
+        bool meterBars = false;
     };
     LaneVisibility getLaneVisibility() const { return lanes; }
     void setLaneVisibility(LaneVisibility newVisibility);
@@ -322,6 +362,20 @@ private:
     void panByFraction(double deltaFrac);
     void scrubTo(int x);
     bool layoutRulerContains(juce::Point<int> position) const;
+
+    // One beat, in seconds, of the grid this view draws and numbers -- taken from the
+    // REPORTED tempo (groove.beatGridBpm, i.e. what the BPM readout, the caption and the
+    // training data all say), never re-derived from the beat list. Everything on screen
+    // that claims to know where a beat is reads this, so the ruler's bar numbers and the
+    // bar lines under them cannot drift apart. 0 when there is no tempo.
+    double gridBeatSeconds() const;
+
+    // Bar line times -- every `meter`-th DETECTED beat, starting at the chosen phase.
+    // This is `bar_lines_from` from the reference tool, and it is why the lines sit on
+    // the music: they ARE beats, not a straight line laid out from a BPM. A BPM grid can
+    // only agree with a real performance at one point and drifts away either side of it,
+    // which is exactly what "the grids don't align with the waveform" looked like.
+    std::vector<double> barLineTimes() const;
     // Nice-looking tick interval for the visible duration: the smallest of a fixed
     // 1/2/5/10/15/30/60/... ladder that still leaves ticks at least kMinTickSpacing
     // apart, so labels never collide and the numbers stay ones a person reads easily.
@@ -332,13 +386,21 @@ private:
     static juce::Colour chordColour(int rootPitchClass);
 
     juce::TextButton lanesButton { "Lanes" };
-    static constexpr int kRulerHeight = 18;
+    // 22, not 18: the bar ruler carries bold bar numbers and dimmer bar.beat labels on
+    // a tinted band, and 18 px left no room between the digits and the tick marks.
+    static constexpr int kRulerHeight = 22;
     static constexpr int kSpanLaneHeight = 8;
     static constexpr int kOnsetLaneHeight = 12;
     static constexpr int kChordLaneHeight = 14;
     static constexpr int kMinPeaksHeight = 40;
     static constexpr int kMinTickSpacing = 64;   // px between time ticks, label width + air
     static constexpr int kMinBarNumberSpacing = 26; // px between bar numbers before they thin out
+    // bar.beat labels are longer than a bare bar number, so they need more room before
+    // they start colliding with each other.
+    static constexpr int kMinBeatNumberSpacing = 34;
+    // Matches kGridCrossCheckBelow in Mir.cpp -- the same line the analyzer uses to
+    // decide a grid needs a second opinion. One threshold, two places that must agree.
+    static constexpr double kGridStabilityWarn = 0.90;
 
     // The phase histogram is drawn as a small inset panel over the peaks rather than as a
     // lane of its own: it has no time axis (it is the whole file folded onto one beat), so

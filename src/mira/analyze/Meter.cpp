@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -275,6 +276,90 @@ MeterResult detectMeter(const std::vector<MeterFeature>& features,
         }
     }
 
+    result.valid = true;
+    return result;
+}
+
+// --- choose_phase / bar_lines_from, ported ---------------------------------------
+//
+// Line for line from the reference. Nothing added: no BPM, no fitted grid, no prior.
+
+PhaseResult choosePhase(const std::vector<double>& beats,
+                        const std::vector<double>& downbeats,
+                        const std::vector<float>& onsetEnvelope,
+                        double hopSeconds,
+                        int meter)
+{
+    PhaseResult result;
+    if (meter < 2 || static_cast<int>(beats.size()) < meter * 2) return result;
+
+    // downbeat_residues: which position within the bar each tracker downbeat lands on.
+    std::map<int, int> counts;
+    int downbeatCount = 0;
+    if (downbeats.size() >= 3 && beats.size() >= 3) {
+        for (double d : downbeats) {
+            auto nearest = std::min_element(beats.begin(), beats.end(),
+                [d](double a, double b) { return std::abs(a - d) < std::abs(b - d); });
+            int index = static_cast<int>(std::distance(beats.begin(), nearest));
+            ++counts[index % meter];
+            ++downbeatCount;
+        }
+    }
+
+    // accent_phase: the bar position whose beats are loudest on average.
+    const auto accents = accentsAtBeats(onsetEnvelope, beats, hopSeconds);
+    auto accentPhase = [&](const std::vector<int>& candidates) {
+        int best = candidates.empty() ? 0 : candidates.front();
+        double bestMean = -1.0;
+        for (int p : candidates) {
+            double sum = 0.0; int n = 0;
+            for (size_t i = static_cast<size_t>(p); i < accents.size(); i += static_cast<size_t>(meter)) {
+                sum += accents[i]; ++n;
+            }
+            double mean = n > 0 ? sum / n : -1.0;
+            if (mean > bestMean) { bestMean = mean; best = p; }
+        }
+        return best;
+    };
+
+    double agreement = 0.0;
+    if (downbeatCount > 0) {
+        int top = std::max_element(counts.begin(), counts.end(),
+            [](auto& a, auto& b) { return a.second < b.second; })->second;
+        agreement = static_cast<double>(top) / downbeatCount;
+    }
+    result.agreement = agreement;
+
+    std::vector<int> candidates;
+    for (auto& [position, count] : counts)
+        if (static_cast<double>(count) / std::max(downbeatCount, 1) >= kPhaseCandCoverage)
+            candidates.push_back(position);
+
+    if (downbeatCount > 0 && candidates.size() > 1) {
+        result.phase = accentPhase(candidates);
+        result.source = "accent among downbeat residues";
+    } else if (downbeatCount > 0 && candidates.size() == 1 && agreement >= kPhaseMinAgreement) {
+        result.phase = candidates.front();
+        result.source = "downbeats";
+    } else {
+        std::vector<int> all(static_cast<size_t>(meter));
+        std::iota(all.begin(), all.end(), 0);
+        result.phase = accentPhase(all);
+        result.source = "accent fold (downbeats unusable)";
+    }
+
+    // bar_lines_from: every meter-th DETECTED beat, starting at `phase`.
+    for (size_t i = static_cast<size_t>(result.phase); i < beats.size(); i += static_cast<size_t>(meter))
+        result.barLines.push_back(beats[i]);
+    if (result.barLines.size() >= 2) {
+        std::vector<double> lengths;
+        for (size_t i = 1; i < result.barLines.size(); ++i)
+            lengths.push_back(result.barLines[i] - result.barLines[i - 1]);
+        std::vector<double> sorted = lengths;
+        std::sort(sorted.begin(), sorted.end());
+        result.barMedianSeconds = sorted[sorted.size() / 2];
+        if (sorted.front() > 0.0) result.barSpread = sorted.back() / sorted.front();
+    }
     result.valid = true;
     return result;
 }
