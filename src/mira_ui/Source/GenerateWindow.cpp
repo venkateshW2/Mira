@@ -969,16 +969,26 @@ void GenerateContent::resized() {
     auto buttons = row(30);
     generateButton.setBounds(buttons.removeFromLeft(110));
     buttons.removeFromLeft(6);
-    triggerLabel.setBounds(buttons.removeFromLeft(44));
-    triggerEditor.setBounds(buttons.removeFromLeft(56).reduced(0, 3));
-    buttons.removeFromLeft(4);
-    encodeButton.setBounds(buttons.removeFromLeft(165));
-    buttons.removeFromLeft(4);
+    // The training bench (GenerateWindow.h's setTrainingBenchVisible). Hidden controls
+    // are given EMPTY bounds and their row space is reclaimed rather than simply being
+    // made invisible: a hidden component still laid out at full size leaves a hole, which
+    // is the same class of bug as the prompt builder's clipped fields -- laid out, just
+    // not where anyone could see them.
+    if (trainingBenchVisible) {
+        triggerLabel.setBounds(buttons.removeFromLeft(44));
+        triggerEditor.setBounds(buttons.removeFromLeft(56).reduced(0, 3));
+        buttons.removeFromLeft(4);
+        encodeButton.setBounds(buttons.removeFromLeft(165));
+        buttons.removeFromLeft(4);
+    } else {
+        triggerLabel.setBounds({}); triggerEditor.setBounds({}); encodeButton.setBounds({});
+    }
     revealButton.setBounds(buttons.removeFromLeft(115));
     buttons.removeFromLeft(4);
     stopButton.setBounds(buttons.removeFromLeft(70));
 
-    datasetsLabel.setBounds(row(16, 3));
+    if (trainingBenchVisible) datasetsLabel.setBounds(row(16, 3));
+    else datasetsLabel.setBounds({});
     progressBar.setBounds(row(12));
     preview.setBounds(row(110));
     {

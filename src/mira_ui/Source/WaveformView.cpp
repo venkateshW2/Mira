@@ -87,6 +87,9 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
                              // crashing the app over it -- browsing/scanning still do.
     audioSourcePlayer.setSource(&transportSource);
     deviceManager.addAudioCallback(&audioSourcePlayer);
+    // Device/rate/buffer changes reach changeListenerCallback above, which is what lets
+    // the choice be stored instead of reset at every launch.
+    deviceManager.addChangeListener(this);
 
     playButton.onClick = [this] { togglePlayPause(); };
     addAndMakeVisible(playButton);
@@ -164,6 +167,7 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
 WaveformView::~WaveformView()
 {
     thumbnail.removeChangeListener(this);
+    deviceManager.removeChangeListener(this);
     transportSource.setSource(nullptr);
     deviceManager.removeAudioCallback(&audioSourcePlayer);
     audioSourcePlayer.setSource(nullptr);
@@ -898,7 +902,18 @@ bool WaveformView::layoutRulerContains(juce::Point<int> position) const
     return !ruler.isEmpty() && ruler.contains(position);
 }
 
-void WaveformView::changeListenerCallback(juce::ChangeBroadcaster*) { repaint(); }
+void WaveformView::changeListenerCallback(juce::ChangeBroadcaster* source)
+{
+    // The device manager broadcasts too now (it is listened to so audio settings can be
+    // persisted); a device change is not a reason to repaint the waveform, and the
+    // thumbnail's own changes are not a reason to write to the database.
+    if (source == &deviceManager)
+    {
+        if (onAudioDeviceChanged) onAudioDeviceChanged();
+        return;
+    }
+    repaint();
+}
 
 void WaveformView::playRange(double startSeconds, double endSeconds)
 {

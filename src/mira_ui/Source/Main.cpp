@@ -1214,7 +1214,13 @@ public:
         folderTree->onFolderAdded = [this](const juce::File& f) { enqueueScan(f.getFullPathName()); };
         // MIRA-GENERATE.md Phase 1: a project is just a folder root, so the tree already
         // knows how to make and file one -- all that is "current" about it lives here.
-        folderTree->onProjectOpened = [this](const juce::File& f) { setCurrentProject(f); };
+        folderTree->onProjectOpened = [this](const juce::File& f) {
+            setCurrentProject(f);
+            // Opening a project is how a generating session starts, so it opens the
+            // window that session happens in -- File > New Project otherwise leaves you
+            // looking at an empty folder with no hint of what comes next.
+            showProjectWindow();
+        };
         folderTree->onCollectionSelected = [this](int64_t collectionId) {
             fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
         };
@@ -1344,6 +1350,7 @@ public:
         addAndMakeVisible(*fileList);
 
         bottomPanel = std::make_unique<BottomPanel>(laf);
+        restoreAudioSettings(); // before anything plays, so the first click uses the right device
         bottomPanel->buildTagsMenu = [this](juce::PopupMenu& menu) { buildTagsMenu(menu); };
         bottomPanel->buildSegmentsMenu = [this](juce::PopupMenu& menu) { buildSegmentsMenu(menu); };
         bottomPanel->buildCuesMenu = [this](juce::PopupMenu& menu) { buildCuesMenu(menu); };
@@ -1488,6 +1495,25 @@ public:
 
     juce::AudioDeviceManager& getAudioDeviceManager() { return bottomPanel->getAudioDeviceManager(); }
 
+    // Audio settings survive a relaunch now. They did not: there is no PropertiesFile
+    // anywhere in this app and initialiseWithDefaultDevices ran unconditionally at every
+    // launch, so a chosen interface, sample rate or buffer size was silently discarded
+    // every time. Stored as the device manager's own XML in ui_settings -- JUCE already
+    // knows how to write and re-read that, so mira stores it rather than interpreting it.
+    static constexpr const char* kAudioStateKey = "audio_device_state";
+
+    void restoreAudioSettings()
+    {
+        if (auto stored = database->getSetting(kAudioStateKey))
+            bottomPanel->getWaveform().restoreAudioDeviceState(juce::String(*stored));
+        // Assigned AFTER restoring, so replaying the saved state does not immediately
+        // write it straight back.
+        bottomPanel->getWaveform().onAudioDeviceChanged = [this] {
+            auto state = bottomPanel->getWaveform().getAudioDeviceState();
+            if (state.isNotEmpty()) database->setSetting(kAudioStateKey, state.toStdString());
+        };
+    }
+
     void resized() override
     {
         auto bounds = getLocalBounds();
@@ -1547,6 +1573,23 @@ public:
         return folder.isDirectory() ? folder : juce::File();
     }
 
+    // Raw takes go to <project>/takes/, NEVER the project root. "so the project doesnt
+    // build up all files in one place" -- nine takes in ten are discarded, and the
+    // project folder IS the deliverable (MIRA-GENERATE.md §3.1): a folder you hand over
+    // cannot also be the scratch bin. Only Keep writes into <project>/<cue>/ (Phase 3),
+    // and Clean up sweeps this folder exactly as it already sweeps the old default.
+    //
+    // Returns an invalid File when no project is current, which setOutputFolder ignores
+    // -- so with no project the generate window keeps ~/Music/mira-generated untouched.
+    juce::File projectTakesFolder()
+    {
+        auto project = getCurrentProject();
+        if (!project.isDirectory()) return {};
+        auto takes = project.getChildFile("takes");
+        takes.createDirectory();
+        return takes;
+    }
+
     void setCurrentProject(const juce::File& folder)
     {
         if (folder.isDirectory())
@@ -1556,7 +1599,8 @@ public:
         // The generate window, if it happens to be open, writes into the project from
         // now on. Phase 2's project window will bind to this the same way; until then
         // this is what "switching project switches the output folder" means.
-        if (generateWindow != nullptr) generateWindow->content->setOutputFolder(folder);
+        if (generateWindow != nullptr) generateWindow->content->setOutputFolder(projectTakesFolder());
+        if (projectWindow != nullptr) projectWindow->content->setOutputFolder(projectTakesFolder());
         if (onWindowTitleChanged) onWindowTitleChanged();
     }
 
@@ -1575,7 +1619,7 @@ public:
     // counts. A File Details or Log window is not a reason to keep the app running with
     // no library in sight, and calling this "the last window" when it only tracks some
     // of them would be the kind of half-truth convention 6 exists to prevent.
-    bool hasGenerationWindowOpen() const { return generateWindow != nullptr; }
+    bool hasGenerationWindowOpen() const { return generateWindow != nullptr || projectWindow != nullptr; }
     std::function<void()> onGenerationWindowClosed;
 
     // Real macOS menu bar's File > Rescan (MiraMenuBarModel below) — "rescan can be in
@@ -2557,6 +2601,7 @@ public:
         kDeleteSegment,
         kShowLog, // referenced by MiraMenuBarModel's Window menu
         kShowGenerate, // SA3 generate/pre-encode window (GenerateWindow.h)
+        kShowProject,  // the project's own inference window (MIRA-GENERATE.md Phase 2)
         kShowPrepare,  // caption/encode/push a folder for training (PrepareWindow.h)
         kDetectCues,
         kToggleActivityMatrix,
@@ -2707,6 +2752,7 @@ public:
                 return;
             case kShowLog: showLogWindow(); return;
             case kShowGenerate: showGenerateWindow(); return;
+            case kShowProject: showProjectWindow(); return;
             case kShowPrepare: showPrepareWindow({}); return;
             case kOpenCueEditor: showCueEditor(); return;
             case kDetectCues: detectCuesForSelection(); return;
@@ -3058,8 +3104,33 @@ public:
         // A window opened while a project is current writes into it from the start,
         // not only if the project is switched afterwards (MIRA-GENERATE.md Phase 1).
         // No project current leaves ~/Music/mira-generated exactly as it was.
-        if (auto project = getCurrentProject(); project.isDirectory())
-            generateWindow->content->setOutputFolder(project);
+        generateWindow->content->setOutputFolder(projectTakesFolder());
+    }
+
+    // MIRA-GENERATE.md Phase 2. Needs a project: without one there is no output folder
+    // to bind and no cue to keep into, so this asks for one rather than opening a window
+    // that would quietly write into ~/Music like the training bench does.
+    void showProjectWindow()
+    {
+        auto project = getCurrentProject();
+        if (!project.isDirectory())
+        {
+            folderTree->promptNewProject();
+            return;
+        }
+        if (projectWindow != nullptr) { projectWindow->toFront(true); return; }
+        projectWindow = std::make_unique<ProjectWindow>(laf, findStudioRoot(), *database,
+                                                         project.getFileName());
+        projectWindow->content->onLibraryChanged = [this] {
+            if (folderTree != nullptr) folderTree->refresh();
+        };
+        projectWindow->onClosed = [this] {
+            juce::MessageManager::callAsync([this] {
+                projectWindow.reset();
+                if (onGenerationWindowClosed) onGenerationWindowClosed();
+            });
+        };
+        projectWindow->content->setOutputFolder(projectTakesFolder());
     }
 
     void showLogWindow()
@@ -4169,6 +4240,7 @@ private:
     LogStore logStore;
     std::unique_ptr<LogWindow> logWindow;
     std::unique_ptr<GenerateWindow> generateWindow;
+    std::unique_ptr<ProjectWindow> projectWindow; // MIRA-GENERATE.md Phase 2
     std::unique_ptr<PrepareWindow> prepareWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;
     // The in-window Cues view. Owned here (it needs the database through this class's
@@ -4446,6 +4518,7 @@ public:
             // window kept the app alive (MIRA-GENERATE.md §3.3).
             menu.addItem(22, "Library");
             menu.addSeparator();
+            menu.addItem(MainComponent::kShowProject, "Project Window...");
             menu.addItem(MainComponent::kShowGenerate, "SA3 Generate...");
             menu.addItem(MainComponent::kShowPrepare, "Prepare for Training...");
             menu.addSeparator();

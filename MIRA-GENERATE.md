@@ -1,6 +1,6 @@
 # MIRA GENERATE — plan and task list
 
-**Written 2026-09-17.** Status: **Phase 1 built; Phases 2-7 planned.**
+**Written 2026-09-17.** Status: **Phases 1-2 built; Phases 3-7 planned.**
 
 A generation-and-delivery workflow inside mira: start a project, generate cues, keep the
 takes worth keeping, cut and fade them, hand the folder over.
@@ -215,11 +215,43 @@ nothing can be generated without a home.
 
 ### Phase 2 — the Project window
 
-- [ ] New window: prompt builder, LoRA slots + strength + min/max step, cfg, apg,
+**Built 2026-09-17**, except the take-stack layout, which is Phase 4's own work.
+
+- [x] `ProjectWindow`: prompt builder, LoRA slots + strength + min/max step, cfg, apg,
       negative prompt, seed, steps, seconds — no trigger field, no encode button, no
       datasets list (§3.4)
-- [ ] Output folder bound to the current project rather than `~/Music/mira-generated`
+- [x] Output folder bound to the current project rather than `~/Music/mira-generated`
+- [x] Opens on New/Open Project, and from `Window -> Project Window...`. Requires a
+      project: with none it asks for one rather than quietly writing into `~/Music`
+- [x] Not always-on-top, unlike the SA3 Generate window — a project window is where the
+      work happens, so it sits beside the browser rather than floating over it
 - [ ] Layout: take stack left, prompt builder top right, LoRA and settings bottom right
+      — deferred to Phase 4, which is what builds the take stack
+
+**How §3.4 was honoured.** "Two faces, one engine" is a `setTrainingBenchVisible(bool)`
+flag on the one `GenerateContent`, and `ProjectWindow` derives from `GenerateWindow`
+through a protected constructor. Nothing was stripped and nothing was forked: a second
+995-line window would have been two things to keep in step, and every generation fix
+would have had to be made twice.
+
+Hidden bench controls are given **empty bounds** and their row space reclaimed, not just
+`setVisible(false)`. A hidden component still laid out at full size leaves a hole — the
+same failure as the prompt builder's clipped fields, which were laid out all along, just
+not anywhere visible.
+
+### Phase 2a — takes do not go in the project root
+
+Found by the user on the first real session, 2026-09-17, and **corrected**.
+
+Phase 1 bound the output folder to the project root, so every take — and nine in ten are
+discarded — would have piled into the folder that IS the deliverable (§3.1). That is the
+thing the folder design was chosen to avoid: *"so the project doesnt build up all files
+in one place."*
+
+Raw takes now go to **`<project>/takes/`**, which `Clean up` sweeps exactly as it already
+sweeps `~/Music/mira-generated`. Only Keep writes into `<project>/<cue>/` (Phase 3). The
+project stays self-contained — one folder holds the whole session — while the cue folders
+stay clean enough to hand over.
 
 **Exit:** generation works in a window with no training surface on it.
 
@@ -253,7 +285,12 @@ point at which the feature is useful.**
 ### Phase 6 — export
 
 - [ ] Render segment + fades -> wav (`AudioFormatReaderSource` -> `AudioFormatWriter`,
-      both already linked via `juce_audio_utils`)
+      both already linked via `juce_audio_utils`) **at the take's native 44,100 Hz**.
+      SA3 generates at 44.1 kHz and nothing else — `sa3_mlx.py`, `pre_encode_mlx.py` and
+      `demo_mlx.py` all hardcode it, and the 0.0928 s latent step *is* 4096/44100. Export
+      must never route through the playback path: `WaveformView` resamples live to the
+      device rate via JUCE's `ResamplingAudioSource` (an interpolator plus a simple IIR
+      low-pass), which is fine for auditioning and is not a mastering SRC.
 - [ ] Delivery name from the template, tokens dropped when unsupported (§3.7)
 - [ ] Export cue -> one folder; Export project -> all cues, cue-wise
 - [ ] Show in Finder on the export (button exists)

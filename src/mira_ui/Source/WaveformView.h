@@ -260,6 +260,30 @@ public:
     // bound to this device manager rather than mira owning a second, redundant one.
     juce::AudioDeviceManager& getAudioDeviceManager() { return deviceManager; }
 
+    // Audio settings did not survive a relaunch: initialiseWithDefaultDevices ran every
+    // launch and there was nowhere to put a choice (the app has no PropertiesFile at
+    // all). These two move the state as a STRING, not a file path or a database handle --
+    // this class opens audio files, not databases, and that boundary is deliberate (see
+    // the note above SegmentSpan). MainComponent owns where it is kept.
+    juce::String getAudioDeviceState() const
+    {
+        if (auto xml = deviceManager.createStateXml()) return xml->toString();
+        return {};
+    }
+
+    void restoreAudioDeviceState(const juce::String& xmlText)
+    {
+        if (xmlText.isEmpty()) return;
+        auto xml = juce::parseXML(xmlText);
+        if (xml == nullptr) return;
+        // selectDefaultDeviceOnFailure: a saved interface that is not plugged in today
+        // must fall back to the built-in output, not leave playback silently dead.
+        deviceManager.initialise(0, 2, xml.get(), true);
+    }
+
+    // Fires whenever the device setup actually changes, so the new state can be stored.
+    std::function<void()> onAudioDeviceChanged;
+
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent&) override;

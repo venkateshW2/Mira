@@ -284,6 +284,10 @@ public:
     // actually owns, rather than mira keeping a second, disconnected one.
     juce::AudioDeviceManager& getAudioDeviceManager() { return waveform.getAudioDeviceManager(); }
 
+    // Persisting the audio device choice: the state moves as a string and MainComponent
+    // decides where it lives (see WaveformView's note).
+    WaveformView& getWaveform() { return waveform; }
+
     void paint(juce::Graphics& g) override
     {
         auto bounds = getLocalBounds();

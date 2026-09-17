@@ -160,12 +160,30 @@ private:
     juce::TextButton outFolderButton { "Output folder..." };
     juce::TextEditor nameEditor;                 // base filename, blank = timestamp
     juce::File outputFolder;
+    bool trainingBenchVisible = true; // the SA3 Generate window keeps its bench
 
 public:
     // MIRA-GENERATE.md Phase 1: "switching project switches the output folder". Same
     // effect as picking one with the Output folder... button, minus the picker. An
     // invalid folder is ignored rather than clearing the current one -- losing the
     // output folder mid-session would strand the next generation.
+    // MIRA-GENERATE.md §3.4: "Two faces, one engine." The Project window is this same
+    // component with the training bench hidden -- the trigger field, Prepare LoRA
+    // dataset... and the prepared-datasets line. Deliberately a flag on ONE component
+    // rather than a second 995-line window: a fork would be two things to keep in step,
+    // and every fix to generation would have to be made twice. The plan's "do not strip
+    // the existing window to make the new one" is exactly what this preserves -- nothing
+    // is removed, one face declines to show it.
+    void setTrainingBenchVisible(bool shouldBeVisible)
+    {
+        trainingBenchVisible = shouldBeVisible;
+        triggerLabel.setVisible(shouldBeVisible);
+        triggerEditor.setVisible(shouldBeVisible);
+        encodeButton.setVisible(shouldBeVisible);
+        datasetsLabel.setVisible(shouldBeVisible);
+        resized();
+    }
+
     void setOutputFolder(const juce::File& folder)
     {
         if (!folder.isDirectory()) return;
@@ -212,23 +230,14 @@ private:
 class GenerateWindow : public juce::DocumentWindow
 {
 public:
+    // Floats above the main window. This is a tool panel used ALONGSIDE the library
+    // -- you pick a file there, build a prompt here, and drag the result out to a DAW --
+    // so ordinary sibling behaviour (drop behind on every click in the main window, then
+    // hunt for it in the Window menu) is wrong for it. Same reason a plugin's editor
+    // floats. ProjectWindow is the one that does NOT float; see its note.
     GenerateWindow(const MiraLookAndFeel& laf, juce::File studioRoot, mira::Database& db)
-        : juce::DocumentWindow("SA3 Generate", MiraLookAndFeel::surface,
-                                juce::DocumentWindow::allButtons)
+        : GenerateWindow(laf, std::move(studioRoot), db, "SA3 Generate", true, true)
     {
-        setUsingNativeTitleBar(true);
-        content = new GenerateContent(laf, std::move(studioRoot), db);
-        setContentOwned(content, false);
-        setResizable(true, false);
-        centreWithSize(720, 700);
-        // Floats above the main window. This is a tool panel used ALONGSIDE the library
-        // -- you pick a file there, build a prompt here, and drag the result out to a
-        // DAW -- so ordinary sibling behaviour (drop behind on every click in the main
-        // window, then hunt for it in the Window menu) is wrong for it. Same reason a
-        // plugin's editor floats.
-        setAlwaysOnTop(true);
-        setVisible(true);
-        toFront(true);
     }
 
     std::function<void()> onClosed;
@@ -242,4 +251,42 @@ public:
     // ~5 GB of resident model. That is deliberate: leaving a warm worker alive behind a
     // closed window would quietly hold half the RAM on a 16 GB machine.
     void closeButtonPressed() override { if (onClosed) onClosed(); }
+
+protected:
+    // ProjectWindow below is the same window with a different title, no bench and no
+    // always-on-top. Everything else -- the worker, its 5 GB teardown, setPrompt -- is
+    // inherited rather than copied.
+    GenerateWindow(const MiraLookAndFeel& laf, juce::File studioRoot, mira::Database& db,
+                    const juce::String& windowTitle, bool showTrainingBench, bool floatAbove)
+        : juce::DocumentWindow(windowTitle, MiraLookAndFeel::surface, juce::DocumentWindow::allButtons)
+    {
+        setUsingNativeTitleBar(true);
+        content = new GenerateContent(laf, std::move(studioRoot), db);
+        setContentOwned(content, false);
+        setResizable(true, false);
+        centreWithSize(720, 700);
+        content->setTrainingBenchVisible(showTrainingBench);
+        setAlwaysOnTop(floatAbove);
+        setVisible(true);
+        toFront(true);
+    }
+};
+
+// MIRA-GENERATE.md Phase 2. Inference only: prompt builder, LoRA slots and settings,
+// preview, keep/discard. No trigger field, no encode button, no datasets list (§3.4).
+//
+// NOT always-on-top, unlike GenerateWindow. That window floats because it is a tool panel
+// used alongside the library -- pick a file there, prompt here. A project window is where
+// the work happens, so it behaves as an ordinary sibling of the browser and the two sit
+// side by side (§3.3).
+class ProjectWindow : public GenerateWindow
+{
+public:
+    ProjectWindow(const MiraLookAndFeel& laf, juce::File studioRoot, mira::Database& db,
+                   const juce::String& projectName)
+        : GenerateWindow(laf, std::move(studioRoot), db,
+                          projectName.isNotEmpty() ? projectName : juce::String("Project"),
+                          false, false)
+    {
+    }
 };
