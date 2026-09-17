@@ -1354,6 +1354,9 @@ public:
 
         bottomPanel = std::make_unique<BottomPanel>(laf);
         restoreAudioSettings(); // before anything plays, so the first click uses the right device
+        // Notices when the CLI (or another session) changes the library underneath us.
+        libraryWatcher.tick = [this] { libraryWatchTick(); };
+        libraryWatcher.startTimer(2500);
         bottomPanel->buildTagsMenu = [this](juce::PopupMenu& menu) { buildTagsMenu(menu); };
         bottomPanel->buildSegmentsMenu = [this](juce::PopupMenu& menu) { buildSegmentsMenu(menu); };
         bottomPanel->buildCuesMenu = [this](juce::PopupMenu& menu) { buildCuesMenu(menu); };
@@ -4163,6 +4166,30 @@ private:
         updateAnalyzeReadout();
     }
 
+    // The rows are a snapshot, and anything that changes the library from OUTSIDE this
+    // window -- `mira analyze` in a terminal, a second session -- leaves them showing what
+    // was true when they were built. That is not a rare case in this project: the CLI is
+    // how long analysis runs get done without a rebuild killing them, and it left the
+    // window insisting a folder was unanalysed for an hour after it was finished.
+    //
+    // A stat() of the database file every few seconds, not a query: it costs nothing, it
+    // cannot miss a write, and it fires only when something actually changed. Analysis
+    // running INSIDE the app is skipped -- that path already refreshes row by row, and
+    // rebuilding the whole list under it would throw those away.
+    void libraryWatchTick()
+    {
+        if (analyzeJob != nullptr || scanJob != nullptr) return;
+        const auto modified = juce::File(dbPath).getLastModificationTime().toMilliseconds();
+        if (modified == lastSeenLibraryWrite) return;
+        if (lastSeenLibraryWrite != 0)
+        {
+            fileList->refresh();
+            refreshSelectedFilePanel();
+            refreshLibraryCount();
+        }
+        lastSeenLibraryWrite = modified;
+    }
+
     void onAnalyzeProgress(int n, int m, const juce::String& finishedPath)
     {
         // The CLI only reports a file once it's *done* (main.cpp's "progress: N/M path"
@@ -4314,6 +4341,14 @@ private:
     // The two background activities' own readouts; pushActivityText decides which the
     // single status-bar slot actually shows.
     juce::String scanActivityText, analyzeActivityText;
+    juce::int64 lastSeenLibraryWrite = 0;
+    // Separate from MainComponent's own Timer, which stops itself whenever no analysis is
+    // running -- exactly when this needs to keep watching.
+    struct LibraryWatcher : juce::Timer {
+        std::function<void()> tick;
+        void timerCallback() override { if (tick) tick(); }
+    };
+    LibraryWatcher libraryWatcher;
 
     // Every line the analyzer prints, kept for the Window > Log... window. Declared here
     // rather than as a global so it dies with the component that owns the jobs feeding it.
