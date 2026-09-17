@@ -137,6 +137,9 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         rightPane.addAndMakeVisible(sl.label);
         tip(sl.box, "LoRA for this slot. Fill two slots to blend styles.");
         sl.box.setLookAndFeel(&compactMenuLaf); // compact popup, this control only
+        // The strip names its lanes from these, so picking a LoRA has to reach it --
+        // otherwise the picture keeps showing the LoRA you just replaced.
+        sl.box.onChange = [this] { syncLoraLanes(); };
         rightPane.addAndMakeVisible(sl.box);
 
         sl.strength.setRange(0.0, 2.0, 0.05);
@@ -149,25 +152,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         // Step gating: apply the LoRA only during part of the diffusion run. Early steps
         // shape structure and arrangement, late steps shape timbre and texture -- so this
         // separates "did it change the music?" from "did it just recolour the surface?".
-        for (auto* st : { &sl.minStep, &sl.maxStep }) {
-            st->setRange(1, 50, 1);
-            st->setSliderStyle(juce::Slider::LinearHorizontal);
-            st->setTextBoxStyle(juce::Slider::TextBoxRight, false, 40, 18);
-            rightPane.addAndMakeVisible(*st);
-        }
-        sl.minStep.setValue(1, juce::dontSendNotification);
-        sl.maxStep.setValue(8, juce::dontSendNotification);
-        for (auto* pair : { &sl.blendLabel, &sl.structureLabel, &sl.timbreLabel }) {
-            pair->setFont(juce::Font(juce::FontOptions(10.0f)));
-            pair->setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
-            pair->setJustificationType(juce::Justification::centredRight);
-            rightPane.addAndMakeVisible(*pair);
-        }
+        sl.blendLabel.setFont(juce::Font(juce::FontOptions(10.0f)));
+        sl.blendLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+        sl.blendLabel.setJustificationType(juce::Justification::centredRight);
         sl.blendLabel.setText("blend", juce::dontSendNotification);
-        sl.structureLabel.setText("structure", juce::dontSendNotification);
-        sl.timbreLabel.setText("timbre", juce::dontSendNotification);
-        tip(sl.minStep, "First step this LoRA applies to. Early steps shape structure.");
-        tip(sl.maxStep, "Last step this LoRA applies to. Late steps shape timbre.");
+        rightPane.addAndMakeVisible(sl.blendLabel);
+        // The step window is not set here any more -- LoraLanes below owns it.
     }
 
     keepButton.setEnabled(false);
@@ -255,8 +245,13 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
     triggerLabel.setText("trigger", juce::dontSendNotification);
     rightPane.addAndMakeVisible(triggerLabel);
-    triggerEditor.setText("xyr");
-    tip(triggerEditor, "Rare token this LoRA is keyed to. One per film (Dune used zvq).");
+    // Deliberately EMPTY. It used to default to "xyr" (Mad Max), so every dataset
+    // prepared without noticing this field was encoded under another set's trigger --
+    // silent, unfalsifiable, and only visible once the LoRA trained wrong. encodeFolder
+    // already refuses an empty trigger, which is the right failure.
+    triggerEditor.setTextToShowWhenEmpty("e.g. zvq", MiraLookAndFeel::textFaint);
+    tip(triggerEditor, "Rare token to key the DATASET BEING ENCODED to -- not the loaded "
+                       "LoRA. Three or four letters that mean nothing in English.");
     rightPane.addAndMakeVisible(triggerEditor);
 
     tip(encodeButton, "Captions -> encode -> zip, for one film folder. Analysed files only.");
@@ -296,6 +291,13 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     };
     rightPane.addAndMakeVisible(loraHeading);
     rightPane.addAndMakeVisible(settingsHeading);
+    loraLanes.onWindowChanged = [this](int slot, int lo, int hi) {
+        if (slot < 0 || slot >= kLoraSlots) return;
+        slots[static_cast<size_t>(slot)].stepLo = lo;
+        slots[static_cast<size_t>(slot)].stepHi = hi;
+    };
+    rightPane.addAndMakeVisible(loraLanes);
+
     rightPane.addAndMakeVisible(inpaintHeading);
     {
         struct Named { juce::Label* label; const char* text; };
@@ -494,8 +496,13 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     tip(logView, "Worker output: model loads, LoRA plans, tracebacks.");
     addAndMakeVisible(logView);
 
-    progressBar.setVisible(false);
-    rightPane.addAndMakeVisible(progressBar);
+    // The progress strip lives in the LEFT pane, under the takes header: the bar fills
+    // in the rectangle the take then lands in. Calibration is per machine and persists,
+    // so the "we have never timed a run" state is entered once in the app's life.
+    genProgress.setVisible(false);
+    if (const auto k = database.getSetting("gen_calibration"))
+        genProgress.setCalibration(juce::String(*k).getDoubleValue());
+    addAndMakeVisible(genProgress);
 
     datasetsLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.45f));
     datasetsLabel.setFont(juce::FontOptions(11.0f));
@@ -615,6 +622,7 @@ void GenerateContent::refreshLoras() {
         box.setSelectedId(box.indexOfItemId(wanted) >= 0 ? wanted : 1,
                           juce::dontSendNotification);
     }
+    syncLoraLanes(); // names may have changed under the boxes
 }
 
 void GenerateContent::addLoraFile() {
@@ -696,16 +704,26 @@ void GenerateContent::syncInpaintSliderRanges() {
 void GenerateContent::syncLoraStepRanges() {
     const int nSteps = juce::jmax(1, static_cast<int>(stepsSlider.getValue()));
     for (auto& sl : slots) {
-        for (auto* st : { &sl.minStep, &sl.maxStep }) {
-            const bool wasAtEnd = st->getValue() >= st->getMaximum();
-            st->setRange(1, nSteps, 1);
-            // A slider parked at the old maximum meant "all the way to the end", so it
-            // follows the new end rather than being left stranded mid-range by a change
-            // it had no opinion about.
-            if (wasAtEnd) st->setValue(nSteps, juce::dontSendNotification);
-        }
-        if (sl.minStep.getValue() > sl.maxStep.getValue())
-            sl.minStep.setValue(sl.maxStep.getValue(), juce::dontSendNotification);
+        // A window that reached the old last step meant "to the end" and still does, so
+        // it follows the new end rather than being stranded by a change it had no
+        // opinion about.
+        const bool wasFull = sl.stepHi >= previousStepCount;
+        sl.stepLo = juce::jlimit(1, nSteps, sl.stepLo);
+        sl.stepHi = wasFull ? nSteps : juce::jlimit(sl.stepLo, nSteps, sl.stepHi);
+    }
+    previousStepCount = nSteps;
+    loraLanes.setSteps(nSteps);
+    syncLoraLanes();
+}
+
+// Names and windows into the strip. Called whenever a LoRA is picked or Steps moves, so
+// the picture can never disagree with what buildLoraSpecs will send.
+void GenerateContent::syncLoraLanes() {
+    for (int i = 0; i < kLoraSlots; ++i) {
+        auto& sl = slots[static_cast<size_t>(i)];
+        const int sel = sl.box.getSelectedId();
+        const bool have = sel > 1 && sel - 1 <= loraFiles.size();
+        loraLanes.setLane(i, have ? sl.box.getText() : juce::String(), sl.stepLo, sl.stepHi);
     }
 }
 
@@ -1127,8 +1145,8 @@ juce::var GenerateContent::buildLoraSpecs() {
         // convention as sa3_gradio -- min at 1 means "from the start", max at or beyond
         // the schedule length means "to the last step", so a maxed slider still means
         // "all steps" after Steps changes.
-        const int lo = static_cast<int>(sl.minStep.getValue());
-        const int hi = static_cast<int>(sl.maxStep.getValue());
+        const int lo = sl.stepLo;
+        const int hi = sl.stepHi;
         const int nSteps = static_cast<int>(stepsSlider.getValue());
         if (lo > 1 || hi < nSteps) {
             juce::Array<juce::var> range { lo > 1 ? juce::var(lo) : juce::var(),
@@ -1168,6 +1186,7 @@ void GenerateContent::chooseOutputFolder() {
 }
 
 void GenerateContent::startWorker() {
+    modelLoaded = false;   // a fresh process has no weights in it
     worker = std::make_unique<mira::Sa3Worker>();
     worker->onLog = [this](juce::String line) { log(line); };
     worker->onExit = [this](int code) {
@@ -1250,7 +1269,7 @@ void GenerateContent::generate() {
             u->setProperty("name", loraFiles[sel - 2].getFileNameWithoutExtension());
             u->setProperty("strength", sl.strength.getValue());
             u->setProperty("gate", juce::var(juce::Array<juce::var>{
-                static_cast<int>(sl.minStep.getValue()), static_cast<int>(sl.maxStep.getValue()) }));
+                sl.stepLo, sl.stepHi }));
             used.add(juce::var(u));
         }
         if (!used.isEmpty()) r->setProperty("loras", juce::var(used));
@@ -1269,8 +1288,14 @@ void GenerateContent::generate() {
         }
     }
 
+    busySteps = static_cast<int>(stepsSlider.getValue());
+    busySeconds = secondsSlider.getValue();
+    busyHadLoad = !modelLoaded;
     setBusy(true, "generating");
+    genProgress.start(busySteps, busySeconds, busyHadLoad);
+    resized();
     worker->send(req, [this, wav](bool ok, juce::var payload) {
+        const double took = genProgress.elapsedSeconds();
         setBusy(false, {});
         if (!ok) {
             log("generate failed: " + payload.getProperty("error", "unknown").toString());
@@ -1293,6 +1318,11 @@ void GenerateContent::generate() {
         // new take showed the previous one's waveform until it was clicked.)
         takeStack->addTake(wav);
         revealButton.setEnabled(true);
+        // Only a SUCCESSFUL run teaches the estimate. A failure stops early and would
+        // drag k towards a number no real generation ever takes.
+        modelLoaded = true;
+        genProgress.learn(took, busySteps, busySeconds, busyHadLoad);
+        database.setSetting("gen_calibration", juce::String(genProgress.getCalibration(), 6).toStdString());
         const auto ms = static_cast<int>(payload.getProperty("wall_ms", 0));
         statusLabel.setText(wav.getFileName() + " - done in "
                             + juce::String(ms / 1000.0, 1) + "s - drag the tile into your DAW",
@@ -1422,15 +1452,15 @@ void GenerateContent::setBusy(bool nowBusy, const juce::String& what) {
     generateButton.setEnabled(!busy);
     encodeButton.setEnabled(!busy);
     stopButton.setEnabled(busy);
-    progressBar.setVisible(busy);
     if (busy) {
         busyStartMs = juce::Time::getMillisecondCounter();
-        progress = -1.0;                      // indeterminate: the worker reports no %
         statusLabel.setText(what + "...", juce::dontSendNotification);
         startTimerHz(4);
     } else {
+        genProgress.stop();
         startTimerHz(1);   // keep the pressure readout live while idle
     }
+    resized();             // the strip takes height from the stack, or gives it back
 }
 
 void GenerateContent::stopGeneration() {
@@ -1553,18 +1583,17 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         place(sl.label, head.removeFromLeft(48));
         place(sl.box, head);
 
-        auto line = row(26, 10);
         const int labelW = 52;
-        const int cell = juce::jmax(90, (line.getWidth() - 3 * labelW - 12) / 3);
+        auto line = row(26, 4);
         place(sl.blendLabel, line.removeFromLeft(labelW).withTrimmedRight(4));
-        place(sl.strength, line.removeFromLeft(cell));
-        line.removeFromLeft(6);
-        place(sl.structureLabel, line.removeFromLeft(labelW).withTrimmedRight(4));
-        place(sl.minStep, line.removeFromLeft(cell));
-        line.removeFromLeft(6);
-        place(sl.timbreLabel, line.removeFromLeft(labelW).withTrimmedRight(4));
-        place(sl.maxStep, line);
+        place(sl.strength, line);
+
     }
+
+    // All three step windows in ONE picture, under the three slots rather than split
+    // across them: whether two LoRAs divide the run or fight over it is a question about
+    // the SET of them, and it cannot be asked of three separate rows.
+    place(loraLanes, row(LoraLanes::idealHeight(), 8));
 
     heading(settingsHeading, "SETTINGS");
     {
@@ -1641,8 +1670,6 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         line.removeFromLeft(6);
         place(revealButton, line.removeFromLeft(130));
     }
-    place(progressBar, row(12));
-
     return r.getY() - startY + 8;
 }
 
@@ -1681,6 +1708,10 @@ void GenerateContent::resized() {
         header.removeFromRight(6);
         takesLabel.setBounds(header);
         leftArea.removeFromTop(4);
+        if (genProgress.isVisible()) {
+            genProgress.setBounds(leftArea.removeFromTop(GenerateProgress::kHeight));
+            leftArea.removeFromTop(4);
+        }
         takesView.setBounds(leftArea);
     }
 

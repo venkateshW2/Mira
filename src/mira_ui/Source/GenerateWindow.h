@@ -11,9 +11,11 @@
 #include "LoraLibraryWindow.h"
 #include "NativeWindowChrome.h"
 #include "InpaintStrip.h"
+#include "LoraLanes.h"
 #include "PromptBuilderWindow.h"
 #include "Sa3Worker.h"
 #include "WaveformView.h"
+#include "GenerateProgress.h"
 
 // SA3 generation and pre-encoding, inside mira.
 //
@@ -109,14 +111,28 @@ private:
     // can be blended -- the thing separate single-LoRA runs can never do.
     struct LoraSlot {
         juce::ComboBox box;
-        juce::Slider strength, minStep, maxStep;
+        juce::Slider strength;
+        // ONE two-thumb slider, not two single-value ones. The pair was never two axes:
+        // buildLoraSpecs sends `steps: [lo, hi]`, a WINDOW of sampler steps during which
+        // this LoRA is allowed to act. Early steps shape structure and arrangement, late
+        // steps shape timbre and texture -- so the window says when it acts and for how
+        // much of the run. Two separate sliders made that read as two independent
+        // settings that might trade off against each other; they never did, and the only
+        // relationship between them is min <= max.
+        //
+        // Not collapsed to a SINGLE value, which was the other option considered: a
+        // single number can carry the position or the width but not both, and losing the
+        // width would remove "apply this LoRA for the whole run", the default.
+        // Plain values, not a widget: LoraLanes is the editor now, and a hidden slider
+        // holding the same numbers would be a second source of truth for them.
+        int stepLo = 1, stepHi = 8;
         juce::Label label;
         // "have slider with heading like Lorablend - timbre - structure". The three
         // numbers are a blend amount and a step window, and without words on them they
         // read as three anonymous sliders. Early diffusion steps shape structure and
         // arrangement, late steps shape timbre and texture -- which is what makes the
         // step window worth exposing at all, and the labels now say so.
-        juce::Label blendLabel, structureLabel, timbreLabel;
+        juce::Label blendLabel;
     };
     static constexpr int kLoraSlots = 3;
     std::array<LoraSlot, kLoraSlots> slots;
@@ -218,6 +234,8 @@ private:
     // exist -- dragging through them changed nothing, which is most of why it felt like
     // the slider was broken. The range follows Steps instead.
     void syncLoraStepRanges();
+    int previousStepCount = 8; // to tell "window reached the end" from "window happens to sit there"
+    void syncLoraLanes();
     // The inpaint range is bounded by the DURATION, not by the source file's length, so
     // the end handle can reach past where the audio stops -- which is what an extension
     // is. sa3_mlx.py zero-pads the init audio up to the requested duration, so the region
@@ -315,6 +333,17 @@ private:
     std::unique_ptr<TakeStack> takeStack;
     juce::Viewport takesView;
     juce::Label takesLabel; // "Takes (n)" -- the stack has no header of its own
+    // Sits between the takes header and the stack, so the bar fills in the same
+    // rectangle the finished take drops into. Replaces the indeterminate strip that used
+    // to live at the bottom of the right pane, next to the prompt.
+    GenerateProgress genProgress;
+    // Model weights load once per worker PROCESS, not once per generation, so the first
+    // run after a start or a Stop costs ~44 s more than the rest. The estimate has to
+    // know which kind of run this is or it is wrong by 44 s in one direction or the other.
+    bool modelLoaded = false;
+    int busySteps = 0;
+    double busySeconds = 0.0;
+    bool busyHadLoad = false;
 
     // Two containers, as asked for: takes and audio on the left, everything else on the
     // right. Both scroll. That is the fix for "resize destroys the ui - the prompt gets
@@ -327,6 +356,7 @@ private:
     Pane rightPane;
     juce::Viewport rightView;
     juce::Label loraHeading, settingsHeading, inpaintHeading, inpaintHelp;
+    LoraLanes loraLanes;
     std::unique_ptr<InpaintStrip> inpaintStrip;
     int layoutRightPane(int width, bool applyBounds);
     juce::TextButton stopButton { "Stop" };
@@ -336,10 +366,8 @@ private:
     // failure looks exactly like "the model got slower", so it needs to be visible.
     juce::Label pressureLabel;
     juce::TextEditor logView;
-    juce::ProgressBar progressBar { progress };
     // NO TooltipWindow here on purpose: MainComponent already owns the app's single one
     // (Main.cpp). A second instance renders every tooltip twice, overlapping.
-    double progress = 0.0;
     bool busy = false;
     juce::int64 busyStartMs = 0;
 

@@ -294,25 +294,38 @@ void MiraLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int widt
         return;
     }
 
-    const float trackH = 4.0f;
+    // Drawn as a filled BAR rather than a hairline with a knob, to match the LoRA lane
+    // strip -- asked for directly: "the range style, can the sliders also be like range
+    // but behave like a slider". Only the drawing changes; the Slider is an ordinary
+    // single-value LinearHorizontal and drags, arrow-keys and double-click-to-reset all
+    // behave exactly as before.
+    //
+    // Why it reads better than the knob: the filled length IS the value, so a column of
+    // sliders can be compared down the edge of the fills without reading a single number.
+    // A round knob puts all the information in one 13px dot and leaves the rest of the
+    // control saying nothing.
+    const float barH = juce::jmin(static_cast<float>(height) - 2.0f, 16.0f);
     const float cy = static_cast<float>(y) + static_cast<float>(height) * 0.5f;
-    juce::Rectangle<float> track (static_cast<float>(x), cy - trackH * 0.5f,
-                                   static_cast<float>(width), trackH);
+    juce::Rectangle<float> bar (static_cast<float>(x), cy - barH * 0.5f,
+                                 static_cast<float>(width), barH);
+    const bool on = slider.isEnabled();
 
-    // The whole range, visibly. This is the part that was disappearing into the
-    // background: without it a slider says nothing about where its value sits.
-    g.setColour(surface2.brighter(0.18f));
-    g.fillRoundedRectangle(track, trackH * 0.5f);
+    g.setColour(surface2);
+    g.fillRoundedRectangle(bar, 3.0f);
 
-    // Filled portion, in the accent, so the value reads at a glance across a column of
-    // sliders rather than needing the number beside it.
-    auto filled = track.withRight(juce::jlimit(track.getX(), track.getRight(), sliderPos));
-    g.setColour(accent.withAlpha(slider.isEnabled() ? 0.9f : 0.35f));
-    g.fillRoundedRectangle(filled, trackH * 0.5f);
+    auto filled = bar.withRight(juce::jlimit(bar.getX(), bar.getRight(), sliderPos));
+    g.setColour(accent.withAlpha(on ? 0.5f : 0.18f));
+    g.fillRoundedRectangle(filled, 3.0f);
 
-    const float knobR = slider.isMouseOverOrDragging() ? 7.5f : 6.5f;
-    g.setColour(slider.isEnabled() ? text : textDim);
-    g.fillEllipse(sliderPos - knobR, cy - knobR, knobR * 2.0f, knobR * 2.0f);
-    g.setColour(surface.withAlpha(0.85f));
-    g.drawEllipse(sliderPos - knobR, cy - knobR, knobR * 2.0f, knobR * 2.0f, 1.0f);
+    // The value edge, hard and bright. This is the grab target and the thing the eye
+    // lands on; it is what the knob used to be, flattened into the bar.
+    if (filled.getWidth() >= 1.0f)
+    {
+        const float w = slider.isMouseOverOrDragging() ? 3.0f : 2.0f;
+        g.setColour(on ? accent.brighter(0.25f) : textDim);
+        g.fillRect(filled.getRight() - w, bar.getY(), w, bar.getHeight());
+    }
+
+    g.setColour(border.withAlpha(0.6f));
+    g.drawRoundedRectangle(bar.reduced(0.5f), 3.0f, 1.0f);
 }
