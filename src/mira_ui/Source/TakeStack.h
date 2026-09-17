@@ -53,6 +53,10 @@ public:
         for (auto& t : takes)
             if (t.file == file) { if (expand) focus(t.file); return; }
 
+        // The landing bay's occupant. Only a Pending take can hold it: loading an
+        // existing project's kept cues at startup must not push one of them into NOW.
+        if (state == State::Pending) latestFile = file;
+
         Take take;
         take.file = file;
         take.state = state;
@@ -117,15 +121,19 @@ public:
             if (takes[i].file == file)
             {
                 if (focusedFile == file) focusedFile = juce::File();
+                // Otherwise NOW keeps pointing at a take that no longer exists, and
+                // isInNow() silently hides the next-newest take from TAKES forever.
+                if (latestFile == file) latestFile = juce::File();
                 takes.erase(takes.begin() + static_cast<long>(i));
                 rebuild();
                 return;
             }
     }
 
-    void clear() { takes.clear(); focusedFile = juce::File(); rebuild(); }
+    void clear() { takes.clear(); focusedFile = juce::File(); latestFile = juce::File(); rebuild(); }
 
     juce::File getFocusedFile() const { return focusedFile; }
+    juce::File getLatestFile() const { return latestFile; }
 
     // Cmd-click adds a row to the selection; the focused row is always part of it. Bulk
     // Keep and Discard act on this, so "throw away these six" is six clicks and one
@@ -212,7 +220,7 @@ public:
             if (row.kind == RowKind::Header)
             {
                 paintHeader(g, { 0, y, getWidth(), kHeaderHeight }, row.headerText, row.headerCount,
-                             row.section);
+                             row.section, row.nowSection);
                 y += kHeaderHeight;
                 continue;
             }
@@ -231,7 +239,11 @@ public:
         {
             if (row.kind == RowKind::Header)
             {
-                if (e.y >= y && e.y < y + kHeaderHeight) { toggleSection(row.section); return; }
+                // NOW holds exactly one row and is the thing the window is FOR; a
+                // disclosure triangle on it would only ever hide the take that just
+                // finished rendering.
+                if (e.y >= y && e.y < y + kHeaderHeight)
+                { if (!row.nowSection) toggleSection(row.section); return; }
                 y += kHeaderHeight;
                 continue;
             }
@@ -301,6 +313,10 @@ private:
         juce::String headerText;
         int headerCount = 0;
         State section = State::Pending; // which section a header belongs to
+        // NOW is a POSITION, not a State: the take in it is an ordinary Pending take that
+        // happens to be the newest. Marking the header instead of inventing a fourth
+        // State keeps keep/discard, counting and multi-select working on it unchanged.
+        bool nowSection = false;
     };
 
     struct Repainter : juce::ChangeListener
@@ -326,8 +342,15 @@ private:
     int countOf(State s) const
     {
         int n = 0;
-        for (const auto& t : takes) if (t.state == s) ++n;
+        for (const auto& t : takes) if (t.state == s && !isInNow(t)) ++n;
         return n;
+    }
+
+    // The newest take, while it is still undecided. Kept or discarded, it leaves NOW and
+    // joins its section -- "then it goes to take or kept or discarded".
+    bool isInNow(const Take& t) const
+    {
+        return t.state == State::Pending && latestFile != juce::File() && t.file == latestFile;
     }
 
     void focus(const juce::File& file)
@@ -356,9 +379,33 @@ private:
             // height, hit test and paint below follows automatically -- they all walk
             // `rows`, and this is the one place that decides what is in it.
             if (isCollapsed(state)) return;
-            for (size_t i = 0; i < takes.size(); ++i)
-                if (takes[i].state == state) { Row r; r.takeIndex = i; rows.push_back(r); }
+            // NEWEST FIRST. Takes are appended, so walking backwards puts the most
+            // recent at the top of its section -- "the new take should land on top not
+            // bottom... right now the new take lands at the bottom, we need to scroll
+            // and don't realise it's landed".
+            for (size_t i = takes.size(); i-- > 0; )
+                if (takes[i].state == state && !isInNow(takes[i]))
+                { Row r; r.takeIndex = i; rows.push_back(r); }
         };
+
+        // NOW, pinned above everything. The newest take sits here, open, with the
+        // transport, until the next generation displaces it -- so a finished take is
+        // never somewhere you have to go looking for, and the take you are listening to
+        // does not move out from under you while you decide about it.
+        for (size_t i = 0; i < takes.size(); ++i)
+        {
+            if (!isInNow(takes[i])) continue;
+            Row header;
+            header.kind = RowKind::Header;
+            header.headerText = "NOW";
+            header.headerCount = 1;
+            header.section = State::Pending;
+            header.nowSection = true;
+            rows.push_back(header);
+            Row r; r.takeIndex = i; rows.push_back(r);
+            break;
+        }
+
         section(State::Kept, "KEPT");
         section(State::Pending, "TAKES");
         section(State::Discarded, "DISCARDED");
@@ -372,26 +419,42 @@ private:
     }
 
     void paintHeader(juce::Graphics& g, juce::Rectangle<int> area, const juce::String& text,
-                      int count, State section)
+                      int count, State section, bool nowSection = false)
     {
-        const bool collapsed = isCollapsed(section);
+        const bool collapsed = !nowSection && isCollapsed(section);
         auto r = area.reduced(10, 0);
+        if (nowSection)
+        {
+            g.setColour(MiraLookAndFeel::accent.withAlpha(0.10f));
+            g.fillRect(area);
+        }
 
         // A disclosure triangle on the section itself -- with twenty takes and nine kept,
         // the sections are the only thing that makes the list navigable, and a heading
         // that cannot be shut is just a label.
         auto tri = r.removeFromLeft(12).toFloat();
-        juce::Path p;
-        float cx = tri.getCentreX(), cy = tri.getCentreY();
-        if (collapsed) p.addTriangle(cx - 2, cy - 4, cx + 3, cy, cx - 2, cy + 4);
-        else           p.addTriangle(cx - 4, cy - 2, cx + 4, cy - 2, cx, cy + 3);
-        g.setColour(MiraLookAndFeel::textDim);
-        g.fillPath(p);
+        if (!nowSection)
+        {
+            juce::Path p;
+            float cx = tri.getCentreX(), cy = tri.getCentreY();
+            if (collapsed) p.addTriangle(cx - 2, cy - 4, cx + 3, cy, cx - 2, cy + 4);
+            else           p.addTriangle(cx - 4, cy - 2, cx + 4, cy - 2, cx, cy + 3);
+            g.setColour(MiraLookAndFeel::textDim);
+            g.fillPath(p);
+        }
         r.removeFromLeft(5);
 
-        g.setColour(MiraLookAndFeel::accent.withAlpha(0.85f));
+        g.setColour(MiraLookAndFeel::accent.withAlpha(nowSection ? 1.0f : 0.85f));
         g.setFont(juce::Font(juce::FontOptions(10.0f, juce::Font::bold)));
-        g.drawText(text + "  (" + juce::String(count) + ")", r, juce::Justification::centredLeft);
+        g.drawText(nowSection ? juce::String("NOW") : text + "  (" + juce::String(count) + ")",
+                    r, juce::Justification::centredLeft);
+        if (nowSection)
+        {
+            g.setColour(MiraLookAndFeel::textDim);
+            g.setFont(juce::Font(juce::FontOptions(9.5f)));
+            g.drawText("latest take - stays here until the next one finishes",
+                        r, juce::Justification::centredRight);
+        }
         g.setColour(MiraLookAndFeel::textDim.withAlpha(0.2f));
         g.fillRect(area.getX() + 10, area.getBottom() - 1, area.getWidth() - 20, 1);
     }
@@ -475,6 +538,7 @@ private:
     std::vector<Take> takes;
     std::vector<Row> rows;
     juce::File focusedFile;
+    juce::File latestFile;   // occupant of NOW
     std::vector<juce::Component*> hosted;
     // Indexed by State. Discarded starts shut: it is a record of decisions already made,
     // and it is the section least likely to be wanted open.
