@@ -95,6 +95,19 @@ public:
     // whereClauseSql. `clearHumanFields` resets the whole object back to '{}'.
     void setHumanField(int64_t fileId, const std::string& jsonPath, const std::string& jsonValueJson);
     void clearHumanFields(int64_t fileId);
+    // Merges one key into `provenance` the same way setHumanField merges into `human`,
+    // and for the same reason: provenance already holds the analysis toolchain, and a
+    // generated file's recipe is a SIBLING of that, not a replacement for it
+    // (MIRA-GENERATE.md §3.6). The wholesale `provenanceJson` on AnalysisResult would
+    // destroy whichever half it did not write.
+    void setProvenanceField(int64_t fileId, const std::string& jsonPath, const std::string& jsonValueJson);
+    // Follows a file that mira itself relocated -- Keep filing a generated take from
+    // <project>/takes/ into <project>/<cue>/ is the only caller, and PRD §1's "no file
+    // ever moves" is about the user's own library, not mira's own scratch output. An
+    // UPDATE rather than delete-and-reinsert so segments, collection membership and any
+    // analysis already done survive the move. Returns false when no row was at oldPath,
+    // which simply means the take had never been scanned.
+    bool moveFilePath(const std::string& oldPath, const std::string& newPath);
     // Replaces `human` wholesale. Exists for undo (mira_ui's UndoManager), which restores a
     // captured object rather than replaying the individual field writes that produced it --
     // replaying is how an undo ends up subtly different from the state it claimed to

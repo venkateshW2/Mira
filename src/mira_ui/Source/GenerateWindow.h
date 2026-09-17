@@ -161,6 +161,9 @@ private:
     juce::TextEditor nameEditor;                 // base filename, blank = timestamp
     juce::File outputFolder;
     bool trainingBenchVisible = true; // the SA3 Generate window keeps its bench
+    juce::File projectFolder;         // invalid = no project, Keep behaves as it always did
+    void keepResultIntoCue(const juce::File& wav, const juce::String& cueName);
+    juce::StringArray listExistingCues() const;
 
 public:
     // MIRA-GENERATE.md Phase 1: "switching project switches the output folder". Same
@@ -183,6 +186,11 @@ public:
         datasetsLabel.setVisible(shouldBeVisible);
         resized();
     }
+
+    // MIRA-GENERATE.md Phase 3. When set, Keep asks for a cue and files the take into
+    // <project>/<cue>/ under its working name. Unset (the SA3 Generate window) leaves
+    // Keep exactly as it was: register in place, add to the "Generated" collection.
+    void setProject(const juce::File& folder) { projectFolder = folder; }
 
     void setOutputFolder(const juce::File& folder)
     {

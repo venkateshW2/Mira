@@ -1600,7 +1600,10 @@ public:
         // now on. Phase 2's project window will bind to this the same way; until then
         // this is what "switching project switches the output folder" means.
         if (generateWindow != nullptr) generateWindow->content->setOutputFolder(projectTakesFolder());
-        if (projectWindow != nullptr) projectWindow->content->setOutputFolder(projectTakesFolder());
+        if (projectWindow != nullptr) {
+            projectWindow->content->setProject(folder);
+            projectWindow->content->setOutputFolder(projectTakesFolder());
+        }
         if (onWindowTitleChanged) onWindowTitleChanged();
     }
 
@@ -3130,6 +3133,7 @@ public:
                 if (onGenerationWindowClosed) onGenerationWindowClosed();
             });
         };
+        projectWindow->content->setProject(project); // Keep now asks for a cue (Phase 3)
         projectWindow->content->setOutputFolder(projectTakesFolder());
     }
 

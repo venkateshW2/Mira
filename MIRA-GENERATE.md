@@ -1,6 +1,6 @@
 # MIRA GENERATE — plan and task list
 
-**Written 2026-09-17.** Status: **Phases 1-2 built; Phases 3-7 planned.**
+**Written 2026-09-17.** Status: **Phases 1-3 built; Phases 4-7 planned.**
 
 A generation-and-delivery workflow inside mira: start a project, generate cues, keep the
 takes worth keeping, cut and fade them, hand the folder over.
@@ -257,13 +257,30 @@ stay clean enough to hand over.
 
 ### Phase 3 — keep into a cue
 
-- [ ] Keep prompts for a cue name, autocompleting from cues already in the project
-- [ ] Creates `<project>/<cue>/` if absent; writes the take there
-- [ ] Working name `{project}_{cue}_v{n}` assigned at Keep (§3.7)
-- [ ] `files.provenance.generation` written with model, LoRA, strength, seed, steps, cfg,
-      prompt (§3.6)
-- [ ] `files.human.status` = `chosen` | `alt` | `rejected`, editable afterwards
-- [ ] Browser tree shows project -> cue -> takes (existing `onLibraryChanged` refresh)
+**Built 2026-09-17.**
+
+- [x] Keep prompts for a cue, as an **editable combo box** of the cues already in the
+      project — picking is the common case (ten takes, one cue), typing makes a new one
+- [x] Creates `<project>/<cue>/` if absent; moves the take there with its `.json` recipe
+- [x] Working name `{project}_{cue}_v{n}` assigned at Keep (§3.7), the version read from
+      **what is already in the cue folder**, never a session counter — this answers §5's
+      fourth open question: reopening a project next week continues at v4
+- [x] `files.provenance.generation` written, merged as a sibling of the analysis
+      toolchain via a new `setProvenanceField` (§3.6). `human.$.generated` still written
+      too, so anything already reading that keeps working
+- [x] `files.human.status` = `chosen` for v1, `alt` after, plus `human.cue`. In `human`
+      precisely because it is a judgement and must stay editable (PRD §11)
+- [x] Browser tree shows project -> cue -> takes — cue folders are real directories, so
+      the existing tree walk and `onLibraryChanged` refresh cover it with no new plumbing
+
+**A take moves, and PRD §1 is not broken.** "No file ever moves" protects the *user's*
+library — folders mira was pointed at. A take in `<project>/takes/` is mira's own scratch
+output and filing it is the whole point of the button. `Database::moveFilePath` UPDATEs
+the row rather than delete-and-reinsert, so segments, collection membership and any
+analysis already done survive the move.
+
+**Without a project, Keep is untouched**: register in place, file under "Generated". The
+SA3 Generate window behaves exactly as it did.
 
 **Exit:** a full session's work lands organised on disk and in the library. **This is the
 point at which the feature is useful.**
@@ -312,8 +329,9 @@ point at which the feature is useful.**
   project is likelier to move than a sample library.
 - **Should Keep queue analysis immediately** (so BPM and key are ready at export) or leave
   it to the normal analysis pass? Immediate is better for the workflow, heavier at Keep.
-- **Version numbering across sessions**: `v{n}` has to look at what is already in the cue
-  folder, not at a session counter, or reopening a project restarts at v1.
+- ~~**Version numbering across sessions**~~ — **settled in Phase 3.** `v{n}` counts the
+  `{project}_{cue}_v*.wav` files already in the cue folder, so reopening a project
+  continues where it left off.
 
 ---
 

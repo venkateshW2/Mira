@@ -449,9 +449,70 @@ void GenerateContent::addLoraFile() {
 // Registers the current result the way the scanner would, then stores the recipe in
 // `human` and files it under a "Generated" collection. Deliberately manual -- see the
 // keepButton comment in the header.
+namespace {
+// MIRA-GENERATE.md §3.7. "Short Film" -> shortfilm, "A minor" -> Aminor, 120.4 -> 120.
+// Lowercased and stripped to alphanumerics: a filename token that has to survive being
+// mailed, zipped, and dropped into someone else's DAW on someone else's filesystem.
+juce::String slugify(const juce::String& text) {
+    juce::String out;
+    for (auto c : text)
+        if (juce::CharacterFunctions::isLetterOrDigit(c)) out += juce::String::charToString(c).toLowerCase();
+    return out;
+}
+
+// Editable combo box, not a plain text field: the cues already in the project are the
+// list, and typing a new name is how a new cue is made. That is the whole of "prompts
+// for a cue name, autocompleting from cues already in the project" -- picking is the
+// common case (ten takes for one cue), typing is the occasional one.
+void promptForCue(const juce::StringArray& existingCues, const juce::String& initialValue,
+                   juce::Component* anchor, std::function<void(juce::String)> onConfirm) {
+    // Same owning-shared_ptr pattern FolderTreeView::promptForText documents, and for
+    // the same reason: deleteWhenDismissed=false, we own the lifetime here.
+    auto aw = std::make_shared<juce::AlertWindow>("Keep Take", "Which cue does this belong to?",
+                                                   juce::MessageBoxIconType::NoIcon, anchor);
+    aw->addComboBox("cue", existingCues, "Cue");
+    if (auto* box = aw->getComboBoxComponent("cue")) {
+        box->setEditableText(true);
+        if (initialValue.isNotEmpty()) box->setText(initialValue, juce::dontSendNotification);
+        else if (existingCues.isEmpty()) box->setText("cue01", juce::dontSendNotification);
+    }
+    aw->addButton("Keep", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    aw->enterModalState(true, juce::ModalCallbackFunction::create([aw, onConfirm](int result) {
+        if (result != 1) return;
+        if (auto* box = aw->getComboBoxComponent("cue")) onConfirm(box->getText());
+    }), false);
+}
+} // namespace
+
+juce::StringArray GenerateContent::listExistingCues() const {
+    juce::StringArray cues;
+    if (!projectFolder.isDirectory()) return cues;
+    for (const auto& d : projectFolder.findChildFiles(juce::File::findDirectories, false)) {
+        // "takes" is the scratch bin, not a cue -- it is where these files are coming
+        // FROM (MIRA-GENERATE.md Phase 2a).
+        if (d.getFileName() == "takes") continue;
+        cues.add(d.getFileName());
+    }
+    cues.sort(true);
+    return cues;
+}
+
 void GenerateContent::keepResult() {
     const auto wav = resultTile.getFile();
     if (!wav.existsAsFile()) return;
+
+    // Phase 3: in a project, Keep is the moment a take stops being scratch and becomes a
+    // cue. Without a project this is the SA3 Generate window and Keep means what it
+    // always meant -- register where it lies, file it under "Generated".
+    if (projectFolder.isDirectory()) {
+        promptForCue(listExistingCues(), {}, this, [this, wav](juce::String cue) {
+            cue = cue.trim();
+            if (cue.isEmpty()) return; // no silent "untitled" cue
+            keepResultIntoCue(wav, cue);
+        });
+        return;
+    }
 
     const auto path = wav.getFullPathName().toStdString();
     const auto hash = mira::sha256File(path);
@@ -479,6 +540,86 @@ void GenerateContent::keepResult() {
     statusLabel.setText(wav.getFileName() + " - kept in mira, collection \"Generated\"",
                         juce::dontSendNotification);
     log("kept: " + wav.getFileName());
+}
+
+// MIRA-GENERATE.md Phase 3. The take moves out of <project>/takes/ into
+// <project>/<cue>/ and takes its working name (§3.7): {project}_{cue}_v{n}.
+//
+// A MOVE, and PRD §1's "no file ever moves" is not being broken. That rule protects the
+// user's own library -- folders mira was pointed at. This is mira's own scratch output,
+// and filing it is the entire point of the button.
+//
+// The version number comes from what is ALREADY IN THE CUE FOLDER, never a session
+// counter (§5's fourth open question): reopening a project next week has to continue at
+// v4, not restart at v1.
+void GenerateContent::keepResultIntoCue(const juce::File& wav, const juce::String& cueName) {
+    const auto cueSlug = slugify(cueName);
+    const auto projectSlug = slugify(projectFolder.getFileName());
+    if (cueSlug.isEmpty()) { log("cue name has no usable characters: " + cueName); return; }
+
+    auto cueFolder = projectFolder.getChildFile(cueSlug);
+    if (!cueFolder.isDirectory() && !cueFolder.createDirectory().wasOk()) {
+        log("could not create cue folder: " + cueFolder.getFullPathName());
+        return;
+    }
+
+    const auto base = projectSlug + "_" + cueSlug + "_v";
+    int version = 1;
+    for (const auto& f : cueFolder.findChildFiles(juce::File::findFiles, false, base + "*.wav")) {
+        auto n = f.getFileNameWithoutExtension().fromLastOccurrenceOf("_v", false, false).getIntValue();
+        if (n >= version) version = n + 1;
+    }
+
+    auto target = cueFolder.getChildFile(base + juce::String(version) + ".wav");
+    const auto sourcePath = wav.getFullPathName().toStdString();
+
+    // Stop reading the file before moving it -- the preview holds it open, exactly as
+    // discardResult already has to do before moving one to the Trash.
+    preview.setFile({});
+    resultTile.setFile({});
+    if (!wav.moveFileTo(target)) {
+        log("could not file take into " + cueFolder.getFileName());
+        preview.setFile(wav);
+        resultTile.setFile(wav);
+        return;
+    }
+    // The recipe sidecar travels with the take; a take whose .json was left behind in
+    // takes/ would lose its settings the moment Clean up ran.
+    if (auto sidecar = wav.withFileExtension("json"); sidecar.existsAsFile())
+        sidecar.moveFileTo(target.withFileExtension("json"));
+
+    const auto path = target.getFullPathName().toStdString();
+    // If a scan had already indexed the take in takes/, follow the row rather than
+    // leaving a stale path behind and inserting a second one.
+    database.moveFilePath(sourcePath, path);
+    database.upsertScannedFile(path, mira::sha256File(path),
+                                target.getLastModificationTime().toMilliseconds() / 1000,
+                                target.getSize(),
+                                juce::Time::getCurrentTime().toMilliseconds() / 1000);
+
+    const auto record = database.findByPath(path);
+    if (!record.has_value()) { log("could not register " + target.getFileName()); return; }
+
+    if (!lastRecipe.isVoid()) {
+        // §3.6: a SIBLING of the analysis toolchain under `provenance`, merged in, so a
+        // later analysis pass and this can both be true of the same file.
+        database.setProvenanceField(record->id, "$.generation",
+                                     juce::JSON::toString(lastRecipe, true).toStdString());
+        // Kept where it has always been kept too -- an existing take's `$.generated`
+        // reader should not have to know about Phase 3 to keep working.
+        database.setHumanField(record->id, "$.generated",
+                                juce::JSON::toString(lastRecipe, true).toStdString());
+    }
+    // §3.7: "Chosen is v1; alts number after it." Editable afterwards -- this is a
+    // starting position, not a verdict, which is why it lives in `human`.
+    database.setHumanField(record->id, "$.status", version == 1 ? "\"chosen\"" : "\"alt\"");
+    database.setHumanField(record->id, "$.cue", "\"" + cueSlug.toStdString() + "\"");
+
+    if (onLibraryChanged) onLibraryChanged();
+    keepButton.setEnabled(false);
+    discardButton.setEnabled(false);
+    statusLabel.setText(target.getFileName() + " - kept in " + cueSlug, juce::dontSendNotification);
+    log("kept: " + cueSlug + "/" + target.getFileName());
 }
 
 // Trash, not delete: the result is still audible in the preview when this is pressed,

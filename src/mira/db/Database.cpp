@@ -352,6 +352,23 @@ void Database::setHumanField(int64_t fileId, const std::string& jsonPath, const 
     update.exec();
 }
 
+void Database::setProvenanceField(int64_t fileId, const std::string& jsonPath,
+                                   const std::string& jsonValueJson) {
+    SQLite::Statement update(db, "UPDATE files SET provenance = json_set(provenance, ?, json(?)) WHERE id = ?");
+    update.bind(1, jsonPath);
+    update.bind(2, jsonValueJson);
+    update.bind(3, fileId);
+    update.exec();
+}
+
+bool Database::moveFilePath(const std::string& oldPath, const std::string& newPath) {
+    SQLite::Statement update(db, "UPDATE files SET path = ? WHERE path = ?");
+    update.bind(1, newPath);
+    update.bind(2, oldPath);
+    update.exec();
+    return db.getChanges() > 0;
+}
+
 void Database::clearHumanFields(int64_t fileId) {
     SQLite::Statement update(db, "UPDATE files SET human = '{}' WHERE id = ?");
     update.bind(1, fileId);
