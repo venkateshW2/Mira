@@ -166,12 +166,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     }
 
     keepButton.setEnabled(false);
-    tip(keepButton, "Add this result to mira's library, under the \"Generated\" collection, with its full recipe.");
+    tip(keepButton, "Keep - file it into mira's library under \"Generated\", with its full recipe.");
     keepButton.onClick = [this] { keepResult(); };
     addAndMakeVisible(keepButton);
 
     discardButton.setEnabled(false);
-    tip(discardButton, "Move this result and its recipe to the Trash.");
+    tip(discardButton, "Discard - move this take and its recipe to the Trash.");
     discardButton.onClick = [this] { discardResult(); };
     addAndMakeVisible(discardButton);
 
@@ -477,12 +477,20 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // mistaken for a single one.
     takeStack->onSelectionChanged = [this] {
         const int n = takeStack->getSelectedCount();
-        keepButton.setButtonText(n > 1 ? "Keep " + juce::String(n) : juce::String("Keep"));
-        discardButton.setButtonText(n > 1 ? "Discard " + juce::String(n) : juce::String("Discard"));
+        // Icons have nowhere to put "Keep 4", so the count goes where it can still be
+        // read before acting. Leaving it unsaid would make a four-take discard look
+        // exactly like a one-take discard.
+        keepButton.setTooltip(n > 1 ? "Keep these " + juce::String(n) + " takes"
+                                    : juce::String("Keep - file it into mira's library"));
+        discardButton.setTooltip(n > 1 ? "Discard these " + juce::String(n) + " takes"
+                                       : juce::String("Discard - move to the Trash"));
     };
     refreshEditControls();
 
     // Last, so nothing added above can take these back (see the note beside preview).
+    // A freshly generated take has no chords, notes or beat grid to overlay, so the
+    // lanes menu here would only ever open onto greyed-out items.
+    preview.setLanesButtonVisible(false);
     takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton,
                                       &trimButton, &clearTrimButton, &auditionButton, &editLabel,
                                       &fadeInLabel, &fadeInSlider, &fadeOutLabel, &fadeOutSlider,
@@ -498,12 +506,13 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     updatePressure();
     startTimerHz(1);   // pressure keeps updating even when idle
 
-    logView.setMultiLine(true, false);
-    logView.setReadOnly(true);
-    logView.setCaretVisible(false);
-    logView.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 11.0f, 0));
-    tip(logView, "Worker output: model loads, LoRA plans, tracebacks.");
-    addAndMakeVisible(logView);
+    tip(consoleButton, "Worker output: model loads, LoRA plans, tracebacks. Opens in its own window.");
+    consoleButton.onClick = [this] {
+        if (consoleWindow == nullptr) consoleWindow = std::make_unique<LogWindow>(workerLog, laf);
+        consoleWindow->setVisible(true);
+        consoleWindow->toFront(true);
+    };
+    rightPane.addAndMakeVisible(consoleButton);
 
     // The progress strip lives in the LEFT pane, under the takes header: the bar fills
     // in the rectangle the take then lands in. Calibration is per machine and persists,
@@ -872,7 +881,20 @@ void GenerateContent::loadEditFor(const juce::File& wav) {
 }
 
 void GenerateContent::writeEditFields() {
-    if (editSegmentId == 0) return;
+    if (editSegmentId == 0) {
+        // Nothing to hang the values on yet. A full-length segment is the honest
+        // representation of "the whole take, quieter": it declares the same range the
+        // file already has, so export reads one code path whether or not a trim was made.
+        const auto record = database.findByPath(editFile.getFullPathName().toStdString());
+        const double length = preview.getTotalLengthSeconds();
+        if (!record.has_value() || length <= 0.0) return;
+        // Only once there is something to store -- an untouched take should not litter
+        // the segments table just for being looked at.
+        if (fadeInSlider.getValue() == 0.0 && fadeOutSlider.getValue() == 0.0
+            && gainSlider.getValue() == 0.0) return;
+        editSegmentId = database.createSegment(std::nullopt, record->id, 0.0, length, "{}");
+        if (editSegmentId == 0) return;
+    }
     // One key at a time into `human`, the same merge discipline setHumanField follows --
     // never a wholesale replace, so a tag someone put on this segment by hand survives a
     // fade being nudged.
@@ -959,7 +981,15 @@ void GenerateContent::refreshEditControls() {
     trimButton.setEnabled(haveFile);
     clearTrimButton.setEnabled(haveTrim);
     auditionButton.setEnabled(haveFile);
-    for (auto* sl : { &fadeInSlider, &fadeOutSlider, &gainSlider }) sl->setEnabled(haveTrim);
+    // NOT gated on haveTrim. Gain and fades have nothing to do with trimming -- a take
+    // you want 3 dB down, or faded out at the end, need not be cut at all -- but they
+    // were dead until a trim existed, because the values are stored on a `segments` row
+    // and no row existed yet. Reported as "what's the gain slider there, it doesn't
+    // move": it was disabled, which at this size is indistinguishable from broken.
+    // writeEditFields() now creates a full-length segment on first use instead.
+    const bool haveRow = haveFile
+                      && database.findByPath(editFile.getFullPathName().toStdString()).has_value();
+    for (auto* sl : { &fadeInSlider, &fadeOutSlider, &gainSlider }) sl->setEnabled(haveRow);
 
     // Trim needs a selection, so it is only live when there is one -- and the label says
     // which of the two things is missing rather than leaving a dead button to explain
@@ -1545,8 +1575,7 @@ void GenerateContent::timerCallback() {
 }
 
 void GenerateContent::log(const juce::String& line) {
-    logView.moveCaretToEnd();
-    logView.insertTextAtCaret(line.trimEnd() + "\n");
+    workerLog.append(LogStore::Source::app, line.trimEnd());
 }
 
 void GenerateContent::paint(juce::Graphics& g) {
@@ -1711,6 +1740,8 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         place(stopButton, line.removeFromLeft(80));
         line.removeFromLeft(6);
         place(revealButton, line.removeFromLeft(130));
+        line.removeFromLeft(6);
+        place(consoleButton, line.removeFromLeft(84));
     }
     return r.getY() - startY + 8;
 }
@@ -1730,10 +1761,6 @@ void GenerateContent::resized() {
     }
     r.removeFromTop(6);
 
-    // The log is a diagnostic and lives under both panes, full width.
-    auto logHeight = juce::jlimit(70, 160, r.getHeight() / 5);
-    logView.setBounds(r.removeFromBottom(logHeight));
-    r.removeFromBottom(8);
 
     // Two containers. The right one is sized to its content and scrolls; the left takes
     // whatever is left, with a floor so the takes never disappear on a narrow window.
@@ -1768,37 +1795,65 @@ void GenerateContent::resized() {
         // Discard beside it. These are children of the STACK, so the bounds below are in
         // the stack's coordinate space -- which is exactly why nothing else may
         // addAndMakeVisible them (see the constructor).
+        // Keep and Discard sit on the take's own row, at the right of its filename --
+        // "discard and keep be on top with the title of wav". They are about the take,
+        // so they belong on the take, not on a bar below a waveform that may be two
+        // hundred pixels away from the name of the thing it is about.
+        if (auto rowArea = takeStack->getFocusedRowArea(); !rowArea.isEmpty()) {
+            auto r = rowArea.withTrimmedRight(8);
+            discardButton.setBounds(r.removeFromRight(26).withSizeKeepingCentre(26, 22));
+            r.removeFromRight(4);
+            keepButton.setBounds(r.removeFromRight(26).withSizeKeepingCentre(26, 22));
+        } else {
+            keepButton.setBounds({}); discardButton.setBounds({});
+        }
+
         auto slot = takeStack->getFocusedContentArea();
         if (!slot.isEmpty()) {
-            auto buttons = slot.removeFromBottom(30);
+            // The drag tile is gone; the row is the drag handle now.
+            resultTile.setBounds({});
             // Phase 5's edit row, between the waveform and the keep/discard row: the
             // order of the strip is the order of the decisions -- hear it, cut it, keep it.
             auto edit = slot.removeFromBottom(28);
             slot.removeFromBottom(4);
             preview.setBounds(slot.withTrimmedBottom(4));
 
-            auditionButton.setBounds(edit.removeFromLeft(86).withSizeKeepingCentre(86, 22));
+            // Budgeted, not fixed. With jmax(90, w/4) per fader on a row a few hundred
+            // pixels wide, the three faders demanded 270px the row did not have and
+            // overflowed leftwards -- the gain slider came out a few pixels across and
+            // could not be moved at all. Same failure as the transport row's play button.
+            // Priority: gain > fade out > fade in; the buttons shrink before any of them.
+            const int ew = edit.getWidth();
+            const bool haveFades = ew >= 620;
+            const bool haveClear = ew >= 430;
+            const int btn = ew >= 520 ? 1 : 0;
+
+            auditionButton.setBounds(edit.removeFromLeft(btn ? 86 : 64).withSizeKeepingCentre(btn ? 86 : 64, 22));
             edit.removeFromLeft(5);
-            trimButton.setBounds(edit.removeFromLeft(120).withSizeKeepingCentre(120, 22));
+            trimButton.setBounds(edit.removeFromLeft(btn ? 120 : 84).withSizeKeepingCentre(btn ? 120 : 84, 22));
             edit.removeFromLeft(4);
-            clearTrimButton.setBounds(edit.removeFromLeft(92).withSizeKeepingCentre(92, 22));
-            edit.removeFromLeft(8);
-            gainSlider.setBounds(edit.removeFromRight(juce::jmax(90, edit.getWidth() / 4)));
-            gainLabel.setBounds(edit.removeFromRight(36));
-            edit.removeFromRight(6);
-            fadeOutSlider.setBounds(edit.removeFromRight(juce::jmax(90, edit.getWidth() / 3)));
-            fadeOutLabel.setBounds(edit.removeFromRight(52));
-            edit.removeFromRight(6);
-            fadeInSlider.setBounds(edit.removeFromRight(juce::jmax(90, edit.getWidth() / 2)));
-            fadeInLabel.setBounds(edit.removeFromRight(46));
-            edit.removeFromRight(6);
+            if (haveClear) {
+                clearTrimButton.setBounds(edit.removeFromLeft(92).withSizeKeepingCentre(92, 22));
+                edit.removeFromLeft(8);
+            } else clearTrimButton.setBounds({});
+
+            const int fader = juce::jlimit(70, 120, edit.getWidth() / (haveFades ? 3 : 1) - 44);
+            gainSlider.setBounds(edit.removeFromRight(fader));
+            gainLabel.setBounds(edit.removeFromRight(32));
+            if (haveFades) {
+                edit.removeFromRight(6);
+                fadeOutSlider.setBounds(edit.removeFromRight(fader));
+                fadeOutLabel.setBounds(edit.removeFromRight(48));
+                edit.removeFromRight(6);
+                fadeInSlider.setBounds(edit.removeFromRight(fader));
+                fadeInLabel.setBounds(edit.removeFromRight(42));
+                edit.removeFromRight(6);
+            } else {
+                fadeOutSlider.setBounds({}); fadeOutLabel.setBounds({});
+                fadeInSlider.setBounds({});  fadeInLabel.setBounds({});
+            }
             editLabel.setBounds(edit);
 
-            keepButton.setBounds(buttons.removeFromRight(64).withSizeKeepingCentre(64, 24));
-            buttons.removeFromRight(5);
-            discardButton.setBounds(buttons.removeFromRight(80).withSizeKeepingCentre(80, 24));
-            buttons.removeFromRight(8);
-            resultTile.setBounds(buttons);
         }
     }
 }

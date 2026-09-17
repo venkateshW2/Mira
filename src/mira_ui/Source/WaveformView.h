@@ -39,6 +39,23 @@ private:
     bool muted = false;
 };
 
+// A drawn icon rather than a character. "use the magnifier icon and use that instead of
+// - + and stuff, standard UI" -- and drawn, not a glyph, because the magnifier and hand
+// codepoints are emoji in most system fonts: they render as colour emoji or as a blank
+// box depending on which font the button happens to resolve, and neither can be tinted to
+// match the rest of the transport.
+class GlyphButton : public juce::Button
+{
+public:
+    enum class Glyph { ZoomIn, ZoomOut, Fit, Hand, ThumbUp, ThumbDown };
+    explicit GlyphButton(Glyph g) : juce::Button("icon"), glyph(g) {}
+    void setGlyph(Glyph g) { glyph = g; repaint(); }
+
+private:
+    void paintButton(juce::Graphics& g, bool over, bool down) override;
+    Glyph glyph;
+};
+
 class WaveformView : public juce::Component, private juce::ChangeListener, private juce::Timer
 {
 public:
@@ -65,6 +82,16 @@ public:
     };
 
     void setSegments(std::vector<SegmentSpan> newSegments);
+
+    // Length of the loaded audio, 0 when nothing is loaded. Needed by callers that have
+    // to describe the whole file (a full-length edit segment, say) without opening it a
+    // second time.
+    double getTotalLengthSeconds() const;
+
+    // The lanes menu is about ANALYSIS overlays -- chords, notes, beats, the bars ruler.
+    // A freshly generated take has none of that, so the button is only noise there:
+    // "why have lanes here, we are doing nothing of those sorts now".
+    void setLanesButtonVisible(bool shouldShow);
 
     // Timeline lanes (TASKS.md Phase 5, "data already exists, nothing draws it"). All
     // three come straight out of what `mira analyze` already stored -- this class does no
@@ -336,9 +363,15 @@ private:
     juce::Slider volumeSlider;
     juce::Label volumePercentLabel;
     juce::Label timeLabel;
-    juce::TextButton zoomOutButton { juce::CharPointer_UTF8("\xe2\x88\x92") }; // minus sign
-    juce::TextButton zoomInButton { "+" };
-    juce::TextButton zoomResetButton { "Fit" };
+    GlyphButton zoomOutButton { GlyphButton::Glyph::ZoomOut };
+    GlyphButton zoomInButton  { GlyphButton::Glyph::ZoomIn };
+    GlyphButton zoomResetButton { GlyphButton::Glyph::Fit };
+    // Drag in the waveform selects by default and PANS while this is on -- "use the hand
+    // symbol for moving for wav scrolling". A mode, not a modifier, because the selection
+    // drag is the primary gesture here and must not need a key held to stay itself.
+    GlyphButton panButton { GlyphButton::Glyph::Hand };
+    bool lanesShown = true;
+    bool panMode = false;
     bool muted = false; // output gain forced to 0 while true; the slider itself keeps its own value
 
     // Click-drag selection in the waveform itself (Soundly reference screenshot: a

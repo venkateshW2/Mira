@@ -15,6 +15,7 @@
 #include "PromptBuilderWindow.h"
 #include "Sa3Worker.h"
 #include "WaveformView.h"
+#include "LogView.h"
 #include "GenerateProgress.h"
 
 // SA3 generation and pre-encoding, inside mira.
@@ -171,13 +172,13 @@ private:
     // library that fills with rejects is worse than one that does not know about them.
     // Pressing this registers the file the way the scanner would, stores the recipe in
     // `human`, and files it under a "Generated" collection.
-    juce::TextButton keepButton { "Keep" };
+    GlyphButton keepButton { GlyphButton::Glyph::ThumbUp };
     void keepResult();
     // The counterpart to Keep. Output accumulates fast -- 40 files / 945 MB before this
     // existed -- and pruning it by hand in Finder means opening each one to find out
     // what it was. Both of these move to the TRASH, never unlink: a generation you
     // cannot get back is a bad thing to make one click away.
-    juce::TextButton discardButton { "Discard" };
+    GlyphButton discardButton { GlyphButton::Glyph::ThumbDown };
     void discardResult();
     // Sweeps the output folder of everything never Kept, so the routine case (generate
     // ten, keep one) does not require ten decisions later.
@@ -322,6 +323,11 @@ private:
     // the waveform's own click-drag is scrubbing, and overloading it with an external
     // file drag would make both feel broken.
     WaveformView preview;
+    // No longer drawn. It was a large permanent rectangle whose only jobs were "show the
+    // filename" and "be draggable", and the row above the waveform already shows the
+    // filename and is now itself draggable (TakeStack::mouseDrag). What survives is its
+    // third, unadvertised job: it is the window's record of WHICH take is current, read
+    // by Show in Finder, keepResult and the cleanup paths.
     ResultTile resultTile;
     // MIRA-GENERATE.md Phase 4. The window held ONE result until now -- each generation
     // replaced the last, so comparing two meant regenerating. The stack keeps every take
@@ -370,7 +376,14 @@ private:
     // to push the whole thing into swap, where every diffusion step pages to disk. That
     // failure looks exactly like "the model got slower", so it needs to be visible.
     juce::Label pressureLabel;
-    juce::TextEditor logView;
+    // The worker console is a WINDOW now, not a strip glued to the bottom of this one.
+    // It was ~140px of monospace permanently occupying the full width of the generate
+    // window to show four lines nobody reads until something breaks -- and when
+    // something does break, four lines is not enough anyway. A window can be opened,
+    // made tall, and left on a second display.
+    LogStore workerLog;
+    std::unique_ptr<LogWindow> consoleWindow;
+    juce::TextButton consoleButton { "Console" };
     // NO TooltipWindow here on purpose: MainComponent already owns the app's single one
     // (Main.cpp). A second instance renders every tooltip twice, overlapping.
     bool busy = false;

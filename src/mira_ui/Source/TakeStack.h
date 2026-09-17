@@ -46,6 +46,9 @@ public:
     // Raised for Phase 5's edit row (trim, fades, gain) sitting between the waveform
     // and the keep/discard strip. Counted here rather than stolen from the waveform,
     // which is the mistake that made the playing take the smallest one.
+    // 64 for the waveform's own ruler + transport, 32 for the edit row. The 30px
+    // keep/discard strip that used to be counted here is gone -- those are two icons on
+    // the take's row now -- and that height goes back to the waveform.
     static constexpr int kTransportChrome = 64 + 32;
 
     void addTake(const juce::File& file, State state = State::Pending, bool expand = true)
@@ -187,6 +190,23 @@ public:
         return {};
     }
 
+    // The focused take's own 28px row strip. Keep and Discard are placed at its right,
+    // beside the filename, instead of on a bar under the waveform: "discard and keep be
+    // on top with the title of wav". They belong to the take, so they belong on the take.
+    juce::Rectangle<int> getFocusedRowArea() const
+    {
+        int y = 0;
+        for (const auto& row : rows)
+        {
+            if (row.kind == RowKind::Header) { y += kHeaderHeight; continue; }
+            const auto& take = takes[row.takeIndex];
+            if (take.file == focusedFile && take.expanded)
+                return { 0, y, getWidth(), kRowHeight };
+            y += kRowHeight + bodyHeightFor(take);
+        }
+        return {};
+    }
+
     std::function<void(const juce::File&)> onFocused;
     std::function<void()> onHeightChanged;
     std::function<void()> onSelectionChanged; // multi-selection grew or shrank
@@ -234,6 +254,8 @@ public:
 
     void mouseDown(const juce::MouseEvent& e) override
     {
+        dragFile = takeAt(e.y);   // armed here, acted on only once the pointer moves
+        draggingOut = false;
         int y = 0;
         for (const auto& row : rows)
         {
@@ -352,6 +374,28 @@ private:
     {
         return t.state == State::Pending && latestFile != juce::File() && t.file == latestFile;
     }
+
+    // Drag a row straight into a DAW or Finder. This replaces the separate drag tile,
+    // which was a large permanent rectangle that existed only to be picked up ("the drag
+    // wav file is very big"). The row is already the take's handle; it may as well be the
+    // one you grab.
+    //
+    // It cannot live on the WAVEFORM, tempting as that is: a drag there already means
+    // scrub, select or pan, and a fourth meaning on the same gesture would make all four
+    // unreliable. The row has no competing drag, so it costs nothing.
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (dragFile == juce::File() || draggingOut) return;
+        if (e.getDistanceFromDragStart() < 8) return;
+        draggingOut = true;
+        juce::StringArray paths;
+        paths.add(dragFile.getFullPathName());
+        // canMoveFiles = false: this hands out a COPY reference. True would let a DAW
+        // move the take out of the project folder, which is the one outcome nobody wants.
+        juce::DragAndDropContainer::performExternalDragDropOfFiles(paths, false, this);
+    }
+
+    void mouseUp(const juce::MouseEvent&) override { draggingOut = false; dragFile = juce::File(); }
 
     void focus(const juce::File& file)
     {
@@ -537,8 +581,25 @@ private:
     juce::AudioThumbnailCache& cache;
     std::vector<Take> takes;
     std::vector<Row> rows;
+    // Which take a y coordinate falls on, row or expanded body, or none.
+    juce::File takeAt(int yPos) const
+    {
+        int y = 0;
+        for (const auto& row : rows)
+        {
+            if (row.kind == RowKind::Header) { y += kHeaderHeight; continue; }
+            const auto& take = takes[row.takeIndex];
+            const int h = kRowHeight + bodyHeightFor(take);
+            if (yPos >= y && yPos < y + h) return take.file;
+            y += h;
+        }
+        return {};
+    }
+
     juce::File focusedFile;
     juce::File latestFile;   // occupant of NOW
+    juce::File dragFile;     // armed on mouseDown, dragged out on movement
+    bool draggingOut = false;
     std::vector<juce::Component*> hosted;
     // Indexed by State. Discarded starts shut: it is a record of decisions already made,
     // and it is the section least likely to be wanted open.

@@ -136,6 +136,15 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
     // "zoom in zoom out and reset" -- text buttons rather than custom-drawn glyphs like
     // play/mute above; a plain "+"/minus/"Fit" reads clearly at this size and doesn't
     // need the same visual weight as the primary transport controls.
+    panButton.onClick = [this] {
+        panMode = !panMode;
+        panButton.setToggleState(panMode, juce::dontSendNotification);
+        setMouseCursor(panMode ? juce::MouseCursor::DraggingHandCursor
+                                : juce::MouseCursor::NormalCursor);
+        repaint();
+    };
+    addAndMakeVisible(panButton);
+
     for (auto* b : { &zoomOutButton, &zoomInButton, &zoomResetButton })
     {
         b->setColour(juce::TextButton::buttonColourId, MiraLookAndFeel::surface3);
@@ -177,6 +186,81 @@ void WaveformView::updateVolumeLabel()
 {
     volumePercentLabel.setText(juce::String(juce::roundToInt(volumeSlider.getValue() * 100.0)) + "%",
                                 juce::dontSendNotification);
+}
+
+void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
+{
+    auto r = getLocalBounds().toFloat();
+    const bool on = getToggleState();
+    g.setColour(on ? MiraLookAndFeel::accent.withAlpha(0.30f)
+                    : (down || over ? MiraLookAndFeel::surface2.brighter(0.15f)
+                                    : MiraLookAndFeel::surface3));
+    g.fillRoundedRectangle(r, 3.0f);
+
+    const auto ink = isEnabled() ? (on ? MiraLookAndFeel::text : MiraLookAndFeel::textDim)
+                                 : MiraLookAndFeel::textFaint;
+    g.setColour(ink);
+    auto c = r.getCentre();
+
+    if (glyph == Glyph::ThumbUp || glyph == Glyph::ThumbDown)
+    {
+        // Keep and Discard, as a thumb. Drawn once pointing up and flipped for down, so
+        // the two are unmistakably the same gesture inverted rather than two drawings
+        // that happen to sit together.
+        juce::Path p;
+        p.addRoundedRectangle(-5.6f, -0.6f, 3.2f, 6.2f, 0.9f);   // forearm
+        p.addRoundedRectangle(-2.0f, -0.6f, 7.4f, 6.2f, 1.4f);   // fist
+        p.addRoundedRectangle(-1.4f, -6.2f, 2.6f, 6.0f, 1.2f);   // raised thumb
+        if (glyph == Glyph::ThumbDown)
+            p.applyTransform(juce::AffineTransform::verticalFlip(0.0f));
+        g.fillPath(p, juce::AffineTransform::translation(c.x, c.y));
+        return;
+    }
+
+    if (glyph == Glyph::Hand)
+    {
+        // A four-finger mitten. Deliberately simple: at 14px a realistic hand is mud,
+        // and all this has to say is "grab".
+        juce::Path p;
+        p.addRoundedRectangle(c.x - 4.5f, c.y - 4.0f, 9.0f, 8.5f, 2.2f);
+        for (int i = 0; i < 3; ++i)
+            p.addRoundedRectangle(c.x - 4.0f + i * 3.0f, c.y - 6.5f, 2.0f, 4.0f, 1.0f);
+        p.addRoundedRectangle(c.x - 6.5f, c.y - 2.0f, 2.4f, 4.0f, 1.2f); // thumb
+        g.fillPath(p);
+        return;
+    }
+
+    if (glyph == Glyph::Fit)
+    {
+        // Two arrows meeting a bar: "fit the whole thing in the window".
+        g.fillRect(c.x - 0.7f, c.y - 6.0f, 1.4f, 12.0f);
+        juce::Path l, rt;
+        l.addTriangle(c.x - 2.6f, c.y, c.x - 6.6f, c.y - 3.2f, c.x - 6.6f, c.y + 3.2f);
+        rt.addTriangle(c.x + 2.6f, c.y, c.x + 6.6f, c.y - 3.2f, c.x + 6.6f, c.y + 3.2f);
+        g.fillPath(l); g.fillPath(rt);
+        return;
+    }
+
+    // Magnifier, with a + or - inside it.
+    const float rad = 4.6f;
+    juce::Point<float> lens (c.x - 1.2f, c.y - 1.2f);
+    g.drawEllipse(lens.x - rad, lens.y - rad, rad * 2.0f, rad * 2.0f, 1.5f);
+    g.drawLine(lens.x + rad * 0.72f, lens.y + rad * 0.72f,
+                lens.x + rad * 0.72f + 3.6f, lens.y + rad * 0.72f + 3.6f, 1.8f);
+    g.fillRect(lens.x - 2.6f, lens.y - 0.6f, 5.2f, 1.3f);
+    if (glyph == Glyph::ZoomIn) g.fillRect(lens.x - 0.65f, lens.y - 2.6f, 1.3f, 5.2f);
+}
+
+double WaveformView::getTotalLengthSeconds() const
+{
+    return thumbnail.getTotalLength();
+}
+
+void WaveformView::setLanesButtonVisible(bool shouldShow)
+{
+    lanesShown = shouldShow;
+    lanesButton.setVisible(shouldShow);
+    resized();
 }
 
 void WaveformView::setFile(const juce::File& file)
@@ -717,7 +801,10 @@ void WaveformView::mouseDown(const juce::MouseEvent& e)
     // Alt-drag (or the middle button) pans the view. Chosen over hijacking plain drag
     // because plain drag already means "select a range", and a selection is how segments
     // get declared -- the older, more load-bearing gesture keeps the unmodified button.
-    if (e.mods.isAltDown() || e.mods.isMiddleButtonDown())
+    // The hand tool makes panning the PLAIN drag, which is what a hand tool means
+    // everywhere. Alt and the middle button keep working so the gesture is still there
+    // without switching tools.
+    if (panMode || e.mods.isAltDown() || e.mods.isMiddleButtonDown())
     {
         dragMode = DragMode::panning;
         dragLastX = e.x;
@@ -1634,7 +1721,9 @@ void WaveformView::paint(juce::Graphics& g)
 
     timeLabel.setText(formatTime(transportSource.getCurrentPosition()) + " / " + formatTime(total),
                        juce::dontSendNotification);
-    zoomResetButton.setButtonText(zoomFactor <= 1.0 ? "Fit" : juce::String(juce::roundToInt(zoomFactor)) + "x");
+    // The zoom factor moved into the time readout; the Fit button is an icon now and has
+    // nowhere to put "4x" without becoming a text button again.
+    zoomResetButton.setEnabled(zoomFactor > 1.0);
 }
 
 void WaveformView::resized()
@@ -1663,7 +1752,7 @@ void WaveformView::resized()
     // Priority, most important last to be dropped: play > time > volume > zoom > lanes.
     const int full = row.getWidth();
     const bool haveZoom  = full >= 140 + 256 + 60;
-    const bool haveLanes = full >= 140 + 200 + 60;
+    const bool haveLanes = lanesShown && full >= 140 + 230 + 60;
     const int leftWidth  = full >= 300 ? 140 : (full >= 220 ? 92 : 24);
 
     auto leftZone = row.removeFromLeft(leftWidth);
@@ -1687,22 +1776,25 @@ void WaveformView::resized()
     // Right zone: whatever of zoom + time still fits.
     int rightWidth = 76;                       // the clock always earns its place
     if (haveLanes) rightWidth += 8 + 52;
-    if (haveZoom)  rightWidth += 8 + 26 + 4 + 40 + 4 + 26;
+    if (haveZoom)  rightWidth += 8 + 26 + 3 + 26 + 3 + 26 + 6 + 26;
     auto rightZone = row.removeFromRight(juce::jmin(rightWidth, juce::jmax(0, row.getWidth() - 40)));
 
     timeLabel.setBounds(rightZone.removeFromRight(76));
     if (haveZoom)
     {
         rightZone.removeFromRight(8);
-        zoomInButton.setBounds(rightZone.removeFromRight(26));
-        rightZone.removeFromRight(4);
-        zoomResetButton.setBounds(rightZone.removeFromRight(40));
-        rightZone.removeFromRight(4);
-        zoomOutButton.setBounds(rightZone.removeFromRight(26));
+        zoomInButton.setBounds(rightZone.removeFromRight(26).reduced(0, 2));
+        rightZone.removeFromRight(3);
+        zoomOutButton.setBounds(rightZone.removeFromRight(26).reduced(0, 2));
+        rightZone.removeFromRight(3);
+        zoomResetButton.setBounds(rightZone.removeFromRight(26).reduced(0, 2));
+        rightZone.removeFromRight(6);
+        panButton.setBounds(rightZone.removeFromRight(26).reduced(0, 2));
     }
     else
     {
         zoomInButton.setBounds({}); zoomResetButton.setBounds({}); zoomOutButton.setBounds({});
+        panButton.setBounds({});
     }
     if (haveLanes)
     {
@@ -1710,6 +1802,7 @@ void WaveformView::resized()
         lanesButton.setBounds(rightZone.removeFromRight(52));
     }
     else lanesButton.setBounds({});
+    lanesButton.setVisible(lanesShown);
 
     // Play button: centred on the component when that lands in the gap the two zones
     // left behind, and pushed into that gap when it does not. `row` is now exactly the
