@@ -3168,6 +3168,17 @@ public:
         if (generateWindow != nullptr) generateWindow->setPrompt(prompt);
     }
 
+    // Re-reads everything the window shows from the database. Cheap, and the only
+    // honest answer to "the CLI analysed these files and the list still says nothing".
+    void reloadFromLibrary()
+    {
+        fileList->refresh();
+        refreshSelectedFilePanel();
+        if (folderTree != nullptr) folderTree->refresh();
+        refreshLibraryCount();
+        statusBar->setActivityText("reloaded from library", true);
+    }
+
     void showLoraLibraryWindow()
     {
         if (loraLibraryWindow != nullptr) { loraLibraryWindow->toFront(true); return; }
@@ -4496,6 +4507,11 @@ public:
     std::function<void()> onNewProject;
     std::function<void()> onOpenProject;
     std::function<void()> onShowLibrary;
+    // mira's table is built from a snapshot of the database, so anything that changes the
+    // library from OUTSIDE this window -- the `mira` CLI in a terminal, another session,
+    // a rebuild -- leaves the rows showing what was true when they were built. There was
+    // no way to say "look again" short of restarting the app.
+    std::function<void()> onReload;
 
     // The analyze pipeline's opt-in stages (TASKS.md Phase 5 leftovers: "--chords /
     // --transcribe / --recheck-tempo exist on the CLI but aren't exposed anywhere in
@@ -4531,6 +4547,8 @@ public:
         {
             menu.addItem(20, "New Project...");
             menu.addItem(21, "Open Project...");
+            menu.addSeparator();
+            menu.addItem(23, "Reload from Library");
             menu.addSeparator();
             menu.addItem(1, "Add Folder...");
             menu.addItem(3, "Add Files...");
@@ -4608,7 +4626,8 @@ public:
 
     void menuItemSelected(int menuItemID, int) override
     {
-        if (menuItemID == 22 && onShowLibrary) onShowLibrary();
+        if (menuItemID == 23 && onReload) onReload();
+        else if (menuItemID == 22 && onShowLibrary) onShowLibrary();
         else if (menuItemID == 20 && onNewProject) onNewProject();
         else if (menuItemID == 21 && onOpenProject) onOpenProject();
         else if (menuItemID == 1 && onAddFolder) onAddFolder();
@@ -4657,6 +4676,7 @@ public:
         menuModel.onNewProject = [this] { mainWindow->getMainComponent().getFolderTree().promptNewProject(); };
         menuModel.onOpenProject = [this] { mainWindow->getMainComponent().getFolderTree().promptOpenProject(); };
         menuModel.onShowLibrary = [this] { mainWindow->reveal(); };
+        menuModel.onReload = [this] { mainWindow->getMainComponent().reloadFromLibrary(); };
         menuModel.onRescan = [this] { mainWindow->getMainComponent().rescanCurrentOrAll(); };
         menuModel.buildTagsMenu = [this](juce::PopupMenu& menu) {
             mainWindow->getMainComponent().buildTagsMenu(menu);
