@@ -203,8 +203,11 @@ private:
     // and gain are JSON in `segments.human`. Nothing is written to audio until export, so
     // a cue can be re-cut next week without regenerating and the source take is never
     // damaged. That is also what lets a kept take reopen with its edit intact.
-    juce::TextButton trimButton { "Trim to selection" };
-    juce::TextButton clearTrimButton { "Full length" };
+    GlyphButton trimButton { GlyphButton::Glyph::Scissors };
+    GlyphButton clearTrimButton { GlyphButton::Glyph::FullLength };
+    // "Play edit not needed": Play now plays the edit. The trim range and the fade/gain
+    // envelope are applied to ordinary playback, so there is no second play button and no
+    // second thing to remember to press to hear what you just set.
     juce::TextButton auditionButton { "Play edit" };
     juce::Label editLabel;
     juce::Slider fadeInSlider, fadeOutSlider, gainSlider;

@@ -47,13 +47,19 @@ private:
 class GlyphButton : public juce::Button
 {
 public:
-    enum class Glyph { ZoomIn, ZoomOut, Fit, Hand, ThumbUp, ThumbDown };
+    enum class Glyph { ZoomIn, ZoomOut, Fit, Hand, ThumbUp, ThumbDown, Scissors, FullLength };
     explicit GlyphButton(Glyph g) : juce::Button("icon"), glyph(g) {}
     void setGlyph(Glyph g) { glyph = g; repaint(); }
+    // Keep and Discard are the only two irreversible-feeling actions in the window and
+    // they sit side by side as mirror images of one shape. Colour is what separates them
+    // at a glance; without it the only difference is which way a small thumb points.
+    void setTint(juce::Colour c) { tint = c; hasTint = true; repaint(); }
 
 private:
     void paintButton(juce::Graphics& g, bool over, bool down) override;
     Glyph glyph;
+    juce::Colour tint;
+    bool hasTint = false;
 };
 
 class WaveformView : public juce::Component, private juce::ChangeListener, private juce::Timer

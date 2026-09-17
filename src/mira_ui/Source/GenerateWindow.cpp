@@ -166,11 +166,13 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     }
 
     keepButton.setEnabled(false);
+    keepButton.setTint(juce::Colour(0xff6fc47f));      // green: the take survives
     tip(keepButton, "Keep - file it into mira's library under \"Generated\", with its full recipe.");
     keepButton.onClick = [this] { keepResult(); };
     addAndMakeVisible(keepButton);
 
     discardButton.setEnabled(false);
+    discardButton.setTint(juce::Colour(0xffe0685f));   // red: it goes to the Trash
     tip(discardButton, "Discard - move this take and its recipe to the Trash.");
     discardButton.onClick = [this] { discardResult(); };
     addAndMakeVisible(discardButton);
@@ -436,13 +438,13 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // ---- Phase 5 edit controls. Hosted in the focused take row beside Keep/Discard,
     // because an edit belongs to ONE take and there is no sense in which the window has a
     // current trim independent of which take is open.
-    tip(trimButton, "Drag a selection on the waveform, then trim to it. Non-destructive: "
+    tip(trimButton, "Trim to the selection. Drag across the waveform first. Non-destructive: "
                      "the file is untouched until export.");
     trimButton.onClick = [this] { applyTrimFromSelection(); };
     tip(clearTrimButton, "Remove the trim; the take goes back to full length.");
     clearTrimButton.onClick = [this] { clearTrim(); };
-    tip(auditionButton, "Play the edit -- trimmed, faded and gained -- rather than the raw take.");
-    auditionButton.onClick = [this] { auditionEdit(); };
+    // No "Play edit" button: the waveform's own Play applies the trim, fades and gain
+    // (see timerCallback). auditionEdit() stays as the code path that drives it.
 
     editLabel.setFont(juce::Font(juce::FontOptions(11.0f)));
     editLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
@@ -492,7 +494,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // lanes menu here would only ever open onto greyed-out items.
     preview.setLanesButtonVisible(false);
     takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton,
-                                      &trimButton, &clearTrimButton, &auditionButton, &editLabel,
+                                      &trimButton, &clearTrimButton, &editLabel,
                                       &fadeInLabel, &fadeInSlider, &fadeOutLabel, &fadeOutSlider,
                                       &gainLabel, &gainSlider });
 
@@ -869,6 +871,8 @@ void GenerateContent::loadEditFor(const juce::File& wav) {
         // The trim drawn on the waveform, so reopening a kept take SHOWS its edit rather
         // than only remembering it.
         preview.setSegments({ { seg.id, seg.startSeconds, seg.endSeconds, {} } });
+        auditionStart = seg.startSeconds;
+        auditionEnd = seg.endSeconds;
         refreshEditControls();
         return;
     }
@@ -877,6 +881,7 @@ void GenerateContent::loadEditFor(const juce::File& wav) {
     fadeOutSlider.setValue(0.0, juce::dontSendNotification);
     gainSlider.setValue(0.0, juce::dontSendNotification);
     preview.setSegments({});
+    auditionStart = auditionEnd = 0.0;
     refreshEditControls();
 }
 
@@ -931,6 +936,7 @@ void GenerateContent::applyTrimFromSelection() {
 
     writeEditFields();
     preview.setSegments({ { editSegmentId, a, b, {} } });
+    auditionStart = a; auditionEnd = b;
     preview.clearSelection();
     refreshEditControls();
     statusLabel.setText("trimmed to " + juce::String(a, 2) + "s - " + juce::String(b, 2) + "s"
@@ -944,6 +950,7 @@ void GenerateContent::clearTrim() {
     database.deleteSegment(editSegmentId);
     editSegmentId = 0;
     preview.setSegments({});
+    auditionStart = auditionEnd = 0.0;
     refreshEditControls();
     statusLabel.setText("trim removed - the take is full length again", juce::dontSendNotification);
     if (onLibraryChanged) onLibraryChanged();
@@ -980,7 +987,7 @@ void GenerateContent::refreshEditControls() {
     const bool haveTrim = editSegmentId != 0;
     trimButton.setEnabled(haveFile);
     clearTrimButton.setEnabled(haveTrim);
-    auditionButton.setEnabled(haveFile);
+
     // NOT gated on haveTrim. Gain and fades have nothing to do with trimming -- a take
     // you want 3 dB down, or faded out at the end, need not be cut at all -- but they
     // were dead until a trim existed, because the values are stored on a `segments` row
@@ -1553,7 +1560,12 @@ void GenerateContent::timerCallback() {
     // and deliberately not the thing that produces the file. The timer runs at a few Hz,
     // so a fade under about half a second will audibly step; that is a reason to render
     // the export properly, not a reason to trust this for the last word.
-    if (auditioning) {
+    // Applied to ORDINARY playback now, not to a separate "Play edit" mode. A second
+    // play button for "the same audio, but as you just set it up" is a thing to remember
+    // to press, and forgetting it means judging a fade you never heard. The trim bounds
+    // come from the stored segment, so Play respects a trim whether or not it was made
+    // this session.
+    if (preview.isPlaying()) {
         const double pos = preview.getPlayPositionSeconds();
         const double end = auditionEnd > auditionStart ? auditionEnd : pos + 1.0;
         const double fadeIn = fadeInSlider.getValue();
@@ -1566,7 +1578,9 @@ void GenerateContent::timerCallback() {
             gain *= static_cast<float>(juce::jlimit(0.0, 1.0, (end - pos) / fadeOut));
 
         preview.setPlaybackGain(gain);
-        if (auditionEnd > auditionStart && pos >= auditionEnd - 0.01) stopAudition();
+        if (auditionEnd > auditionStart && pos >= auditionEnd - 0.01) preview.stopPlayback();
+    } else if (auditioning) {
+        stopAudition();
     }
     if (!busy) return;
     const auto secs = (juce::Time::getMillisecondCounter() - busyStartMs) / 1000;
@@ -1824,18 +1838,15 @@ void GenerateContent::resized() {
             // could not be moved at all. Same failure as the transport row's play button.
             // Priority: gain > fade out > fade in; the buttons shrink before any of them.
             const int ew = edit.getWidth();
-            const bool haveFades = ew >= 620;
-            const bool haveClear = ew >= 430;
-            const int btn = ew >= 520 ? 1 : 0;
+            const bool haveFades = ew >= 430;   // two icons instead of three buttons
 
-            auditionButton.setBounds(edit.removeFromLeft(btn ? 86 : 64).withSizeKeepingCentre(btn ? 86 : 64, 22));
-            edit.removeFromLeft(5);
-            trimButton.setBounds(edit.removeFromLeft(btn ? 120 : 84).withSizeKeepingCentre(btn ? 120 : 84, 22));
+            // Two icons where there were three text buttons of 86 + 120 + 92 px. That
+            // is ~270px back, which is what lets the fades and gain share this one line
+            // instead of overflowing off it.
+            trimButton.setBounds(edit.removeFromLeft(26).withSizeKeepingCentre(26, 22));
             edit.removeFromLeft(4);
-            if (haveClear) {
-                clearTrimButton.setBounds(edit.removeFromLeft(92).withSizeKeepingCentre(92, 22));
-                edit.removeFromLeft(8);
-            } else clearTrimButton.setBounds({});
+            clearTrimButton.setBounds(edit.removeFromLeft(26).withSizeKeepingCentre(26, 22));
+            edit.removeFromLeft(10);
 
             const int fader = juce::jlimit(70, 120, edit.getWidth() / (haveFades ? 3 : 1) - 44);
             gainSlider.setBounds(edit.removeFromRight(fader));

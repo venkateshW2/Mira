@@ -190,65 +190,129 @@ void WaveformView::updateVolumeLabel()
 
 void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
 {
-    auto r = getLocalBounds().toFloat();
+    auto r = getLocalBounds().toFloat().reduced(0.5f);
     const bool on = getToggleState();
-    g.setColour(on ? MiraLookAndFeel::accent.withAlpha(0.30f)
-                    : (down || over ? MiraLookAndFeel::surface2.brighter(0.15f)
-                                    : MiraLookAndFeel::surface3));
-    g.fillRoundedRectangle(r, 3.0f);
 
-    const auto ink = isEnabled() ? (on ? MiraLookAndFeel::text : MiraLookAndFeel::textDim)
-                                 : MiraLookAndFeel::textFaint;
+    // Background only on hover, press or toggle. A permanent filled chip behind every
+    // icon made the transport read as a row of BUTTONS rather than a row of controls --
+    // eight competing rectangles, which is what "the icons look not nice" was mostly
+    // about. The icon carries the meaning; the chip only shows state.
+    if (on || down || over)
+    {
+        g.setColour(on ? (hasTint ? tint.withAlpha(0.22f) : MiraLookAndFeel::accent.withAlpha(0.25f))
+                       : MiraLookAndFeel::surface2.brighter(down ? 0.22f : 0.10f));
+        g.fillRoundedRectangle(r, 4.0f);
+    }
+
+    juce::Colour ink = hasTint ? tint
+                               : (on ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
+    if (!isEnabled()) ink = MiraLookAndFeel::textFaint;
+    else if (over && !hasTint) ink = MiraLookAndFeel::text;
     g.setColour(ink);
-    auto c = r.getCentre();
 
-    if (glyph == Glyph::ThumbUp || glyph == Glyph::ThumbDown)
+    const auto c = r.getCentre();
+    // One stroke weight for every icon in the set. Mixed weights are the other half of
+    // why a hand-drawn icon row looks wrong next to a designed one.
+    const float w = 1.6f;
+
+    switch (glyph)
     {
-        // Keep and Discard, as a thumb. Drawn once pointing up and flipped for down, so
-        // the two are unmistakably the same gesture inverted rather than two drawings
-        // that happen to sit together.
-        juce::Path p;
-        p.addRoundedRectangle(-5.6f, -0.6f, 3.2f, 6.2f, 0.9f);   // forearm
-        p.addRoundedRectangle(-2.0f, -0.6f, 7.4f, 6.2f, 1.4f);   // fist
-        p.addRoundedRectangle(-1.4f, -6.2f, 2.6f, 6.0f, 1.2f);   // raised thumb
-        if (glyph == Glyph::ThumbDown)
-            p.applyTransform(juce::AffineTransform::verticalFlip(0.0f));
-        g.fillPath(p, juce::AffineTransform::translation(c.x, c.y));
-        return;
-    }
+        case Glyph::ThumbUp:
+        case Glyph::ThumbDown:
+        {
+            juce::Path p;
+            p.startNewSubPath(-5.8f, 6.2f);                       // cuff, bottom left
+            p.lineTo(-5.8f, -0.4f);
+            p.lineTo(-3.4f, -0.4f);
+            p.lineTo(-0.6f, -6.4f);                               // up the thumb's outside
+            p.quadraticTo(1.2f, -7.4f, 1.4f, -5.4f);
+            p.lineTo(0.9f, -1.6f);                                // knuckle line
+            p.lineTo(5.4f, -1.6f);
+            p.quadraticTo(7.0f, -1.6f, 6.6f, 0.0f);               // palm, rounded off
+            p.lineTo(5.4f, 5.0f);
+            p.quadraticTo(5.0f, 6.2f, 3.6f, 6.2f);
+            p.closeSubPath();
+            if (glyph == Glyph::ThumbDown) p.applyTransform(juce::AffineTransform::verticalFlip(0.0f));
+            g.fillPath(p, juce::AffineTransform::translation(c.x, c.y));
+            break;
+        }
 
-    if (glyph == Glyph::Hand)
-    {
-        // A four-finger mitten. Deliberately simple: at 14px a realistic hand is mud,
-        // and all this has to say is "grab".
-        juce::Path p;
-        p.addRoundedRectangle(c.x - 4.5f, c.y - 4.0f, 9.0f, 8.5f, 2.2f);
-        for (int i = 0; i < 3; ++i)
-            p.addRoundedRectangle(c.x - 4.0f + i * 3.0f, c.y - 6.5f, 2.0f, 4.0f, 1.0f);
-        p.addRoundedRectangle(c.x - 6.5f, c.y - 2.0f, 2.4f, 4.0f, 1.2f); // thumb
-        g.fillPath(p);
-        return;
-    }
+        case Glyph::Scissors:
+        {
+            // Two blades crossing above two finger rings. Reads as scissors at 16px
+            // because the crossing and the two circles are the only parts that matter.
+            g.drawLine(c.x - 4.2f, c.y + 3.4f, c.x + 3.4f, c.y - 6.4f, w);
+            g.drawLine(c.x + 4.2f, c.y + 3.4f, c.x - 3.4f, c.y - 6.4f, w);
+            g.drawEllipse(c.x - 5.9f, c.y + 2.9f, 3.6f, 3.6f, w);
+            g.drawEllipse(c.x + 2.3f, c.y + 2.9f, 3.6f, 3.6f, w);
+            break;
+        }
 
-    if (glyph == Glyph::Fit)
-    {
-        // Two arrows meeting a bar: "fit the whole thing in the window".
-        g.fillRect(c.x - 0.7f, c.y - 6.0f, 1.4f, 12.0f);
-        juce::Path l, rt;
-        l.addTriangle(c.x - 2.6f, c.y, c.x - 6.6f, c.y - 3.2f, c.x - 6.6f, c.y + 3.2f);
-        rt.addTriangle(c.x + 2.6f, c.y, c.x + 6.6f, c.y - 3.2f, c.x + 6.6f, c.y + 3.2f);
-        g.fillPath(l); g.fillPath(rt);
-        return;
-    }
+        case Glyph::FullLength:
+        {
+            // |<-------->| : the whole take, edge to edge. The inverse of the scissors.
+            g.fillRect(c.x - 6.6f, c.y - 5.0f, w, 10.0f);
+            g.fillRect(c.x + 6.6f - w, c.y - 5.0f, w, 10.0f);
+            g.fillRect(c.x - 4.4f, c.y - w * 0.5f, 8.8f, w);
+            juce::Path l, rt;
+            l.addTriangle(c.x - 5.0f, c.y, c.x - 1.8f, c.y - 2.8f, c.x - 1.8f, c.y + 2.8f);
+            rt.addTriangle(c.x + 5.0f, c.y, c.x + 1.8f, c.y - 2.8f, c.x + 1.8f, c.y + 2.8f);
+            g.fillPath(l); g.fillPath(rt);
+            break;
+        }
 
-    // Magnifier, with a + or - inside it.
-    const float rad = 4.6f;
-    juce::Point<float> lens (c.x - 1.2f, c.y - 1.2f);
-    g.drawEllipse(lens.x - rad, lens.y - rad, rad * 2.0f, rad * 2.0f, 1.5f);
-    g.drawLine(lens.x + rad * 0.72f, lens.y + rad * 0.72f,
-                lens.x + rad * 0.72f + 3.6f, lens.y + rad * 0.72f + 3.6f, 1.8f);
-    g.fillRect(lens.x - 2.6f, lens.y - 0.6f, 5.2f, 1.3f);
-    if (glyph == Glyph::ZoomIn) g.fillRect(lens.x - 0.65f, lens.y - 2.6f, 1.3f, 5.2f);
+        case Glyph::Hand:
+        {
+            // Palm plus three fingers and a thumb, as one outline rather than five
+            // separate blobs -- separate rounded rectangles read as a bar chart at 16px.
+            juce::Path p;
+            p.startNewSubPath(-5.2f, 0.4f);
+            p.quadraticTo(-6.4f, -1.4f, -4.8f, -2.2f);            // thumb
+            p.lineTo(-3.2f, -0.8f);
+            p.lineTo(-3.2f, -5.6f);                               // first finger
+            p.quadraticTo(-3.2f, -7.0f, -1.8f, -7.0f);
+            p.quadraticTo(-0.4f, -7.0f, -0.4f, -5.6f);
+            p.lineTo(-0.4f, -6.2f);
+            p.quadraticTo(-0.4f, -7.4f, 0.9f, -7.4f);
+            p.quadraticTo(2.2f, -7.4f, 2.2f, -6.2f);
+            p.lineTo(2.2f, -5.4f);
+            p.quadraticTo(2.2f, -6.6f, 3.5f, -6.6f);
+            p.quadraticTo(4.8f, -6.6f, 4.8f, -5.4f);
+            p.lineTo(4.8f, 1.2f);
+            p.quadraticTo(4.8f, 6.6f, 0.0f, 6.6f);                // heel of the palm
+            p.quadraticTo(-3.4f, 6.6f, -4.4f, 3.0f);
+            p.closeSubPath();
+            g.fillPath(p, juce::AffineTransform::translation(c.x, c.y + 0.5f));
+            break;
+        }
+
+        case Glyph::Fit:
+        {
+            // Arrows pushing OUT to two walls: fit the whole file into the window.
+            g.fillRect(c.x - 6.8f, c.y - 5.0f, w, 10.0f);
+            g.fillRect(c.x + 6.8f - w, c.y - 5.0f, w, 10.0f);
+            g.fillRect(c.x - 1.0f, c.y - w * 0.5f, 2.0f, w);
+            juce::Path l, rt;
+            l.addTriangle(c.x - 5.4f, c.y, c.x - 1.6f, c.y - 3.0f, c.x - 1.6f, c.y + 3.0f);
+            rt.addTriangle(c.x + 5.4f, c.y, c.x + 1.6f, c.y - 3.0f, c.x + 1.6f, c.y + 3.0f);
+            g.fillPath(l); g.fillPath(rt);
+            break;
+        }
+
+        default:
+        {
+            // Magnifier. Lens sits up-left so the handle has room without the whole
+            // icon drifting off centre.
+            const float rad = 4.9f;
+            const juce::Point<float> lens (c.x - 1.4f, c.y - 1.4f);
+            g.drawEllipse(lens.x - rad, lens.y - rad, rad * 2.0f, rad * 2.0f, w);
+            g.drawLine(lens.x + rad * 0.70f, lens.y + rad * 0.70f,
+                        lens.x + rad * 0.70f + 4.2f, lens.y + rad * 0.70f + 4.2f, w + 0.3f);
+            g.fillRect(lens.x - 2.7f, lens.y - w * 0.5f, 5.4f, w);
+            if (glyph == Glyph::ZoomIn) g.fillRect(lens.x - w * 0.5f, lens.y - 2.7f, w, 5.4f);
+            break;
+        }
+    }
 }
 
 double WaveformView::getTotalLengthSeconds() const
