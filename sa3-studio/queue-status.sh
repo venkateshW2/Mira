@@ -26,8 +26,23 @@ for x in r[-2:]: print(\"  run  \", x.get(\"id\"), \"|\", x.get(\"status\"))
     # also matches THIS command, which contains that string -- it reported 3 watchers
     # where there was 1, and an inflated count is exactly what would hide a second
     # watcher racing the first.
-    echo "  queue $(python3 -c "import json;print(json.load(open(\"/home/workspace/QUEUED.json\"))[\"name\"])" 2>/dev/null || echo none) \
-($(pgrep -cxf "bash /home/workspace/queue_next.sh") watcher(s))"
+    # Two mechanisms in play: box A still runs the one-shot watcher (one pending run,
+    # named in QUEUED.json), box B runs the multi-run queue-runner over queue/*.json.
+    # Report whichever is armed, and say plainly when NEITHER is -- an unarmed box looks
+    # exactly like a healthy one from the outside until the current run ends silently.
+    if [ -d /home/workspace/queue-runner.lock ]; then
+      RP=$(cat /home/workspace/queue-runner.lock/pid 2>/dev/null)
+      if [ -n "$RP" ] && kill -0 "$RP" 2>/dev/null; then
+        echo "  queue runner pid $RP -> $(ls /home/workspace/queue/*.json 2>/dev/null | xargs -n1 basename | tr "\n" " ")"
+      else
+        echo "  queue !! STALE LOCK, NO RUNNER"
+      fi
+    elif [ -n "$(pgrep -cxf "bash /home/workspace/queue_next.sh")" ] \
+         && [ "$(pgrep -cxf "bash /home/workspace/queue_next.sh")" != "0" ]; then
+      echo "  queue $(python3 -c "import json;print(json.load(open(\"/home/workspace/QUEUED.json\"))[\"name\"])" 2>/dev/null || echo none) (one-shot watcher)"
+    else
+      echo "  queue !! NOTHING ARMED"
+    fi
     echo "  gpu   $(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader)"
     echo "  disk  $(df -h /home | tail -1 | awk "{print \$4\" free of \"\$2}")"
   '
