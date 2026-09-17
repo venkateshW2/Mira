@@ -461,7 +461,9 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
             f.slider->setRange(f.lo, f.hi, f.step);
             f.slider->setValue(0.0, juce::dontSendNotification);
             f.slider->setSliderStyle(juce::Slider::LinearHorizontal);
-            f.slider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 52, 18);
+            // 44, not 52: this now shares the transport row rather than owning a row of
+            // its own, and every pixel the readout takes comes off the track you drag.
+            f.slider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 44, 18);
             f.slider->setTextValueSuffix(f.suffix);
             f.slider->onValueChange = [this] { writeEditFields(); };
             tip(*f.slider, f.help);
@@ -493,10 +495,20 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // A freshly generated take has no chords, notes or beat grid to overlay, so the
     // lanes menu here would only ever open onto greyed-out items.
     preview.setLanesButtonVisible(false);
+    // The fade handles write straight through to the same sliders the rest of the code
+    // still reads, so the storage path (writeEditFields) and the audition envelope did
+    // not have to learn about a second source of truth.
+    preview.onFadesChanged = [this](double in, double out) {
+        fadeInSlider.setValue(in, juce::dontSendNotification);
+        fadeOutSlider.setValue(out, juce::dontSendNotification);
+        writeEditFields();
+    };
     takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton,
-                                      &trimButton, &clearTrimButton, &editLabel,
-                                      &fadeInLabel, &fadeInSlider, &fadeOutLabel, &fadeOutSlider,
+                                      &trimButton, &clearTrimButton,
                                       &gainLabel, &gainSlider });
+    // fadeInSlider / fadeOutSlider are deliberately NOT hosted: they are storage now,
+    // written by the waveform's fade handles and read by writeEditFields. Hosting them
+    // would reparent two invisible widgets into the take rows for no reason.
 
     tip(stopButton, "Kill and restart the worker. Next run reloads the model (~44s).");
     stopButton.onClick = [this] { stopGeneration(); };
@@ -873,6 +885,8 @@ void GenerateContent::loadEditFor(const juce::File& wav) {
         preview.setSegments({ { seg.id, seg.startSeconds, seg.endSeconds, {} } });
         auditionStart = seg.startSeconds;
         auditionEnd = seg.endSeconds;
+        preview.setFadeRange(seg.startSeconds, seg.endSeconds);
+        preview.setFades(fadeInSlider.getValue(), fadeOutSlider.getValue());
         refreshEditControls();
         return;
     }
@@ -882,6 +896,9 @@ void GenerateContent::loadEditFor(const juce::File& wav) {
     gainSlider.setValue(0.0, juce::dontSendNotification);
     preview.setSegments({});
     auditionStart = auditionEnd = 0.0;
+    preview.setFadeRange(0.0, 0.0);
+    preview.setFadeRange(0.0, 0.0);
+    preview.setFades(0.0, 0.0);
     refreshEditControls();
 }
 
@@ -937,6 +954,7 @@ void GenerateContent::applyTrimFromSelection() {
     writeEditFields();
     preview.setSegments({ { editSegmentId, a, b, {} } });
     auditionStart = a; auditionEnd = b;
+    preview.setFadeRange(a, b);
     preview.clearSelection();
     refreshEditControls();
     statusLabel.setText("trimmed to " + juce::String(a, 2) + "s - " + juce::String(b, 2) + "s"
@@ -1826,44 +1844,33 @@ void GenerateContent::resized() {
         if (!slot.isEmpty()) {
             // The drag tile is gone; the row is the drag handle now.
             resultTile.setBounds({});
-            // Phase 5's edit row, between the waveform and the keep/discard row: the
-            // order of the strip is the order of the decisions -- hear it, cut it, keep it.
-            auto edit = slot.removeFromBottom(28);
-            slot.removeFromBottom(4);
-            preview.setBounds(slot.withTrimmedBottom(4));
+            // ONE line, not two. The edit controls live INSIDE the waveform's transport
+            // row, in space it holds back for them, so the scissors sit beside the
+            // speaker instead of on a strip of their own underneath -- "keep all icons
+            // in line of the speakers, not a row on the bottom".
+            //
+            // The fades are gone from here entirely: they are handles on the waveform
+            // now. Two sliders and two labels cost most of a row and still never said
+            // where the fade fell against the audio, which is the only thing you want to
+            // know about a fade.
+            const int reserve = 26 + 4 + 26 + 10 + 30 + 104;  // scissors, full, gain
+            preview.setTransportReserve(reserve);
+            preview.setBounds(slot);
 
-            // Budgeted, not fixed. With jmax(90, w/4) per fader on a row a few hundred
-            // pixels wide, the three faders demanded 270px the row did not have and
-            // overflowed leftwards -- the gain slider came out a few pixels across and
-            // could not be moved at all. Same failure as the transport row's play button.
-            // Priority: gain > fade out > fade in; the buttons shrink before any of them.
-            const int ew = edit.getWidth();
-            const bool haveFades = ew >= 430;   // two icons instead of three buttons
-
-            // Two icons where there were three text buttons of 86 + 120 + 92 px. That
-            // is ~270px back, which is what lets the fades and gain share this one line
-            // instead of overflowing off it.
+            auto edit = preview.getTransportReserveArea();
+            edit.translate(preview.getX(), preview.getY());
             trimButton.setBounds(edit.removeFromLeft(26).withSizeKeepingCentre(26, 22));
             edit.removeFromLeft(4);
             clearTrimButton.setBounds(edit.removeFromLeft(26).withSizeKeepingCentre(26, 22));
             edit.removeFromLeft(10);
+            gainLabel.setBounds(edit.removeFromLeft(30));
+            gainSlider.setBounds(edit.withSizeKeepingCentre(edit.getWidth(), 20));
 
-            const int fader = juce::jlimit(70, 120, edit.getWidth() / (haveFades ? 3 : 1) - 44);
-            gainSlider.setBounds(edit.removeFromRight(fader));
-            gainLabel.setBounds(edit.removeFromRight(32));
-            if (haveFades) {
-                edit.removeFromRight(6);
-                fadeOutSlider.setBounds(edit.removeFromRight(fader));
-                fadeOutLabel.setBounds(edit.removeFromRight(48));
-                edit.removeFromRight(6);
-                fadeInSlider.setBounds(edit.removeFromRight(fader));
-                fadeInLabel.setBounds(edit.removeFromRight(42));
-                edit.removeFromRight(6);
-            } else {
-                fadeOutSlider.setBounds({}); fadeOutLabel.setBounds({});
-                fadeInSlider.setBounds({});  fadeInLabel.setBounds({});
-            }
-            editLabel.setBounds(edit);
+            // Fades and the hint have no widgets any more. The hint said "drag across
+            // the waveform to select a range", which is what a waveform does everywhere.
+            fadeInSlider.setBounds({});  fadeInLabel.setBounds({});
+            fadeOutSlider.setBounds({}); fadeOutLabel.setBounds({});
+            editLabel.setBounds({});
 
         }
     }

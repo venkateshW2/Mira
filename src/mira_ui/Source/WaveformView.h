@@ -99,6 +99,23 @@ public:
     // "why have lanes here, we are doing nothing of those sorts now".
     void setLanesButtonVisible(bool shouldShow);
 
+    // Fades, drawn ON the waveform and dragged by their handles, the way every DAW does
+    // it. Two number sliders cost a whole row and still never told you where the fade
+    // landed against the audio -- which is the only thing anyone actually wants to know
+    // about a fade. Seconds, measured inwards from each end of the ACTIVE range (the
+    // trim if there is one, the whole file otherwise).
+    void setFades(double fadeInSeconds, double fadeOutSeconds);
+    void setFadeRange(double startSeconds, double endSeconds); // 0,0 = whole file
+    double getFadeIn() const { return fadeInSecs; }
+    double getFadeOut() const { return fadeOutSecs; }
+    std::function<void(double, double)> onFadesChanged;
+
+    // Space held back at the LEFT of the transport row for the owner's own controls, so
+    // an edit strip can share the transport line instead of costing a second row. The
+    // area comes back in this component's coordinates; the owner converts.
+    void setTransportReserve(int px);
+    juce::Rectangle<int> getTransportReserveArea() const { return reserveArea; }
+
     // Timeline lanes (TASKS.md Phase 5, "data already exists, nothing draws it"). All
     // three come straight out of what `mira analyze` already stored -- this class does no
     // analysis of its own, it only draws what MainComponent read out of the DB. Seconds
@@ -377,6 +394,10 @@ private:
     // drag is the primary gesture here and must not need a key held to stay itself.
     GlyphButton panButton { GlyphButton::Glyph::Hand };
     bool lanesShown = true;
+    double fadeInSecs = 0.0, fadeOutSecs = 0.0;
+    double fadeRangeStart = 0.0, fadeRangeEnd = 0.0;   // 0,0 = whole file
+    int transportReserve = 0;
+    juce::Rectangle<int> reserveArea;
     bool panMode = false;
     bool muted = false; // output gain forced to 0 while true; the slider itself keeps its own value
 
@@ -485,7 +506,7 @@ private:
     // separate components because they share the same surface as selection -- which one
     // a press starts is decided once in mouseDown (zone + modifiers) and then held for
     // the whole drag, so a gesture can't change meaning halfway through.
-    enum class DragMode { none, selecting, panning, scrubbing };
+    enum class DragMode { none, selecting, panning, scrubbing, fadeIn, fadeOut };
     DragMode dragMode = DragMode::none;
     int dragLastX = 0;            // panning: last mouse x, for the incremental delta
     bool wasPlayingBeforeScrub = false;

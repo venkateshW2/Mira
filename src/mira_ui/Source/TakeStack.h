@@ -46,10 +46,11 @@ public:
     // Raised for Phase 5's edit row (trim, fades, gain) sitting between the waveform
     // and the keep/discard strip. Counted here rather than stolen from the waveform,
     // which is the mistake that made the playing take the smallest one.
-    // 64 for the waveform's own ruler + transport, 32 for the edit row. The 30px
-    // keep/discard strip that used to be counted here is gone -- those are two icons on
-    // the take's row now -- and that height goes back to the waveform.
-    static constexpr int kTransportChrome = 64 + 32;
+    // The waveform's own ruler and transport row, and nothing else. Both strips that
+    // used to be counted here are gone: keep/discard are icons on the take's row, and
+    // the edit controls moved INSIDE the transport row itself. All of that height is the
+    // waveform's now.
+    static constexpr int kTransportChrome = 64;
 
     void addTake(const juce::File& file, State state = State::Pending, bool expand = true)
     {

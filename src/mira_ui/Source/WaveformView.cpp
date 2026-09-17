@@ -320,6 +320,26 @@ double WaveformView::getTotalLengthSeconds() const
     return thumbnail.getTotalLength();
 }
 
+void WaveformView::setFades(double fadeInSeconds, double fadeOutSeconds)
+{
+    fadeInSecs = juce::jmax(0.0, fadeInSeconds);
+    fadeOutSecs = juce::jmax(0.0, fadeOutSeconds);
+    repaint();
+}
+
+void WaveformView::setFadeRange(double startSeconds, double endSeconds)
+{
+    fadeRangeStart = startSeconds;
+    fadeRangeEnd = endSeconds;
+    repaint();
+}
+
+void WaveformView::setTransportReserve(int px)
+{
+    transportReserve = juce::jmax(0, px);
+    resized();
+}
+
 void WaveformView::setLanesButtonVisible(bool shouldShow)
 {
     lanesShown = shouldShow;
@@ -865,6 +885,33 @@ void WaveformView::mouseDown(const juce::MouseEvent& e)
     // Alt-drag (or the middle button) pans the view. Chosen over hijacking plain drag
     // because plain drag already means "select a range", and a selection is how segments
     // get declared -- the older, more load-bearing gesture keeps the unmodified button.
+    // Fade handles win over every other gesture in the waveform, because they are small
+    // and deliberate: anything that can steal a 9px target makes the target unusable.
+    {
+        const double total = thumbnail.getTotalLength();
+        if (total > 0.0)
+        {
+            auto peaks = computeLanes().peaks;
+            if (peaks.isEmpty()) peaks = getWaveformBounds();
+            if (e.y <= peaks.getY() + 14)
+            {
+                const double rs = fadeRangeEnd > fadeRangeStart ? fadeRangeStart : 0.0;
+                const double re = fadeRangeEnd > fadeRangeStart ? fadeRangeEnd : total;
+                auto bounds = getWaveformBounds();
+                const double windowFrac = 1.0 / zoomFactor;
+                auto secToX = [&](double secs) {
+                    const double f = juce::jlimit(0.0, 1.0, secs / total);
+                    return bounds.getX()
+                           + static_cast<int>((f - viewStartFrac) / windowFrac * bounds.getWidth());
+                };
+                const int xIn = secToX(juce::jmin(re, rs + fadeInSecs));
+                const int xOut = secToX(juce::jmax(rs, re - fadeOutSecs));
+                if (std::abs(e.x - xIn) <= 9)       { dragMode = DragMode::fadeIn;  return; }
+                if (std::abs(e.x - xOut) <= 9)      { dragMode = DragMode::fadeOut; return; }
+            }
+        }
+    }
+
     // The hand tool makes panning the PLAIN drag, which is what a hand tool means
     // everywhere. Alt and the middle button keep working so the gesture is still there
     // without switching tools.
@@ -937,6 +984,23 @@ void WaveformView::mouseDrag(const juce::MouseEvent& e)
         return;
     }
 
+    if (dragMode == DragMode::fadeIn || dragMode == DragMode::fadeOut)
+    {
+        const double total = thumbnail.getTotalLength();
+        if (total <= 0.0) return;
+        const double rs = fadeRangeEnd > fadeRangeStart ? fadeRangeStart : 0.0;
+        const double re = fadeRangeEnd > fadeRangeStart ? fadeRangeEnd : total;
+        const double at = juce::jlimit(rs, re, xToFraction(e.x) * total);
+        // Neither fade may eat the other: capped at what is left of the range.
+        if (dragMode == DragMode::fadeIn)
+            fadeInSecs = juce::jlimit(0.0, juce::jmax(0.0, (re - rs) - fadeOutSecs), at - rs);
+        else
+            fadeOutSecs = juce::jlimit(0.0, juce::jmax(0.0, (re - rs) - fadeInSecs), re - at);
+        if (onFadesChanged) onFadesChanged(fadeInSecs, fadeOutSecs);
+        repaint();
+        return;
+    }
+
     if (!isDraggingSelection) return;
     bool hadSelection = hasSelection;
     selectionEndFrac = xToFraction(e.x);
@@ -947,6 +1011,11 @@ void WaveformView::mouseDrag(const juce::MouseEvent& e)
 
 void WaveformView::mouseUp(const juce::MouseEvent&)
 {
+    if (dragMode == DragMode::fadeIn || dragMode == DragMode::fadeOut)
+    {
+        dragMode = DragMode::none;
+        return;
+    }
     if (dragMode == DragMode::panning || dragMode == DragMode::scrubbing)
     {
         dragMode = DragMode::none;
@@ -1293,6 +1362,73 @@ void WaveformView::paint(juce::Graphics& g)
                 g.drawText(juce::String((e0 - s0) * total, 2) + "s",
                             selBounds.removeFromTop(14), juce::Justification::centred);
             }
+        }
+    }
+
+    // --- Fades ---------------------------------------------------------------------
+    // Drawn as the ramp itself, not as a number: the shaded wedge shows exactly how much
+    // audio the fade eats and where it lands against the peaks, which is the question a
+    // "2.0 s" readout cannot answer. Handles are the small squares at the top corners.
+    if (total > 0.0 && (fadeInSecs > 0.0 || fadeOutSecs > 0.0 || isMouseOver(true)))
+    {
+        auto peaks = layout.peaks.isEmpty() ? waveformBounds : layout.peaks;
+        const double rs = fadeRangeEnd > fadeRangeStart ? fadeRangeStart : 0.0;
+        const double re = fadeRangeEnd > fadeRangeStart ? fadeRangeEnd : total;
+
+        // Fraction -> x, the same mapping the selection uses: the view is a window of
+        // `windowFrac` starting at `viewStartFrac`, so a fraction outside it lands off
+        // the edges and the clip below takes care of it.
+        auto secToX = [&](double secs) {
+            const double f = juce::jlimit(0.0, 1.0, secs / total);
+            return waveformBounds.getX()
+                   + static_cast<int>((f - viewStartFrac) / windowFrac * waveformBounds.getWidth());
+        };
+
+        if (fadeInSecs > 0.0)
+        {
+            const float x0 = static_cast<float>(secToX(rs));
+            const float x1 = static_cast<float>(secToX(juce::jmin(re, rs + fadeInSecs)));
+            juce::Path p;
+            p.startNewSubPath(x0, static_cast<float>(peaks.getY()));
+            p.lineTo(x1, static_cast<float>(peaks.getY()));
+            p.lineTo(x0, static_cast<float>(peaks.getBottom()));
+            p.closeSubPath();
+            g.setColour(MiraLookAndFeel::surface.withAlpha(0.62f));
+            g.fillPath(p);
+            g.setColour(MiraLookAndFeel::accent.withAlpha(0.9f));
+            g.drawLine(x0, static_cast<float>(peaks.getBottom()), x1,
+                        static_cast<float>(peaks.getY()), 1.4f);
+        }
+        if (fadeOutSecs > 0.0)
+        {
+            const float x1 = static_cast<float>(secToX(re));
+            const float x0 = static_cast<float>(secToX(juce::jmax(rs, re - fadeOutSecs)));
+            juce::Path p;
+            p.startNewSubPath(x1, static_cast<float>(peaks.getY()));
+            p.lineTo(x0, static_cast<float>(peaks.getY()));
+            p.lineTo(x1, static_cast<float>(peaks.getBottom()));
+            p.closeSubPath();
+            g.setColour(MiraLookAndFeel::surface.withAlpha(0.62f));
+            g.fillPath(p);
+            g.setColour(MiraLookAndFeel::accent.withAlpha(0.9f));
+            g.drawLine(x0, static_cast<float>(peaks.getY()), x1,
+                        static_cast<float>(peaks.getBottom()), 1.4f);
+        }
+
+        // The handles. Always drawn while the pointer is in the view, including at zero,
+        // because a control you can only find once you have already used it is not
+        // discoverable -- that is the whole reason the sliders had labels.
+        if (isMouseOver(true) || fadeInSecs > 0.0 || fadeOutSecs > 0.0)
+        {
+            auto handle = [&](double secs, bool atEnd) {
+                const int x = secToX(secs);
+                juce::Rectangle<float> h (static_cast<float>(x) - (atEnd ? 9.0f : 0.0f),
+                                           static_cast<float>(peaks.getY()) + 1.0f, 9.0f, 9.0f);
+                g.setColour(MiraLookAndFeel::accent);
+                g.fillRoundedRectangle(h, 2.0f);
+            };
+            handle(juce::jmin(re, rs + fadeInSecs), false);
+            handle(juce::jmax(rs, re - fadeOutSecs), true);
         }
     }
 
@@ -1814,10 +1950,20 @@ void WaveformView::resized()
     // is gone.
     //
     // Priority, most important last to be dropped: play > time > volume > zoom > lanes.
-    const int full = row.getWidth();
-    const bool haveZoom  = full >= 140 + 256 + 60;
+    // The owner's reserved strip is not available to the transport, so every decision
+    // below has to be made against what is actually left -- otherwise the zoom cluster
+    // claims width the reserve has already taken and the two overlap.
+    const int full = row.getWidth() - (transportReserve > 0 ? transportReserve + 8 : 0);
+    // Thresholds are against what is left AFTER the owner's reserve, so an edit strip
+    // sharing this row does not push the zoom cluster off it -- the whole point of
+    // sharing was to get every control onto one line, and dropping half of them to
+    // achieve that would miss it.
+    const bool haveZoom  = full >= 366;
     const bool haveLanes = lanesShown && full >= 140 + 230 + 60;
     const int leftWidth  = full >= 300 ? 140 : (full >= 220 ? 92 : 24);
+
+    reserveArea = transportReserve > 0 ? row.removeFromRight(transportReserve) : juce::Rectangle<int>();
+    if (transportReserve > 0) row.removeFromRight(8);
 
     auto leftZone = row.removeFromLeft(leftWidth);
     muteButton.setBounds(leftZone.removeFromLeft(24).withSizeKeepingCentre(24, 24));
