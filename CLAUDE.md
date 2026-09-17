@@ -53,6 +53,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | [ANALYSIS.md](ANALYSIS.md) | **what mira measures and what reaches the model.** Every caption field, what it means, how to edit it, what is deliberately not captioned | current (2026-09-15) |
 | [PRD.md](PRD.md) | the design: stack, models, phases, licence reasoning, every "why this and not that" | current as design; §-numbers are cited throughout the code |
 | [TASKS.md](TASKS.md) | the build checklist, phase by phase. Phases 0–5 complete, **Phase 6 in progress** | live — tick items here |
+| [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — planned, nothing built (2026-09-17) |
 
 ### Captioning and training
 
