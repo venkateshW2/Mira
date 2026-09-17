@@ -10,6 +10,7 @@
 #include "TakeStack.h"
 #include "LoraLibraryWindow.h"
 #include "NativeWindowChrome.h"
+#include "InpaintStrip.h"
 #include "PromptBuilderWindow.h"
 #include "Sa3Worker.h"
 #include "WaveformView.h"
@@ -277,7 +278,8 @@ private:
     };
     Pane rightPane;
     juce::Viewport rightView;
-    juce::Label loraHeading, settingsHeading;
+    juce::Label loraHeading, settingsHeading, inpaintHeading, inpaintHelp;
+    std::unique_ptr<InpaintStrip> inpaintStrip;
     int layoutRightPane(int width, bool applyBounds);
     juce::TextButton stopButton { "Stop" };
     // Memory readout. Generation RAM scales with clip length (peak was 11 GB at 30 s on

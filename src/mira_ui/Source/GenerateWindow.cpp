@@ -274,6 +274,44 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     };
     rightPane.addAndMakeVisible(loraHeading);
     rightPane.addAndMakeVisible(settingsHeading);
+    rightPane.addAndMakeVisible(inpaintHeading);
+
+    // What inpainting actually does, in the window rather than in a doc. Checked against
+    // sa3_mlx.py rather than assumed: the mask keeps everything OUTSIDE the range as
+    // context and regenerates what is inside it, and a paste-back makes the kept part
+    // bit-exact. The prompt conditions the WHOLE generation, not just the gap -- there is
+    // one cross-attention prompt, so it describes the piece the gap has to belong to.
+    inpaintHelp.setText("Regenerates only the highlighted range. Everything outside it is kept exactly. "
+                         "The prompt above describes the whole piece, not just the gap.",
+                         juce::dontSendNotification);
+    inpaintHelp.setFont(juce::Font(juce::FontOptions(11.0f)));
+    inpaintHelp.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+    inpaintHelp.setJustificationType(juce::Justification::topLeft);
+    rightPane.addAndMakeVisible(inpaintHelp);
+
+    inpaintStrip = std::make_unique<InpaintStrip>(takeFormatManager, takeThumbnailCache);
+    inpaintStrip->onFileDropped = [this](const juce::File& f) {
+        // A drop IS the init audio -- the two were separate controls and it was never
+        // obvious they were the same thing.
+        initAudio = f;
+        initLabel.setText(f.getFileName(), juce::dontSendNotification);
+        inpaintToggle.setToggleState(true, juce::sendNotification);
+        const double len = inpaintStrip->getLengthSeconds();
+        if (len > 0.0) {
+            inpaintStart.setRange(0.0, len, 0.01);
+            inpaintEnd.setRange(0.0, len, 0.01);
+            inpaintStrip->setRange(0.0, juce::jmin(len, 10.0));
+            inpaintStart.setValue(0.0, juce::dontSendNotification);
+            inpaintEnd.setValue(juce::jmin(len, 10.0), juce::dontSendNotification);
+        }
+        resized();
+    };
+    inpaintStrip->onRangeChanged = [this](double a2, double b2) {
+        // The sliders stay the source of truth; the strip is a view onto them.
+        inpaintStart.setValue(a2, juce::sendNotificationSync);
+        inpaintEnd.setValue(b2, juce::sendNotificationSync);
+    };
+    rightPane.addAndMakeVisible(*inpaintStrip);
     rightView.setViewedComponent(&rightPane, false); // false: this owns rightPane, not the viewport
     rightView.setScrollBarsShown(true, false);
     addAndMakeVisible(rightView);
@@ -300,6 +338,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     clearInitButton.onClick = [this] {
         initAudio = juce::File();
         initLabel.setText("no init audio", juce::dontSendNotification);
+        if (inpaintStrip != nullptr) { inpaintStrip->setFile({}); resized(); }
     };
     tip(clearInitButton, "Clear init audio.");
     rightPane.addAndMakeVisible(clearInitButton);
@@ -794,6 +833,9 @@ void GenerateContent::chooseInitAudio() {
         if (!f.existsAsFile()) return;
         initAudio = f;
         initLabel.setText(f.getFileName(), juce::dontSendNotification);
+        // One path in, whether it arrived by picker or by drop, so the strip can never
+        // be showing a different file from the one that gets sent.
+        if (inpaintStrip != nullptr) { inpaintStrip->setFile(f); resized(); }
     });
 }
 
@@ -1133,12 +1175,18 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
     auto place = [applyBounds](juce::Component& c, juce::Rectangle<int> b) {
         if (applyBounds) c.setBounds(b);
     };
+    // "the title in the generate section can be better - better fonts, bold and nicer."
+    // Letter-spaced small caps in the accent, with a rule running out to the edge --
+    // a section marker that reads as structure rather than as another dim label among
+    // the dim labels.
     auto heading = [&](juce::Label& l, const char* text) {
-        auto line = row(18, 2);
+        auto line = row(22, 4);
         if (applyBounds) {
-            l.setText(text, juce::dontSendNotification);
-            l.setFont(juce::Font(juce::FontOptions(11.0f, juce::Font::bold)));
-            l.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+            juce::String spaced;
+            for (auto c : juce::String(text)) { spaced += juce::String::charToString(c); spaced += " "; }
+            l.setText(spaced.trim(), juce::dontSendNotification);
+            l.setFont(juce::Font(juce::FontOptions(10.5f, juce::Font::bold)));
+            l.setColour(juce::Label::textColourId, MiraLookAndFeel::accent.withAlpha(0.85f));
             l.setBounds(line);
         }
     };
@@ -1187,6 +1235,9 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         place(cfgLabel, line.removeFromLeft(38));
         place(cfgSlider, line);
     }
+    // --- audio in: init audio and inpainting, one clearly-bounded section instead of a
+    // row of controls that never said they belonged together.
+    heading(inpaintHeading, "AUDIO IN");
     {
         auto line = row(26);
         place(initAudioButton, line.removeFromLeft(100));
@@ -1197,12 +1248,17 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         line.removeFromRight(6);
         place(initLabel, line);
     }
+    if (inpaintStrip != nullptr) place(*inpaintStrip, row(62, 4));
     if (inpaintToggle.getToggleState()) {
+        place(inpaintHelp, row(30, 4));
+        // The numbers stay, beside the picture: a range dragged by eye still has to be
+        // typeable when a cue has to start at exactly 12.0s.
         auto line = row(26);
         place(inpaintStart, line.removeFromLeft(line.getWidth() / 2 - 3));
         line.removeFromLeft(6);
         place(inpaintEnd, line);
     } else if (applyBounds) {
+        inpaintHelp.setBounds({});
         inpaintStart.setBounds({}); inpaintEnd.setBounds({});
     }
 

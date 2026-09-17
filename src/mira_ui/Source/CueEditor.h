@@ -4,6 +4,7 @@
 
 #include "GroupActivityView.h"
 #include "MiraLookAndFeel.h"
+#include "NativeWindowChrome.h"
 
 // The full-window cue workspace (review round 6, second pass: "this is too small of a
 // window... the cue tracking needs a full window").
@@ -379,7 +380,11 @@ public:
     explicit CueEditorWindow(const MiraLookAndFeel& laf)
         : juce::DocumentWindow("MIRA Cues", MiraLookAndFeel::surface, juce::DocumentWindow::allButtons)
     {
-        setUsingNativeTitleBar(true);
+        // mira's own title bar, not the OS one -- every window in the app matches the
+        // browser now. The native bar cannot take MiraLookAndFeel's colours at all, so a
+        // window wearing one sits visibly apart from the rest.
+        setUsingNativeTitleBar(false);
+        setTitleBarHeight(30);
         content = new CueEditorComponent(laf);
         setContentOwned(content, false);
         setResizable(true, false);
@@ -388,6 +393,7 @@ public:
         auto area = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
         centreWithSize(juce::jmin(1500, area.getWidth() - 80), juce::jmin(820, area.getHeight() - 80));
         setVisible(true);
+        mira_ui::chrome::applyRoundedCorners(*this, 10.0f); // needs the peer, so after setVisible
         toFront(true); // same reason LogWindow needs it -- a fresh DocumentWindow can open behind
     }
 

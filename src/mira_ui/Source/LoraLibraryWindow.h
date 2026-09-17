@@ -4,6 +4,7 @@
 
 #include "mira/db/Database.h"
 #include "MiraLookAndFeel.h"
+#include "NativeWindowChrome.h"
 
 // "let have it in the osx toolbar -- we make a default folder for loras, pre load the
 // lora in the folder with proper names, so the dropdown just gets that."
@@ -269,12 +270,17 @@ public:
         : juce::DocumentWindow("LoRA Library", MiraLookAndFeel::surface,
                                 juce::DocumentWindow::allButtons)
     {
-        setUsingNativeTitleBar(true);
+        // mira's own title bar, not the OS one -- every window in the app matches the
+        // browser now. The native bar cannot take MiraLookAndFeel's colours at all, so a
+        // window wearing one sits visibly apart from the rest.
+        setUsingNativeTitleBar(false);
+        setTitleBarHeight(30);
         content = new LoraLibraryContent(laf, std::move(loraDir), db);
         setContentOwned(content, false);
         setResizable(true, false);
         centreWithSize(660, 460);
         setVisible(true);
+        mira_ui::chrome::applyRoundedCorners(*this, 10.0f); // needs the peer, so after setVisible
         toFront(true);
     }
 

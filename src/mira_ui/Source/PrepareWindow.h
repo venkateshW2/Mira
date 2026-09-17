@@ -6,6 +6,7 @@
 
 #include "mira/db/Database.h"
 #include "MiraLookAndFeel.h"
+#include "NativeWindowChrome.h"
 
 // "Prepare for Training" — captions, encodes, and (optionally) ships a folder to a GPU
 // box, without a terminal.
@@ -86,11 +87,16 @@ public:
         : juce::DocumentWindow("Prepare for Training", MiraLookAndFeel::surface,
                                 juce::DocumentWindow::allButtons)
     {
-        setUsingNativeTitleBar(true);
+        // mira's own title bar, not the OS one -- every window in the app matches the
+        // browser now. The native bar cannot take MiraLookAndFeel's colours at all, so a
+        // window wearing one sits visibly apart from the rest.
+        setUsingNativeTitleBar(false);
+        setTitleBarHeight(30);
         setContentOwned(new PrepareContent(laf, std::move(studioRoot), db), false);
         setResizable(true, false);
         centreWithSize(700, 620);
         setVisible(true);
+        mira_ui::chrome::applyRoundedCorners(*this, 10.0f); // needs the peer, so after setVisible
         toFront(true);
     }
 

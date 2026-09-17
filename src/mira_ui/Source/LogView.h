@@ -6,6 +6,7 @@
 
 #include <deque>
 #include <mutex>
+#include "NativeWindowChrome.h"
 
 // Review round 5: "in the osx bar - can we have a log - so we get to see the cli logs and
 // figure out."
@@ -167,11 +168,16 @@ public:
     LogWindow(LogStore& store, const MiraLookAndFeel& laf)
         : juce::DocumentWindow("MIRA Log", MiraLookAndFeel::surface, juce::DocumentWindow::allButtons)
     {
-        setUsingNativeTitleBar(true);
+        // mira's own title bar, not the OS one -- every window in the app matches the
+        // browser now. The native bar cannot take MiraLookAndFeel's colours at all, so a
+        // window wearing one sits visibly apart from the rest.
+        setUsingNativeTitleBar(false);
+        setTitleBarHeight(30);
         setContentOwned(new LogComponent(store, laf), false);
         setResizable(true, false);
         centreWithSize(820, 460);
         setVisible(true);
+        mira_ui::chrome::applyRoundedCorners(*this, 10.0f); // needs the peer, so after setVisible
         // Explicitly, not just setVisible: a newly created DocumentWindow can otherwise
         // come up *behind* the main window, which looks exactly like the menu item having
         // done nothing (observed on macOS 15.5).

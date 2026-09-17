@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "MiraLookAndFeel.h"
+#include "NativeWindowChrome.h"
 
 // A prompt is only as good as its SHAPE. underfit builds every training caption as
 // "<trigger>, Key: value, Key: value, ..." (see the demo prompts in any run's
@@ -122,13 +123,18 @@ public:
         : juce::DocumentWindow("Construct Prompt", MiraLookAndFeel::surface,
                                 juce::DocumentWindow::allButtons)
     {
-        setUsingNativeTitleBar(true);
+        // mira's own title bar, not the OS one -- every window in the app matches the
+        // browser now. The native bar cannot take MiraLookAndFeel's colours at all, so a
+        // window wearing one sits visibly apart from the rest.
+        setUsingNativeTitleBar(false);
+        setTitleBarHeight(30);
         content = existing;
         setContentNonOwned(content, false);
         setResizable(true, false);
         centreWithSize(660, 680);   // tall enough for all 19 rows; the Viewport covers smaller screens
         setAlwaysOnTop(true);
         setVisible(true);
+        mira_ui::chrome::applyRoundedCorners(*this, 10.0f); // needs the peer, so after setVisible
         toFront(true);
     }
 

@@ -4328,8 +4328,11 @@ public:
         if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
         {
             auto area = display->userBounds;
-            setSize(juce::jmin(1680, juce::roundToInt(area.getWidth() * 0.85f)),
-                    juce::jmin(1050, juce::roundToInt(area.getHeight() * 0.85f)));
+            // "the mira browser opens very big as default, we can reduce the size." Was
+            // 0.85 capped at 1680x1050, which on a large display filled almost the whole
+            // screen -- the browser is meant to sit BESIDE a project window, not under it.
+            setSize(juce::jmin(1380, juce::roundToInt(area.getWidth() * 0.68f)),
+                    juce::jmin(900, juce::roundToInt(area.getHeight() * 0.72f)));
         }
         centreWithSize(getWidth(), getHeight());
         setResizable(true, true);

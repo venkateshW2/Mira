@@ -103,6 +103,20 @@ public:
     void fillTextEditorBackground(juce::Graphics&, int width, int height, juce::TextEditor&) override;
     void drawTextEditorOutline(juce::Graphics&, int width, int height, juce::TextEditor&) override;
 
+    // "the lora dropdown is too big and lot of spacing" -- JUCE's default popup row is
+    // sized from the menu font plus generous padding, which on a list of 21 checkpoints
+    // filled the screen. A menu is a list to scan, not a set of buttons to aim at.
+    void getIdealPopupMenuItemSize(const juce::String& text, bool isSeparator, int standardMenuItemHeight,
+                                    int& idealWidth, int& idealHeight) override;
+    juce::Font getPopupMenuFont() override;
+
+    // "the sliders ... the track of the slider" -- V4 draws the unfilled part of a
+    // LinearHorizontal track in a colour that all but vanished on mira's dark surface, so
+    // a slider read as a dot floating in nothing with no sense of its range.
+    void drawLinearSlider(juce::Graphics&, int x, int y, int width, int height,
+                           float sliderPos, float minSliderPos, float maxSliderPos,
+                           juce::Slider::SliderStyle, juce::Slider&) override;
+
 private:
     juce::Typeface::Ptr sansRegularTypeface, sansMediumTypeface, sansSemiBoldTypeface;
     juce::Typeface::Ptr monoRegularTypeface, monoMediumTypeface;

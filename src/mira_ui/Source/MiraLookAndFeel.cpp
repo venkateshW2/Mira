@@ -262,3 +262,55 @@ juce::Font MiraLookAndFeel::getLabelFont(juce::Label&)
     // doesn't ask for the mono/medium/semibold variants directly.
     return sansRegular(13.0f);
 }
+
+void MiraLookAndFeel::getIdealPopupMenuItemSize(const juce::String& text, bool isSeparator,
+                                                 int standardMenuItemHeight,
+                                                 int& idealWidth, int& idealHeight)
+{
+    LookAndFeel_V4::getIdealPopupMenuItemSize(text, isSeparator, standardMenuItemHeight,
+                                               idealWidth, idealHeight);
+    // A menu is a list to read down, not a row of targets to aim at. 21 LoRA checkpoints
+    // under their run headings ran off the screen at the default spacing.
+    if (isSeparator) idealHeight = 7;
+    else             idealHeight = juce::jmin(idealHeight, 22);
+    idealWidth = juce::jmin(idealWidth, 320);
+}
+
+juce::Font MiraLookAndFeel::getPopupMenuFont()
+{
+    return sansRegular(12.5f);
+}
+
+void MiraLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
+                                        float sliderPos, float minSliderPos, float maxSliderPos,
+                                        juce::Slider::SliderStyle style, juce::Slider& slider)
+{
+    if (style != juce::Slider::LinearHorizontal)
+    {
+        LookAndFeel_V4::drawLinearSlider(g, x, y, width, height, sliderPos, minSliderPos,
+                                          maxSliderPos, style, slider);
+        return;
+    }
+
+    const float trackH = 4.0f;
+    const float cy = static_cast<float>(y) + static_cast<float>(height) * 0.5f;
+    juce::Rectangle<float> track (static_cast<float>(x), cy - trackH * 0.5f,
+                                   static_cast<float>(width), trackH);
+
+    // The whole range, visibly. This is the part that was disappearing into the
+    // background: without it a slider says nothing about where its value sits.
+    g.setColour(surface2.brighter(0.18f));
+    g.fillRoundedRectangle(track, trackH * 0.5f);
+
+    // Filled portion, in the accent, so the value reads at a glance across a column of
+    // sliders rather than needing the number beside it.
+    auto filled = track.withRight(juce::jlimit(track.getX(), track.getRight(), sliderPos));
+    g.setColour(accent.withAlpha(slider.isEnabled() ? 0.9f : 0.35f));
+    g.fillRoundedRectangle(filled, trackH * 0.5f);
+
+    const float knobR = slider.isMouseOverOrDragging() ? 7.5f : 6.5f;
+    g.setColour(slider.isEnabled() ? text : textDim);
+    g.fillEllipse(sliderPos - knobR, cy - knobR, knobR * 2.0f, knobR * 2.0f);
+    g.setColour(surface.withAlpha(0.85f));
+    g.drawEllipse(sliderPos - knobR, cy - knobR, knobR * 2.0f, knobR * 2.0f, 1.0f);
+}
