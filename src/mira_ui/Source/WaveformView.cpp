@@ -1123,8 +1123,25 @@ void WaveformView::paint(juce::Graphics& g)
                                   .withX(waveformBounds.getX()
                                          + static_cast<int>((s0 - viewStartFrac) / windowFrac * waveformBounds.getWidth()))
                                   .withWidth(static_cast<int>((e0 - s0) / windowFrac * waveformBounds.getWidth()));
-            g.setColour(MiraLookAndFeel::text.withAlpha(0.10f));
+            // A 10% white wash with no edges was invisible over a bright waveform --
+            // "there is no selection or range selection to trim the audio". The gesture
+            // worked all along; it just could not be seen. Accent tint plus hard edges,
+            // matching how InpaintStrip draws its range, so a selection reads as a range
+            // with two grabbable ends rather than as a faint change of shade.
+            g.setColour(MiraLookAndFeel::accent.withAlpha(0.20f));
             g.fillRect(selBounds);
+            g.setColour(MiraLookAndFeel::accent);
+            g.fillRect(selBounds.getX() - 1, selBounds.getY(), 2, selBounds.getHeight());
+            g.fillRect(selBounds.getRight() - 1, selBounds.getY(), 2, selBounds.getHeight());
+
+            const double total = thumbnail.getTotalLength();
+            if (total > 0.0 && selBounds.getWidth() > 54)
+            {
+                g.setColour(MiraLookAndFeel::text);
+                g.setFont(juce::Font(juce::FontOptions(10.0f)));
+                g.drawText(juce::String((e0 - s0) * total, 2) + "s",
+                            selBounds.removeFromTop(14), juce::Justification::centred);
+            }
         }
     }
 

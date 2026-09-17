@@ -447,6 +447,10 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
             f.label->setJustificationType(juce::Justification::centredRight);
         }
     }
+    // A selection is the input to Trim, so the edit row has to react to one existing.
+    // Without this the only hint that a drag on the waveform does anything was a tooltip
+    // on a button -- which is why the gesture read as missing rather than as invisible.
+    preview.onSelectionChanged = [this] { refreshEditControls(); };
     refreshEditControls();
 
     // Last, so nothing added above can take these back (see the note beside preview).
@@ -887,12 +891,27 @@ void GenerateContent::refreshEditControls() {
     auditionButton.setEnabled(haveFile);
     for (auto* sl : { &fadeInSlider, &fadeOutSlider, &gainSlider }) sl->setEnabled(haveTrim);
 
-    if (!haveFile)      editLabel.setText("", juce::dontSendNotification);
-    else if (!haveTrim) editLabel.setText("full length", juce::dontSendNotification);
-    else if (auto seg = database.findSegmentById(editSegmentId))
-        editLabel.setText(juce::String(seg->startSeconds, 2) + "s - " + juce::String(seg->endSeconds, 2)
-                           + "s  (" + juce::String(seg->endSeconds - seg->startSeconds, 2) + "s)",
+    // Trim needs a selection, so it is only live when there is one -- and the label says
+    // which of the two things is missing rather than leaving a dead button to explain
+    // itself.
+    const auto selection = preview.getSelectionSeconds();
+    trimButton.setEnabled(haveFile && selection.has_value());
+
+    if (!haveFile) {
+        editLabel.setText("", juce::dontSendNotification);
+    } else if (selection.has_value()) {
+        const double a2 = juce::jmin(selection->first, selection->second);
+        const double b2 = juce::jmax(selection->first, selection->second);
+        editLabel.setText("selected " + juce::String(a2, 2) + "s - " + juce::String(b2, 2)
+                           + "s  (" + juce::String(b2 - a2, 2) + "s)", juce::dontSendNotification);
+    } else if (!haveTrim) {
+        editLabel.setText("drag across the waveform to select a range", juce::dontSendNotification);
+    } else if (auto seg = database.findSegmentById(editSegmentId)) {
+        editLabel.setText("trimmed " + juce::String(seg->startSeconds, 2) + "s - "
+                           + juce::String(seg->endSeconds, 2) + "s  ("
+                           + juce::String(seg->endSeconds - seg->startSeconds, 2) + "s)",
                            juce::dontSendNotification);
+    }
 }
 
 void GenerateContent::keepResultIntoCue(const juce::File& wav, const juce::String& cueName) {
