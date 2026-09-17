@@ -208,7 +208,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         s.setSliderStyle(juce::Slider::LinearHorizontal);
         s.setTextBoxStyle(juce::Slider::TextBoxRight, false, 56, 20);
         tip(s, tipText);
-        addAndMakeVisible(s);
+        rightPane.addAndMakeVisible(s);
     };
     setupNumber(secondsSlider, 10, 380, 1, 30,
                 "Output length. CHANGING THIS RELOADS THE MODEL (~44s). RAM grows with it.");
@@ -263,6 +263,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
                            juce::dontSendNotification);
         resized();
     };
+    rightPane.addAndMakeVisible(loraHeading);
+    rightPane.addAndMakeVisible(settingsHeading);
+    rightView.setViewedComponent(&rightPane, false); // false: this owns rightPane, not the viewport
+    rightView.setScrollBarsShown(true, false);
+    addAndMakeVisible(rightView);
+
     takesLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
     takesLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
     addAndMakeVisible(takesLabel);
@@ -298,7 +304,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         sl->setRange(0.0, 380.0, 0.5);
         sl->setSliderStyle(juce::Slider::LinearHorizontal);
         sl->setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
-        addAndMakeVisible(*sl);
+        rightPane.addAndMakeVisible(*sl);
     }
     inpaintStart.setValue(0.0, juce::dontSendNotification);
     inpaintEnd.setValue(10.0, juce::dontSendNotification);

@@ -40,8 +40,15 @@ public:
         revealButton.onClick = [this] { loraDir.revealToUser(); };
         addAndMakeVisible(revealButton);
 
-        hint.setText("Double-click a name to rename it. Names show in the generate window's "
-                      "LoRA menus; files on disk are never renamed.",
+        removeButton.onClick = [this] { removeSelected(); };
+        removeButton.setEnabled(false);
+        addAndMakeVisible(removeButton);
+
+        table.setMultipleSelectionEnabled(true);
+
+        hint.setText("Double-click a name to rename it. Select rows and Remove to take them out of "
+                      "the library. Names show in the generate window's LoRA menus; files on "
+                      "disk are never renamed.",
                       juce::dontSendNotification);
         hint.setFont(juce::Font(juce::FontOptions(11.0f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
@@ -97,6 +104,8 @@ public:
         addButton.setBounds(top.removeFromLeft(130));
         top.removeFromLeft(6);
         revealButton.setBounds(top.removeFromLeft(130));
+        // Removal sits apart from the two additive buttons, on the other side of the row.
+        removeButton.setBounds(top.removeFromRight(130));
         r.removeFromTop(6);
         hint.setBounds(r.removeFromBottom(30));
         table.setBounds(r);
@@ -137,7 +146,56 @@ public:
 
     void cellDoubleClicked(int row, int, const juce::MouseEvent&) override { promptRename(row); }
 
+    void selectedRowsChanged(int) override { removeButton.setEnabled(table.getNumSelectedRows() > 0); }
+
 private:
+    // "also allow to remove the loras". A symlink is UNLINKED -- deleting it must never
+    // reach through to the 38 MB checkpoint on the external drive it points at. A real
+    // file in the folder goes to the Trash, never a hard delete: a checkpoint is hours of
+    // GPU time and the same "recoverable" rule Discard and Clean up already follow.
+    void removeSelected()
+    {
+        juce::Array<juce::File> doomed;
+        for (int i = 0; i < table.getNumSelectedRows(); ++i)
+        {
+            const int row = table.getSelectedRow(i);
+            if (row >= 0 && row < files.size()) doomed.add(files[row]);
+        }
+        if (doomed.isEmpty()) return;
+
+        int links = 0;
+        for (const auto& f : doomed) if (f.isSymbolicLink()) ++links;
+        juce::String detail;
+        if (links == doomed.size())
+            detail = "These are links. The checkpoint files they point at are not touched.";
+        else if (links > 0)
+            detail = juce::String(links) + " are links (their checkpoints are not touched); the rest "
+                     "go to the Trash.";
+        else
+            detail = "The checkpoint files go to the Trash.";
+
+        juce::NativeMessageBox::showOkCancelBox(
+            juce::MessageBoxIconType::WarningIcon,
+            "Remove " + juce::String(doomed.size()) + " LoRA(s) from the library?",
+            detail + "\n\nAny recipe that already recorded one keeps its filename either way.",
+            this,
+            juce::ModalCallbackFunction::create([this, doomed](int result) {
+                if (result == 0) return;
+                auto names = storedNames(database);
+                auto* obj = names.getDynamicObject();
+                for (const auto& f : doomed)
+                {
+                    if (obj != nullptr) obj->removeProperty(f.getFileName());
+                    if (f.isSymbolicLink()) f.deleteFile(); // unlinks, does not follow
+                    else f.moveToTrash();
+                }
+                if (obj != nullptr)
+                    database.setSetting(kNamesKey, juce::JSON::toString(names, true).toStdString());
+                refresh();
+                if (onChanged) onChanged();
+            }));
+    }
+
     void promptRename(int row)
     {
         if (row < 0 || row >= files.size()) return;
@@ -199,6 +257,7 @@ private:
     juce::TableListBox table;
     juce::TextButton addButton { "Add LoRA file..." };
     juce::TextButton revealButton { "Show in Finder" };
+    juce::TextButton removeButton { "Remove..." };
     juce::Label hint;
     std::unique_ptr<juce::FileChooser> chooser;
 };
