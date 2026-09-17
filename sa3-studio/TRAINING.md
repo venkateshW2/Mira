@@ -285,6 +285,27 @@ engine, and every new host or transport would mean a rebuild. `prepare-lora.sh` 
 seam: mira produces captions, MLX produces latents, the shell script moves them. Changing
 provider is then a flag, not a release.
 
+### `details.json` — the importer does not copy it, and that is the whole trap
+
+`preencoded_import` links the `.npy` files into the shadow dir and writes the per-file
+JSON, but it does **not** copy `details.json` across. The dataset reads `ready`
+immediately after import and only flips to `error` on the **next dashboard restart**,
+which is typically hours later and looks like something else entirely. That is how
+`amontobin-amt-20260915` ended up permanently in `error`.
+
+So after every import, copy it and then restart the dashboard to prove it holds — an
+import-time check proves nothing, because the broken state is indistinguishable from the
+good one until the restart:
+
+```bash
+cp /home/workspace/datasets/<name>/details.json \
+   /home/workspace/underfit/state/datasets/<name>/latents/sa3-medium/details.json
+bash /home/workspace/jarvis-start.sh          # then re-check /api/datasets
+```
+
+[`queue-status.sh`](queue-status.sh) reports both boxes read-only — runs, step, s/it,
+armed queue, GPU and disk — and never touches run state.
+
 ### Datasets — one per LoRA, and the import trap
 
 **underfit registers the folder you point it at as a single dataset.** Unzipping all

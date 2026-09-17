@@ -157,6 +157,38 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
+### 2026-09-17 night — four LoRAs queued across two boxes
+
+Ludwig, Cortini, Ryuichi and ametsub encoded, uploaded and training on two A30s
+(`217.18.55.28`, `217.18.55.56`). Checkpoint and demo every 1000, DoRA-rows, rank 16,
+LR 1e-4, batch 4, random crop.
+
+| set | trigger | crop | steps | rep/win | measured |
+|---|---|---|---|---|---|
+| Ludwig | `lgr` | 512 | 16000 | 157 | 1.36 s/it -> 6.0 h |
+| Cortini | `acr` | 512 | 14000 | 149 | 1.36 s/it -> 5.3 h |
+| Ryuichi | `rsk` | 512 | 8000 | 158 | queued |
+| ametsub | `ams` | 320 | 9000 | 180 | queued |
+
+All four land within 149-180 rep/window, against `xyr-short`'s 157 -- the best LoRA to
+date -- and were computed from the real per-file durations, not from a nominal length.
+
+- **The `details.json` trap fired again, on all four.** The importer links the latents
+  and writes per-file JSON but never copies `details.json` into the shadow dir. All four
+  read `ready` at import and would have flipped to `error` at the next dashboard restart.
+  Copied, then the dashboard was **restarted to prove it held** -- checking at import
+  time proves nothing, because the broken state is identical to the good one until then.
+- **Box B's `QUEUED.json` was stale**: still `nat` from 16 Sep. A `nohup ... &` inside an
+  `ssh` command keeps the channel open and the call hung, so the copy never ran while the
+  arming appeared to succeed. Found by reading the queued run's `name` rather than
+  trusting the exit status. `setsid nohup ... </dev/null` detaches properly.
+- `pgrep -f queue_next.sh` **matches the command asking the question**, so the first
+  status report claimed 3 watchers where there was 1. An inflated count is exactly what
+  would hide a second watcher racing the first; `pgrep -cxf` with the full argv is right.
+- Dune's latents were never unzipped -- `dune-ost-latents-same-l.zip` sat beside the
+  `latents/` folders it belonged in, so `zvq` could not appear in the prompt builder,
+  which builds its trigger list by scanning those folders. 38 sidecars extracted.
+
 ### 2026-09-17 evening — a file whose name has an accent in it
 
 **The bug that ate the afternoon, and the one worth remembering.** Analysis appeared not
