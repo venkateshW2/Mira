@@ -36,7 +36,13 @@ public:
 
     static constexpr int kRowHeight = 28;
     static constexpr int kHeaderHeight = 22;
-    static constexpr int kExpandedBody = 172; // waveform + control strip, below the row
+    static constexpr int kExpandedBody = 172; // static waveform + caption, below the row
+    // The FOCUSED row is taller, by exactly what WaveformView spends on chrome it draws
+    // inside itself: a time ruler along the top and a transport strip along the bottom.
+    // Without this the playing take's waveform came out visibly SHORTER than the static
+    // ones beside it -- the rows were the same height, but only one of them was giving
+    // most of that height to the waveform.
+    static constexpr int kTransportChrome = 64;
 
     void addTake(const juce::File& file, State state = State::Pending, bool expand = true)
     {
@@ -135,8 +141,9 @@ public:
             if (row.kind == RowKind::Header) { y += kHeaderHeight; continue; }
             const auto& take = takes[row.takeIndex];
             if (take.file == focusedFile && take.expanded)
-                return { 6, y + kRowHeight, juce::jmax(0, getWidth() - 12), kExpandedBody - 6 };
-            y += kRowHeight + (take.expanded ? kExpandedBody : 0);
+                return { 6, y + kRowHeight, juce::jmax(0, getWidth() - 12),
+                          kExpandedBody + kTransportChrome - 6 };
+            y += kRowHeight + bodyHeightFor(take);
         }
         return {};
     }
@@ -150,7 +157,7 @@ public:
         for (const auto& row : rows)
         {
             if (row.kind == RowKind::Header) { h += kHeaderHeight; continue; }
-            h += kRowHeight + (takes[row.takeIndex].expanded ? kExpandedBody : 0);
+            h += kRowHeight + bodyHeightFor(takes[row.takeIndex]);
         }
         return juce::jmax(h, kRowHeight);
     }
@@ -178,7 +185,7 @@ public:
             }
             const auto& take = takes[row.takeIndex];
             paintRow(g, take, { 0, y, getWidth(), kRowHeight });
-            y += kRowHeight + (take.expanded ? kExpandedBody : 0);
+            y += kRowHeight + bodyHeightFor(take);
         }
     }
 
@@ -191,7 +198,7 @@ public:
         {
             if (row.kind == RowKind::Header) { y += kHeaderHeight; continue; }
             auto& take = takes[row.takeIndex];
-            const int bodyHeight = take.expanded ? kExpandedBody : 0;
+            const int bodyHeight = bodyHeightFor(take);
 
             if (e.y >= y && e.y < y + kRowHeight)
             {
@@ -236,6 +243,12 @@ private:
         juce::Component* owner = nullptr;
         void changeListenerCallback(juce::ChangeBroadcaster*) override { if (owner) owner->repaint(); }
     };
+
+    int bodyHeightFor(const Take& t) const
+    {
+        if (!t.expanded) return 0;
+        return kExpandedBody + (t.file == focusedFile ? kTransportChrome : 0);
+    }
 
     int countOf(State s) const
     {
@@ -299,7 +312,7 @@ private:
         {
             g.setColour(isFocused ? MiraLookAndFeel::surface2
                                   : MiraLookAndFeel::surface2.withAlpha(0.45f));
-            g.fillRect(row.withHeight(kRowHeight + kExpandedBody));
+            g.fillRect(row.withHeight(kRowHeight + bodyHeightFor(take)));
         }
         if (isFocused)
         {
@@ -329,9 +342,13 @@ private:
         g.setFont(juce::Font(juce::FontOptions(12.0f)));
         g.drawText(take.file.getFileNameWithoutExtension(), text, juce::Justification::centredLeft, true);
 
-        if (take.thumbnail != nullptr && take.thumbnail->getTotalLength() > 0.0)
+        // The mini waveform is the COLLAPSED row's only picture of the take. An expanded
+        // row already shows the full-size one below, and drawing both was just two
+        // waveforms of the same audio on one row ("there is also a small waveform, why
+        // two waveforms").
+        if (!take.expanded && take.thumbnail != nullptr && take.thumbnail->getTotalLength() > 0.0)
         {
-            g.setColour(MiraLookAndFeel::textDim.withAlpha(isFocused ? 0.85f : 0.45f));
+            g.setColour(MiraLookAndFeel::textDim.withAlpha(0.45f));
             take.thumbnail->drawChannels(g, wave.reduced(2, 5), 0.0, take.thumbnail->getTotalLength(), 1.0f);
         }
 
