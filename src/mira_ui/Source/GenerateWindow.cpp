@@ -462,6 +462,13 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // Without this the only hint that a drag on the waveform does anything was a tooltip
     // on a button -- which is why the gesture read as missing rather than as invisible.
     preview.onSelectionChanged = [this] { refreshEditControls(); };
+    // The buttons say how many they are about to act on, so a bulk discard cannot be
+    // mistaken for a single one.
+    takeStack->onSelectionChanged = [this] {
+        const int n = takeStack->getSelectedCount();
+        keepButton.setButtonText(n > 1 ? "Keep " + juce::String(n) : juce::String("Keep"));
+        discardButton.setButtonText(n > 1 ? "Discard " + juce::String(n) : juce::String("Discard"));
+    };
     refreshEditControls();
 
     // Last, so nothing added above can take these back (see the note beside preview).
@@ -732,10 +739,14 @@ void GenerateContent::keepResult() {
     // cue. Without a project this is the SA3 Generate window and Keep means what it
     // always meant -- register where it lies, file it under "Generated".
     if (projectFolder.isDirectory()) {
-        promptForCue(listExistingCues(), {}, this, [this, wav](juce::String cue) {
+        // One cue prompt for the whole selection: keeping four alts of the same cue is
+        // the common case, and they are exactly the ones that get selected together.
+        const auto selected = takeStack->getSelectedFiles();
+        promptForCue(listExistingCues(), {}, this, [this, selected](juce::String cue) {
             cue = cue.trim();
             if (cue.isEmpty()) return; // no silent "untitled" cue
-            keepResultIntoCue(wav, cue);
+            for (const auto& f : selected) keepResultIntoCue(f, cue);
+            takeStack->clearMultiSelection();
         });
         return;
     }
@@ -1010,6 +1021,34 @@ void GenerateContent::keepResultIntoCue(const juce::File& wav, const juce::Strin
 // Trash, not delete: the result is still audible in the preview when this is pressed,
 // and an accidental click on the wrong one should be recoverable.
 void GenerateContent::discardResult() {
+    // Bulk discard, when rows have been Cmd-clicked. One confirmation for the set rather
+    // than one per file: the whole point of selecting six is not to answer six questions.
+    const auto selected = takeStack->getSelectedFiles();
+    if (selected.size() > 1) {
+        juce::NativeMessageBox::showOkCancelBox(
+            juce::MessageBoxIconType::WarningIcon,
+            "Discard " + juce::String(static_cast<int>(selected.size())) + " takes?",
+            "They go to the Trash with their .json recipes, and stay listed under "
+            "DISCARDED so the same idea is not generated twice.",
+            this,
+            juce::ModalCallbackFunction::create([this, selected](int result) {
+                if (result == 0) return;
+                int moved = 0;
+                for (const auto& f : selected) {
+                    if (f == resultTile.getFile()) { preview.setFile({}); resultTile.setFile({}); }
+                    const auto sidecar = f.withFileExtension("json");
+                    if (f.moveToTrash()) ++moved;
+                    if (sidecar.existsAsFile()) sidecar.moveToTrash();
+                    takeStack->markDiscarded(f);
+                }
+                takeStack->clearMultiSelection();
+                statusLabel.setText(juce::String(moved) + " takes moved to Trash",
+                                     juce::dontSendNotification);
+                log("discarded " + juce::String(moved) + " takes");
+            }));
+        return;
+    }
+
     const auto wav = resultTile.getFile();
     if (!wav.existsAsFile()) return;
     const auto sidecar = wav.withFileExtension("json");

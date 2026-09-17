@@ -4,6 +4,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <memory>
 #include <vector>
+#include <set>
 
 #include "MiraLookAndFeel.h"
 
@@ -125,6 +126,26 @@ public:
     void clear() { takes.clear(); focusedFile = juce::File(); rebuild(); }
 
     juce::File getFocusedFile() const { return focusedFile; }
+
+    // Cmd-click adds a row to the selection; the focused row is always part of it. Bulk
+    // Keep and Discard act on this, so "throw away these six" is six clicks and one
+    // button rather than six rounds of click-Discard-wait-for-the-list-to-reflow.
+    std::vector<juce::File> getSelectedFiles() const
+    {
+        std::vector<juce::File> out;
+        for (const auto& t : takes)
+            if (multiSelected.count(t.file.getFullPathName()) > 0) out.push_back(t.file);
+        if (out.empty() && focusedFile != juce::File()) out.push_back(focusedFile);
+        return out;
+    }
+
+    int getSelectedCount() const
+    {
+        const int n = static_cast<int>(multiSelected.size());
+        return n > 0 ? n : (focusedFile != juce::File() ? 1 : 0);
+    }
+
+    void clearMultiSelection() { multiSelected.clear(); rebuild(); }
     int getPendingCount() const { return countOf(State::Pending); }
     int getKeptCount() const { return countOf(State::Kept); }
     int getDiscardedCount() const { return countOf(State::Discarded); }
@@ -160,6 +181,7 @@ public:
 
     std::function<void(const juce::File&)> onFocused;
     std::function<void()> onHeightChanged;
+    std::function<void()> onSelectionChanged; // multi-selection grew or shrank
 
     int getIdealHeight() const
     {
@@ -218,6 +240,21 @@ public:
 
             if (e.y >= y && e.y < y + kRowHeight)
             {
+                // Cmd-click builds a multi-selection WITHOUT opening or playing anything:
+                // picking six rows to throw away should not load six files into the
+                // transport on the way.
+                if (e.mods.isCommandDown())
+                {
+                    const auto key = take.file.getFullPathName();
+                    if (multiSelected.count(key) > 0) multiSelected.erase(key);
+                    else multiSelected.insert(key);
+                    rebuild();
+                    if (onSelectionChanged) onSelectionChanged();
+                    return;
+                }
+                // A plain click is a fresh start: it drops the multi-selection, the way
+                // every file list behaves.
+                if (!multiSelected.empty()) { multiSelected.clear(); if (onSelectionChanged) onSelectionChanged(); }
                 // The triangle toggles open/shut; anywhere else on the row focuses it.
                 // Separated on purpose: with several rows open, "click to play this one"
                 // and "click to close this one" must not be the same gesture.
@@ -359,6 +396,13 @@ private:
                                   : MiraLookAndFeel::surface2.withAlpha(0.45f));
             g.fillRect(row.withHeight(kRowHeight + bodyHeightFor(take)));
         }
+        if (multiSelected.count(take.file.getFullPathName()) > 0)
+        {
+            // Filled, not just edged: a multi-selected row has to be obvious at a glance
+            // across twenty rows, because the next click might discard all of them.
+            g.setColour(MiraLookAndFeel::accent.withAlpha(0.16f));
+            g.fillRect(row.withHeight(kRowHeight));
+        }
         if (isFocused)
         {
             // A left edge marking which row the transport belongs to. With several rows
@@ -424,5 +468,9 @@ private:
     // Indexed by State. Discarded starts shut: it is a record of decisions already made,
     // and it is the section least likely to be wanted open.
     bool collapsed[3] = { false, false, true };
+    // Keyed by full path rather than by index: the row order changes every time a take is
+    // kept or discarded, and an index-based selection would silently come to mean
+    // different rows.
+    std::set<juce::String> multiSelected;
     Repainter repainter;
 };

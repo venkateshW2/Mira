@@ -3975,12 +3975,27 @@ private:
                                         return alreadyPending.count(p) > 0;
                                     }),
                      paths.end());
-        if (paths.empty()) return; // every one of them is already on its way
+        if (paths.empty())
+        {
+            // SILENTLY returning here is why "right click analyse doesnt do it": ask for a
+            // folder that is already queued and nothing happened, nothing was said, and
+            // the only evidence was a badge on rows you were not looking at. A slow job
+            // that says nothing is indistinguishable from a job that never started.
+            statusBar->setActivityText("already queued " + dotText() + " nothing new to analyze", true);
+            return;
+        }
 
         // Options are snapshotted here, not read at dequeue time: a batch runs with the
         // toggles that were on when it was requested, so ticking Chords while a long
         // queue is draining doesn't silently change what those already-queued batches do.
+        // Say what was accepted, before the first file has produced any progress of its
+        // own. The analyze line below replaces this within a second or two once a file
+        // starts, but the gap between the click and that first stage report was long
+        // enough to read as "nothing happened".
+        const int accepted = static_cast<int>(paths.size());
         analyzeQueue.push_back({ std::move(paths), analyzeOptions });
+        statusBar->setActivityText("queued " + juce::String(accepted) + " file"
+                                    + (accepted == 1 ? "" : "s") + " for analysis" + ellipsisText(), true);
         updateAnalysisState();
         startNextAnalyzeIfIdle();
     }
@@ -4211,6 +4226,11 @@ private:
     // Nothing is "analyzing" during the decode pass: that runs over every candidate before
     // any analysis begins, so naming one row there would be a lie and pointing at each in
     // turn would just flicker. The status bar says "decoding" for that stretch instead.
+    // Non-ASCII goes through CharPointer_UTF8 (Main.cpp:3519's note); these two keep
+    // that in one place rather than at every call site.
+    static juce::String dotText() { return juce::String(juce::CharPointer_UTF8("\xc2\xb7")); }
+    static juce::String ellipsisText() { return juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6")); }
+
     void updateAnalysisState()
     {
         std::set<juce::String> analyzing;
