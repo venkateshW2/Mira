@@ -8,6 +8,7 @@
 #include "mira/db/Database.h"
 #include "MiraLookAndFeel.h"
 #include "TakeStack.h"
+#include "LoraLibraryWindow.h"
 #include "PromptBuilderWindow.h"
 #include "Sa3Worker.h"
 #include "WaveformView.h"
@@ -111,7 +112,7 @@ private:
     };
     static constexpr int kLoraSlots = 3;
     std::array<LoraSlot, kLoraSlots> slots;
-    juce::TextButton addLoraButton { "Add LoRA file..." };
+
     // Opens the format helper. A LoRA is trained on "Key: value, Key: value" captions,
     // so a hand-typed bare word list is off distribution -- this builds the shape.
     juce::TextButton buildPromptButton { "Build prompt..." };
@@ -194,6 +195,10 @@ public:
     // Keep exactly as it was: register in place, add to the "Generated" collection.
     void setProject(const juce::File& folder) { projectFolder = folder; }
 
+    // The LoRA Library window calls this after a checkpoint is added or renamed, so the
+    // dropdowns update without reopening the generate window.
+    void reloadLoras() { refreshLoras(); }
+
     void setOutputFolder(const juce::File& folder)
     {
         if (!folder.isDirectory()) return;
@@ -227,6 +232,19 @@ private:
     std::unique_ptr<TakeStack> takeStack;
     juce::Viewport takesView;
     juce::Label takesLabel; // "Takes (n)" -- the stack has no header of its own
+
+    // Two containers, as asked for: takes and audio on the left, everything else on the
+    // right. Both scroll. That is the fix for "resize destroys the ui - the prompt gets
+    // hidden": the old layout was one top-down column that simply ran out of window, so
+    // whatever fell off the bottom was laid out at zero height and vanished. A pane that
+    // scrolls cannot lose a control, at any window size.
+    struct Pane : juce::Component {
+        void paint(juce::Graphics& g) override { g.fillAll(MiraLookAndFeel::surface); }
+    };
+    Pane rightPane;
+    juce::Viewport rightView;
+    juce::Label loraHeading, settingsHeading;
+    int layoutRightPane(int width, bool applyBounds);
     juce::TextButton stopButton { "Stop" };
     // Memory readout. Generation RAM scales with clip length (peak was 11 GB at 30 s on
     // a 16 GB machine), and a second SA3 process -- a forgotten gradio, say -- is enough
@@ -284,7 +302,11 @@ protected:
         content = new GenerateContent(laf, std::move(studioRoot), db);
         setContentOwned(content, false);
         setResizable(true, false);
-        centreWithSize(720, 700);
+        centreWithSize(1180, 820); // two panes need the width; it was cramped at 720
+        // Below this the right pane's controls would be narrower than their own labels
+        // and the takes column would vanish. It scrolls rather than clipping either way,
+        // but a window smaller than this is not usable, only survivable.
+        setResizeLimits(820, 520, 10000, 10000);
         content->setTrainingBenchVisible(showTrainingBench);
         setAlwaysOnTop(floatAbove);
         setVisible(true);

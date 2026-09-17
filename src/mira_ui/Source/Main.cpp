@@ -2605,6 +2605,7 @@ public:
         kShowLog, // referenced by MiraMenuBarModel's Window menu
         kShowGenerate, // SA3 generate/pre-encode window (GenerateWindow.h)
         kShowProject,  // the project's own inference window (MIRA-GENERATE.md Phase 2)
+        kShowLoraLibrary, // name and manage the LoRA checkpoints (LoraLibraryWindow.h)
         kShowPrepare,  // caption/encode/push a folder for training (PrepareWindow.h)
         kDetectCues,
         kToggleActivityMatrix,
@@ -2756,6 +2757,7 @@ public:
             case kShowLog: showLogWindow(); return;
             case kShowGenerate: showGenerateWindow(); return;
             case kShowProject: showProjectWindow(); return;
+            case kShowLoraLibrary: showLoraLibraryWindow(); return;
             case kShowPrepare: showPrepareWindow({}); return;
             case kOpenCueEditor: showCueEditor(); return;
             case kDetectCues: detectCuesForSelection(); return;
@@ -3135,6 +3137,23 @@ public:
         };
         projectWindow->content->setProject(project); // Keep now asks for a cue (Phase 3)
         projectWindow->content->setOutputFolder(projectTakesFolder());
+    }
+
+    // "a new window called load loras - we add the loras and name the lora - so they
+    // come into the dropdown". Not a generation window: it holds no worker and no model,
+    // so it does not count towards the last-window-closes rule.
+    void showLoraLibraryWindow()
+    {
+        if (loraLibraryWindow != nullptr) { loraLibraryWindow->toFront(true); return; }
+        auto loraDir = findStudioRoot().getChildFile("stable-audio-3/optimized/mlx/loras/sa3-medium");
+        loraLibraryWindow = std::make_unique<LoraLibraryWindow>(laf, loraDir, *database);
+        loraLibraryWindow->content->onChanged = [this] {
+            if (generateWindow != nullptr) generateWindow->content->reloadLoras();
+            if (projectWindow != nullptr) projectWindow->content->reloadLoras();
+        };
+        loraLibraryWindow->onClosed = [this] {
+            juce::MessageManager::callAsync([this] { loraLibraryWindow.reset(); });
+        };
     }
 
     void showLogWindow()
@@ -4245,6 +4264,7 @@ private:
     std::unique_ptr<LogWindow> logWindow;
     std::unique_ptr<GenerateWindow> generateWindow;
     std::unique_ptr<ProjectWindow> projectWindow; // MIRA-GENERATE.md Phase 2
+    std::unique_ptr<LoraLibraryWindow> loraLibraryWindow;
     std::unique_ptr<PrepareWindow> prepareWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;
     // The in-window Cues view. Owned here (it needs the database through this class's
@@ -4523,6 +4543,7 @@ public:
             menu.addItem(22, "Library");
             menu.addSeparator();
             menu.addItem(MainComponent::kShowProject, "Project Window...");
+            menu.addItem(MainComponent::kShowLoraLibrary, "LoRA Library...");
             menu.addItem(MainComponent::kShowGenerate, "SA3 Generate...");
             menu.addItem(MainComponent::kShowPrepare, "Prepare for Training...");
             menu.addSeparator();

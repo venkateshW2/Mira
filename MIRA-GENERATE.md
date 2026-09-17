@@ -312,6 +312,55 @@ travelled with that specific take — which is what the code writing those sidec
 claimed was the record. A quiet, plausible, unfalsifiable wrongness of exactly the kind
 convention 6 exists to stop.
 
+### Phase 4a — the window, rebuilt
+
+Phase 4's layout was wrong, and the first real session showed it: *"resize destroys the
+ui - the prompt gets hidden... the buttons are all placed in weird ways, the slider
+movement is not smooth, clicking is difficult."* All of it was one cause or another below.
+
+**A floating waveform, and an empty expanded row.** `setHostedComponents` reparented
+`preview` and `resultTile` to the stack, and then a later `addAndMakeVisible(preview)` in
+the constructor silently took them back — while `resized()` went on giving them the
+*stack's* coordinates. A full-width waveform across the top of the window, and the row it
+belonged to left blank. Ownership of a child is what decides whose coordinate space its
+bounds are in; the two calls have to agree, and only one of them may exist.
+
+**Two containers, both scrolling.** Takes and audio left, everything else right — the
+layout §Phase 2 deferred. The old window was a single top-down column that simply ran out
+of height, so whatever fell off the bottom was laid out at zero size and disappeared.
+That is the same bug as the prompt builder's clipped fields, for the third time. A pane
+that scrolls cannot lose a control at any window size. The right pane is measured and
+then placed by **one** function called twice, rather than two that have to agree.
+
+**Slider rows 22px -> 26px.** A `LinearHorizontal` slider in a 22px row leaves a track a
+few pixels tall: the grab area was smaller than the pointer. The row height *is* the hit
+target.
+
+**Grouped and labelled.** `LORA` and `SETTINGS` headings; output folder and filename
+together; Generate / Stop / Show in Finder together. `Output folder...` used to sit
+between `Add LoRA file...` and `Build prompt...` with nothing to say they were unrelated.
+
+**Default size 720x700 -> 1180x820**, with a floor of 820x520.
+
+### Phase 4b — the LoRA Library
+
+*"add lora take it out of this - let have it in the osx toolbar... a new window called
+load loras - we add the loras and name the lora - so they come into the dropdown."*
+
+The default folder already existed and already worked, with 21 checkpoints in it. What
+was missing was a **name**: `tar-step20000-epoch833.safetensors` says which run and which
+checkpoint and nothing about what it sounds like.
+
+`Window -> LoRA Library...` lists the folder, adds checkpoints to it, and names them.
+Names live in `ui_settings` under one JSON object keyed by **filename**, so a checkpoint
+copied to another machine keeps its name. Nothing is renamed on disk — PRD §1, and a
+renamed checkpoint would break every recipe that recorded it. Added files are
+**symlinked**, not copied: they are 38 MB each and the originals live on an external
+drive.
+
+The generate window's dropdown shows the name when there is one and the filename-derived
+label when there is not — never both, and never a name invented locally.
+
 ### Phase 5 — cut and fade
 
 - [ ] Trim handles on the expanded waveform, written as a `segments` row

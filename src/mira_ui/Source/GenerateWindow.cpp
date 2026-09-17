@@ -129,21 +129,21 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
                           "BPM: 70, TrackType: Music, Genre: Electronic: Ambient, "
                           "VocalType: Instrumental");
     tip(promptEditor, "Prompt SA3 is conditioned on. Keep the trigger token first.");
-    addAndMakeVisible(promptEditor);
+    rightPane.addAndMakeVisible(promptEditor);
 
     for (int i = 0; i < kLoraSlots; ++i) {
         auto& sl = slots[static_cast<size_t>(i)];
         sl.label.setText("LoRA " + juce::String(i + 1), juce::dontSendNotification);
-        addAndMakeVisible(sl.label);
+        rightPane.addAndMakeVisible(sl.label);
         tip(sl.box, "LoRA for this slot. Fill two slots to blend styles.");
-        addAndMakeVisible(sl.box);
+        rightPane.addAndMakeVisible(sl.box);
 
         sl.strength.setRange(0.0, 2.0, 0.05);
         sl.strength.setValue(1.0, juce::dontSendNotification);
         sl.strength.setSliderStyle(juce::Slider::LinearHorizontal);
         sl.strength.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
         tip(sl.strength, "0 = base model (bypass), 1 = as trained, above 1 = overdriven.");
-        addAndMakeVisible(sl.strength);
+        rightPane.addAndMakeVisible(sl.strength);
 
         // Step gating: apply the LoRA only during part of the diffusion run. Early steps
         // shape structure and arrangement, late steps shape timbre and texture -- so this
@@ -152,7 +152,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
             st->setRange(1, 50, 1);
             st->setSliderStyle(juce::Slider::LinearHorizontal);
             st->setTextBoxStyle(juce::Slider::TextBoxRight, false, 40, 18);
-            addAndMakeVisible(*st);
+            rightPane.addAndMakeVisible(*st);
         }
         sl.minStep.setValue(1, juce::dontSendNotification);
         sl.maxStep.setValue(8, juce::dontSendNotification);
@@ -194,11 +194,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
             juce::MessageManager::callAsync([this] { promptBuilder.reset(); });
         };
     };
-    addAndMakeVisible(buildPromptButton);
+    rightPane.addAndMakeVisible(buildPromptButton);
 
-    tip(addLoraButton, "Copy a .safetensors into loras/sa3-medium/.");
-    addLoraButton.onClick = [this] { addLoraFile(); };
-    addAndMakeVisible(addLoraButton);
+    // "add lora take it out of this -- let have it in the osx toolbar". The button is
+    // gone; Window > LoRA Library... manages the folder and names the checkpoints, and
+    // this window just reads the result. addLoraFile() stays as the implementation the
+    // library window's own Add button reaches, so there is still one copy of it.
 
     auto setupNumber = [this](juce::Slider& s, double lo, double hi, double interval,
                               double value, const juce::String& tipText) {
@@ -218,29 +219,29 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     setupNumber(cfgSlider, 1.0, 10.0, 0.5, 1.0,
                 "CFG. 1 = the long-standing default (Avoid is ignored). 3-5 to steer; 7 clips ~5% of samples.");
     cfgLabel.setText("cfg", juce::dontSendNotification);
-    addAndMakeVisible(cfgLabel);
+    rightPane.addAndMakeVisible(cfgLabel);
 
     negativeLabel.setText("avoid", juce::dontSendNotification);
-    addAndMakeVisible(negativeLabel);
+    rightPane.addAndMakeVisible(negativeLabel);
     negativeEditor.setMultiLine(false);
     negativeEditor.setTextToShowWhenEmpty("needs cfg above 1 -- e.g. voice, vocals, singing",
                                            juce::Colours::grey);
     tip(negativeEditor, "Steer AWAY from these. Only acts when cfg > 1 (sa3_gradio guards it with `if cfg != 1.0`).");
-    addAndMakeVisible(negativeEditor);
+    rightPane.addAndMakeVisible(negativeEditor);
 
     tip(generateButton, "Generate with the settings above.");
     generateButton.onClick = [this] { generate(); };
-    addAndMakeVisible(generateButton);
+    rightPane.addAndMakeVisible(generateButton);
 
     triggerLabel.setText("trigger", juce::dontSendNotification);
-    addAndMakeVisible(triggerLabel);
+    rightPane.addAndMakeVisible(triggerLabel);
     triggerEditor.setText("xyr");
     tip(triggerEditor, "Rare token this LoRA is keyed to. One per film (Dune used zvq).");
-    addAndMakeVisible(triggerEditor);
+    rightPane.addAndMakeVisible(triggerEditor);
 
     tip(encodeButton, "Captions -> encode -> zip, for one film folder. Analysed files only.");
     encodeButton.onClick = [this] { chooseEncodeFolder(); };
-    addAndMakeVisible(encodeButton);
+    rightPane.addAndMakeVisible(encodeButton);
 
     outputFolder = juce::File::getSpecialLocation(juce::File::userMusicDirectory)
                        .getChildFile("mira-generated");
@@ -262,7 +263,6 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
                            juce::dontSendNotification);
         resized();
     };
-    takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton });
     takesLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
     takesLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
     addAndMakeVisible(takesLabel);
@@ -272,28 +272,28 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
     tip(outFolderButton, "Where generated WAVs go.");
     outFolderButton.onClick = [this] { chooseOutputFolder(); };
-    addAndMakeVisible(outFolderButton);
+    rightPane.addAndMakeVisible(outFolderButton);
 
     nameEditor.setTextToShowWhenEmpty("filename (blank = timestamp)",
                                        juce::Colours::white.withAlpha(0.35f));
     tip(nameEditor, "Filename for the next take. Blank = timestamp. Never overwrites.");
-    addAndMakeVisible(nameEditor);
+    rightPane.addAndMakeVisible(nameEditor);
 
     tip(initAudioButton, "audio2audio: start from this audio instead of noise.");
     initAudioButton.onClick = [this] { chooseInitAudio(); };
-    addAndMakeVisible(initAudioButton);
+    rightPane.addAndMakeVisible(initAudioButton);
     clearInitButton.onClick = [this] {
         initAudio = juce::File();
         initLabel.setText("no init audio", juce::dontSendNotification);
     };
     tip(clearInitButton, "Clear init audio.");
-    addAndMakeVisible(clearInitButton);
+    rightPane.addAndMakeVisible(clearInitButton);
     initLabel.setText("no init audio", juce::dontSendNotification);
-    addAndMakeVisible(initLabel);
+    rightPane.addAndMakeVisible(initLabel);
 
     tip(inpaintToggle, "Regenerate only the range below, keep the rest bit-exact.");
     inpaintToggle.onClick = [this] { resized(); };
-    addAndMakeVisible(inpaintToggle);
+    rightPane.addAndMakeVisible(inpaintToggle);
     for (auto* sl : { &inpaintStart, &inpaintEnd }) {
         sl->setRange(0.0, 380.0, 0.5);
         sl->setSliderStyle(juce::Slider::LinearHorizontal);
@@ -310,16 +310,22 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         if (resultTile.getFile().existsAsFile()) resultTile.getFile().revealToUser();
     };
     revealButton.setEnabled(false);
-    addAndMakeVisible(revealButton);
+    rightPane.addAndMakeVisible(revealButton);
 
+    // NOT addAndMakeVisible(preview) -- the take stack hosts these, and adding them here
+    // afterwards silently reparented them BACK to this component while resized() went on
+    // giving them the stack's coordinates. That is what put a full-width waveform across
+    // the top of the window with the expanded row left empty below it. Ownership of a
+    // child is the thing that decides whose coordinate space its bounds are in.
     tip(preview, "Play and scrub. Drag the strip below to get the file into your DAW.");
-    addAndMakeVisible(preview);
-    addAndMakeVisible(resultTile);
+
+    // Last, so nothing added above can take these back (see the note beside preview).
+    takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton });
 
     tip(stopButton, "Kill and restart the worker. Next run reloads the model (~44s).");
     stopButton.onClick = [this] { stopGeneration(); };
     stopButton.setEnabled(false);
-    addAndMakeVisible(stopButton);
+    rightPane.addAndMakeVisible(stopButton);
 
     tip(pressureLabel, "Free RAM / swap. Once swap fills, every step pages to disk.");
     addAndMakeVisible(pressureLabel);
@@ -334,12 +340,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     addAndMakeVisible(logView);
 
     progressBar.setVisible(false);
-    addAndMakeVisible(progressBar);
+    rightPane.addAndMakeVisible(progressBar);
 
     datasetsLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.45f));
     datasetsLabel.setFont(juce::FontOptions(11.0f));
     tip(datasetsLabel, "Prepared datasets: folder -> trigger (latent count).");
-    addAndMakeVisible(datasetsLabel);
+    rightPane.addAndMakeVisible(datasetsLabel);
     refreshDatasets();
     refreshLoras();
     startWorker();
@@ -437,7 +443,10 @@ void GenerateContent::refreshLoras() {
             if (run != lastRun) { box.addSectionHeading(run); lastRun = run; }
             // Ids stay k+2 over the SORTED array, which is the same array
             // buildLoraSpecs() indexes -- section headings consume no id.
-            box.addItem(loraShortLabel(loraFiles[k]), k + 2);
+            // The name from the LoRA Library if it has one, the filename-derived
+            // label otherwise -- never both, and never a name invented here.
+            auto named = LoraLibraryContent::displayNameFor(database, loraFiles[k]);
+            box.addItem(named.isNotEmpty() ? named : loraShortLabel(loraFiles[k]), k + 2);
         }
         // Slot 1 preselects the FIRST entry now that the list is sorted -- id 2 -- rather
         // than the last one the filesystem happened to return.
@@ -1089,131 +1098,180 @@ void GenerateContent::paint(juce::Graphics& g) {
     g.fillAll(juce::Colour(0xff1a1a1a));
 }
 
-void GenerateContent::resized() {
-    auto r = getLocalBounds().reduced(12);
-    auto top = r.removeFromTop(22);
-    pressureLabel.setBounds(top.removeFromRight(260));
-    statusLabel.setBounds(top);
-    r.removeFromTop(4);
-    promptEditor.setBounds(r.removeFromTop(64));
-    r.removeFromTop(6);
+// Everything in the right pane, laid out once. Called twice per resize: once to MEASURE
+// (applyBounds=false) so the pane can be given a height tall enough for all of it, and
+// once to place. One function rather than two that must agree -- a measure pass that
+// drifts from the layout pass is how a control ends up half off the bottom of a viewport.
+int GenerateContent::layoutRightPane(int width, bool applyBounds) {
+    juce::Rectangle<int> r { 0, 0, width, 100000 };
+    r = r.reduced(10, 8);
+    int startY = r.getY();
 
-    auto row = [&r](int h, int gap = 5) { auto x = r.removeFromTop(h); r.removeFromTop(gap); return x; };
+    auto row = [&r, applyBounds](int h, int gap = 6) {
+        auto x = r.removeFromTop(h);
+        r.removeFromTop(gap);
+        return applyBounds ? x : juce::Rectangle<int>();
+    };
+    auto place = [applyBounds](juce::Component& c, juce::Rectangle<int> b) {
+        if (applyBounds) c.setBounds(b);
+    };
+    auto heading = [&](juce::Label& l, const char* text) {
+        auto line = row(18, 2);
+        if (applyBounds) {
+            l.setText(text, juce::dontSendNotification);
+            l.setFont(juce::Font(juce::FontOptions(11.0f, juce::Font::bold)));
+            l.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+            l.setBounds(line);
+        }
+    };
 
+    // --- the prompt, first, because it is what the window is for
+    place(promptEditor, row(72));
+    {
+        auto line = row(26);
+        place(buildPromptButton, line.removeFromLeft(130));
+        line.removeFromLeft(6);
+        place(negativeLabel, line.removeFromLeft(38));
+        place(negativeEditor, line);
+    }
+
+    heading(loraHeading, "LORA");
     for (int i = 0; i < kLoraSlots; ++i) {
         auto& sl = slots[static_cast<size_t>(i)];
-        auto line = row(22, 2);
-        sl.label.setBounds(line.removeFromLeft(48));
-        sl.box.setBounds(line.removeFromLeft(200));
-        line.removeFromLeft(4);
-        sl.strength.setBounds(line.removeFromLeft(150));
-        line.removeFromLeft(4);
-        sl.minStep.setBounds(line.removeFromLeft(juce::jmax(80, line.getWidth() / 2 - 2)));
-        line.removeFromLeft(4);
-        sl.maxStep.setBounds(line);
+        // 26, not 22. "the slider movement is not smooth, clicking is difficult" -- a
+        // LinearHorizontal slider in a 22px row leaves a track a few pixels tall, so the
+        // grab area was smaller than the pointer. The row height IS the hit target.
+        auto line = row(26, 4);
+        place(sl.label, line.removeFromLeft(46));
+        place(sl.box, line.removeFromLeft(juce::jmax(150, line.getWidth() / 3)));
+        line.removeFromLeft(5);
+        place(sl.strength, line.removeFromLeft(juce::jmax(110, line.getWidth() / 3)));
+        line.removeFromLeft(5);
+        auto half = line.getWidth() / 2 - 3;
+        place(sl.minStep, line.removeFromLeft(juce::jmax(70, half)));
+        line.removeFromLeft(6);
+        place(sl.maxStep, line);
     }
-    r.removeFromTop(4);
 
-    secondsSlider.setBounds(row(22));
-    stepsSlider.setBounds(row(22));
-    seedSlider.setBounds(row(22));
+    heading(settingsHeading, "SETTINGS");
+    place(secondsSlider, row(26, 4));
+    place(stepsSlider, row(26, 4));
+    place(seedSlider, row(26, 4));
     {
-        auto line = row(22);
-        cfgLabel.setBounds(line.removeFromLeft(34));
-        cfgSlider.setBounds(line);
+        auto line = row(26, 4);
+        place(cfgLabel, line.removeFromLeft(38));
+        place(cfgSlider, line);
     }
     {
-        auto line = row(24);
-        negativeLabel.setBounds(line.removeFromLeft(34));
-        negativeEditor.setBounds(line);
+        auto line = row(26);
+        place(initAudioButton, line.removeFromLeft(100));
+        line.removeFromLeft(4);
+        place(clearInitButton, line.removeFromLeft(26));
+        line.removeFromLeft(6);
+        place(inpaintToggle, line.removeFromRight(120));
+        line.removeFromRight(6);
+        place(initLabel, line);
     }
-
-    auto a2a = row(24);
-    initAudioButton.setBounds(a2a.removeFromLeft(100));
-    a2a.removeFromLeft(4);
-    clearInitButton.setBounds(a2a.removeFromLeft(24));
-    a2a.removeFromLeft(6);
-    initLabel.setBounds(a2a.removeFromLeft(juce::jmax(120, a2a.getWidth() - 130)));
-    inpaintToggle.setBounds(a2a);
-
     if (inpaintToggle.getToggleState()) {
-        auto rng = row(22);
-        inpaintStart.setBounds(rng.removeFromLeft(rng.getWidth() / 2 - 3));
-        rng.removeFromLeft(6);
-        inpaintEnd.setBounds(rng);
-    } else {
+        auto line = row(26);
+        place(inpaintStart, line.removeFromLeft(line.getWidth() / 2 - 3));
+        line.removeFromLeft(6);
+        place(inpaintEnd, line);
+    } else if (applyBounds) {
         inpaintStart.setBounds({}); inpaintEnd.setBounds({});
     }
 
-    auto out = row(24);
-    outFolderButton.setBounds(out.removeFromLeft(120));
-    out.removeFromLeft(6);
-    nameEditor.setBounds(out.removeFromLeft(200));
-    out.removeFromLeft(6);
-    addLoraButton.setBounds(out.removeFromLeft(120));
-    out.removeFromLeft(6);
-    buildPromptButton.setBounds(out.removeFromLeft(130));
-
-    auto buttons = row(30);
-    generateButton.setBounds(buttons.removeFromLeft(110));
-    buttons.removeFromLeft(6);
-    // The training bench (GenerateWindow.h's setTrainingBenchVisible). Hidden controls
-    // are given EMPTY bounds and their row space is reclaimed rather than simply being
-    // made invisible: a hidden component still laid out at full size leaves a hole, which
-    // is the same class of bug as the prompt builder's clipped fields -- laid out, just
-    // not where anyone could see them.
-    if (trainingBenchVisible) {
-        triggerLabel.setBounds(buttons.removeFromLeft(44));
-        triggerEditor.setBounds(buttons.removeFromLeft(56).reduced(0, 3));
-        buttons.removeFromLeft(4);
-        encodeButton.setBounds(buttons.removeFromLeft(165));
-        buttons.removeFromLeft(4);
-    } else {
-        triggerLabel.setBounds({}); triggerEditor.setBounds({}); encodeButton.setBounds({});
-    }
-    revealButton.setBounds(buttons.removeFromLeft(115));
-    buttons.removeFromLeft(4);
-    stopButton.setBounds(buttons.removeFromLeft(70));
-
-    if (trainingBenchVisible) datasetsLabel.setBounds(row(16, 3));
-    else datasetsLabel.setBounds({});
-    progressBar.setBounds(row(12));
-
-    // Phase 4. Clean up is folder-wide, not per-take, so it sits with the stack rather
-    // than inside the expanded row -- it means "sweep everything nobody kept", and a
-    // button that says that while living inside ONE take would read as being about that
-    // take.
+    // --- where it lands. Grouped together and labelled, instead of the output folder
+    // button sitting between "Add LoRA file..." and "Build prompt..." with nothing to say
+    // they were unrelated ("clean - output folder - show in finder are confusing the way
+    // it is placed").
     {
         auto line = row(26);
-        cleanupButton.setBounds(line.removeFromRight(92).withSizeKeepingCentre(92, 22));
-        takesLabel.setBounds(line);
+        place(outFolderButton, line.removeFromLeft(120));
+        line.removeFromLeft(6);
+        place(nameEditor, line);
     }
 
-    // The stack takes the room, the log keeps a readable minimum. The log is a
-    // diagnostic; the takes are the work.
-    auto logHeight = juce::jmin(juce::jmax(90, r.getHeight() / 4), r.getHeight());
-    auto takesArea = r.removeFromTop(juce::jmax(0, r.getHeight() - logHeight - 6));
-    takesView.setBounds(takesArea);
-    r.removeFromTop(6);
-    logView.setBounds(r);
+    // --- the training bench, only on the SA3 Generate face (§3.4)
+    if (trainingBenchVisible) {
+        heading(loraHeading, "LORA"); // reuse is fine: the project face never draws it
+        auto line = row(26);
+        place(triggerLabel, line.removeFromLeft(46));
+        place(triggerEditor, line.removeFromLeft(70));
+        line.removeFromLeft(6);
+        place(encodeButton, line.removeFromLeft(170));
+        place(datasetsLabel, row(16, 4));
+    } else if (applyBounds) {
+        triggerLabel.setBounds({}); triggerEditor.setBounds({});
+        encodeButton.setBounds({}); datasetsLabel.setBounds({});
+    }
 
-    // The viewport asks its content for a size; the stack cannot set its own.
-    if (takeStack != nullptr)
     {
-        takeStack->setSize(takesView.getWidth() - (takesView.isVerticalScrollBarShown() ? 10 : 0),
-                            juce::jmax(takeStack->getIdealHeight(), takesArea.getHeight()));
+        auto line = row(32);
+        place(generateButton, line.removeFromLeft(120));
+        line.removeFromLeft(6);
+        place(stopButton, line.removeFromLeft(80));
+        line.removeFromLeft(6);
+        place(revealButton, line.removeFromLeft(130));
+    }
+    place(progressBar, row(12));
+
+    return r.getY() - startY + 8;
+}
+
+void GenerateContent::resized() {
+    auto r = getLocalBounds().reduced(10);
+
+    auto top = r.removeFromTop(22);
+    pressureLabel.setBounds(top.removeFromRight(260));
+    statusLabel.setBounds(top);
+    r.removeFromTop(6);
+
+    // The log is a diagnostic and lives under both panes, full width.
+    auto logHeight = juce::jlimit(70, 160, r.getHeight() / 5);
+    logView.setBounds(r.removeFromBottom(logHeight));
+    r.removeFromBottom(8);
+
+    // Two containers. The right one is sized to its content and scrolls; the left takes
+    // whatever is left, with a floor so the takes never disappear on a narrow window.
+    const int rightWidth = juce::jlimit(320, 520, r.getWidth() / 2);
+    auto rightArea = r.removeFromRight(rightWidth);
+    r.removeFromRight(8);
+    auto leftArea = r;
+
+    rightView.setBounds(rightArea);
+    {
+        const int innerWidth = rightArea.getWidth() - (rightView.isVerticalScrollBarShown() ? 10 : 0);
+        const int needed = layoutRightPane(innerWidth, false);
+        rightPane.setSize(innerWidth, juce::jmax(needed, rightArea.getHeight()));
+        layoutRightPane(innerWidth, true);
+    }
+
+    // --- left: the takes
+    {
+        auto header = leftArea.removeFromTop(26);
+        cleanupButton.setBounds(header.removeFromRight(92).withSizeKeepingCentre(92, 22));
+        header.removeFromRight(6);
+        takesLabel.setBounds(header);
+        leftArea.removeFromTop(4);
+        takesView.setBounds(leftArea);
+    }
+
+    if (takeStack != nullptr) {
+        const int innerWidth = takesView.getWidth() - (takesView.isVerticalScrollBarShown() ? 10 : 0);
+        takeStack->setSize(innerWidth, juce::jmax(takeStack->getIdealHeight(), takesView.getHeight()));
 
         // Inside the expanded row: the big waveform, then the drag tile with Keep and
-        // Discard beside it. Positioned by this class, not by TakeStack -- the stack
-        // knows where the hole is, not what belongs in it.
+        // Discard beside it. These are children of the STACK, so the bounds below are in
+        // the stack's coordinate space -- which is exactly why nothing else may
+        // addAndMakeVisible them (see the constructor).
         auto slot = takeStack->getExpandedContentArea();
-        if (!slot.isEmpty())
-        {
+        if (!slot.isEmpty()) {
             auto buttons = slot.removeFromBottom(30);
             preview.setBounds(slot.withTrimmedBottom(4));
-            keepButton.setBounds(buttons.removeFromRight(60).withSizeKeepingCentre(60, 24));
-            buttons.removeFromRight(4);
-            discardButton.setBounds(buttons.removeFromRight(76).withSizeKeepingCentre(76, 24));
+            keepButton.setBounds(buttons.removeFromRight(64).withSizeKeepingCentre(64, 24));
+            buttons.removeFromRight(5);
+            discardButton.setBounds(buttons.removeFromRight(80).withSizeKeepingCentre(80, 24));
             buttons.removeFromRight(8);
             resultTile.setBounds(buttons);
         }
