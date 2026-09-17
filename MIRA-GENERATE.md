@@ -1,6 +1,6 @@
 # MIRA GENERATE — plan and task list
 
-**Written 2026-09-17.** Status: **Phases 1-3 built; Phases 4-7 planned.**
+**Written 2026-09-17.** Status: **Phases 1-4 built; Phases 5-7 planned.**
 
 A generation-and-delivery workflow inside mira: start a project, generate cues, keep the
 takes worth keeping, cut and fade them, hand the folder over.
@@ -287,10 +287,30 @@ point at which the feature is useful.**
 
 ### Phase 4 — the take stack
 
-- [ ] Session takes listed left, one compact waveform row each
-- [ ] Accordion: the selected take expands in place to a large waveform
-- [ ] Keep / Discard / cue name on the expanded take
-- [ ] Rows survive until kept or discarded; Cleanup still trashes the unkept
+**Built 2026-09-17.** `TakeStack.h`.
+
+- [x] Session takes listed newest first, one compact waveform row each
+- [x] Accordion: the selected take expands in place to a large waveform
+- [x] Keep / Discard on the expanded take; the cue prompt is Phase 3's, unchanged
+- [x] Rows survive until kept or discarded; Clean up still trashes the unkept, and now
+      clears their rows first
+
+**One WaveformView, moved — not one per row.** `WaveformView` opens an
+`AudioDeviceManager` in its constructor, so a waveform per take would open one audio
+device per take. The expanded row leaves a **hole**, and the window's single preview,
+drag tile, Keep and Discard are positioned into it (`setHostedComponents` /
+`getExpandedContentArea`). The stack knows where the hole is; the window knows what goes
+in it.
+
+Rows are painted by one component rather than being a child `Component` each: a row is a
+name, a mini waveform and a triangle, with no focus and no controls of its own.
+
+**`lastRecipe` was wrong the moment a second take existed.** Keep wrote whatever had been
+generated *most recently*, so keeping take 3 after generating take 4 would have recorded
+take 4's seed, LoRA and cfg against take 3. Keep now reads the `.json` sidecar that
+travelled with that specific take — which is what the code writing those sidecars already
+claimed was the record. A quiet, plausible, unfalsifiable wrongness of exactly the kind
+convention 6 exists to stop.
 
 ### Phase 5 — cut and fade
 

@@ -245,6 +245,31 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     outputFolder = juce::File::getSpecialLocation(juce::File::userMusicDirectory)
                        .getChildFile("mira-generated");
     outputFolder.createDirectory();
+    takeFormatManager.registerBasicFormats();
+    takeStack = std::make_unique<TakeStack>(laf, takeFormatManager, takeThumbnailCache);
+    takeStack->onSelected = [this](const juce::File& f) {
+        preview.setFile(f);
+        resultTile.setFile(f);
+        const bool have = f.existsAsFile();
+        keepButton.setEnabled(have);
+        discardButton.setEnabled(have);
+        revealButton.setEnabled(have);
+    };
+    takeStack->onHeightChanged = [this] {
+        takesLabel.setText(takeStack->getTakeCount() == 0
+                               ? juce::String("Takes")
+                               : "Takes (" + juce::String(takeStack->getTakeCount()) + ")",
+                           juce::dontSendNotification);
+        resized();
+    };
+    takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton });
+    takesLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+    takesLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+    addAndMakeVisible(takesLabel);
+    takesView.setViewedComponent(takeStack.get(), false);
+    takesView.setScrollBarsShown(true, false);
+    addAndMakeVisible(takesView);
+
     tip(outFolderButton, "Where generated WAVs go.");
     outFolderButton.onClick = [this] { chooseOutputFolder(); };
     addAndMakeVisible(outFolderButton);
@@ -485,6 +510,18 @@ void promptForCue(const juce::StringArray& existingCues, const juce::String& ini
 }
 } // namespace
 
+// The take's own settings, from the .json written beside it at render time. Falls back
+// to lastRecipe only when the sidecar is missing (a take generated before sidecars, or
+// one whose write failed), and returns void rather than guessing when neither exists.
+juce::var GenerateContent::recipeFor(const juce::File& wav) const {
+    auto sidecar = wav.withFileExtension("json");
+    if (sidecar.existsAsFile()) {
+        auto parsed = juce::JSON::parse(sidecar.loadFileAsString());
+        if (!parsed.isVoid()) return parsed;
+    }
+    return lastRecipe;
+}
+
 juce::StringArray GenerateContent::listExistingCues() const {
     juce::StringArray cues;
     if (!projectFolder.isDirectory()) return cues;
@@ -536,7 +573,7 @@ void GenerateContent::keepResult() {
     database.addFilesToCollection(id, { record->id });
 
     if (onLibraryChanged) onLibraryChanged();
-    keepButton.setEnabled(false);
+    takeStack->removeTake(wav);
     statusLabel.setText(wav.getFileName() + " - kept in mira, collection \"Generated\"",
                         juce::dontSendNotification);
     log("kept: " + wav.getFileName());
@@ -600,15 +637,21 @@ void GenerateContent::keepResultIntoCue(const juce::File& wav, const juce::Strin
     const auto record = database.findByPath(path);
     if (!record.has_value()) { log("could not register " + target.getFileName()); return; }
 
-    if (!lastRecipe.isVoid()) {
+    // The recipe of THIS take, read from the sidecar that travelled with it -- not
+    // lastRecipe, which is whatever was generated most recently. With a stack of takes
+    // (Phase 4) those are routinely different: keeping the third take after generating a
+    // fourth would otherwise record the fourth one's settings. The sidecars beside the
+    // audio ARE the record, as the code that writes them already says.
+    auto recipe = recipeFor(target);
+    if (!recipe.isVoid()) {
         // §3.6: a SIBLING of the analysis toolchain under `provenance`, merged in, so a
         // later analysis pass and this can both be true of the same file.
         database.setProvenanceField(record->id, "$.generation",
-                                     juce::JSON::toString(lastRecipe, true).toStdString());
+                                     juce::JSON::toString(recipe, true).toStdString());
         // Kept where it has always been kept too -- an existing take's `$.generated`
         // reader should not have to know about Phase 3 to keep working.
         database.setHumanField(record->id, "$.generated",
-                                juce::JSON::toString(lastRecipe, true).toStdString());
+                                juce::JSON::toString(recipe, true).toStdString());
     }
     // §3.7: "Chosen is v1; alts number after it." Editable afterwards -- this is a
     // starting position, not a verdict, which is why it lives in `human`.
@@ -616,8 +659,7 @@ void GenerateContent::keepResultIntoCue(const juce::File& wav, const juce::Strin
     database.setHumanField(record->id, "$.cue", "\"" + cueSlug.toStdString() + "\"");
 
     if (onLibraryChanged) onLibraryChanged();
-    keepButton.setEnabled(false);
-    discardButton.setEnabled(false);
+    takeStack->removeTake(wav); // filed -- it is a cue now, not a take awaiting judgement
     statusLabel.setText(target.getFileName() + " - kept in " + cueSlug, juce::dontSendNotification);
     log("kept: " + cueSlug + "/" + target.getFileName());
 }
@@ -635,8 +677,10 @@ void GenerateContent::discardResult() {
     bool ok = wav.moveToTrash();
     if (sidecar.existsAsFile()) sidecar.moveToTrash();
 
-    keepButton.setEnabled(false);
-    discardButton.setEnabled(false);
+    // Gone from the stack either way: if the move to Trash failed the file is still
+    // there, but leaving a row whose buttons no longer do anything is worse than a log
+    // line saying what happened.
+    takeStack->removeTake(wav);
     revealButton.setEnabled(false);
     statusLabel.setText(ok ? name + " - moved to Trash"
                            : "could not move " + name + " to Trash",
@@ -674,7 +718,10 @@ void GenerateContent::cleanupUnkept() {
             int moved = 0;
             for (const auto& f : doomed) {
                 const auto sidecar = f.withFileExtension("json");
-                if (f == resultTile.getFile()) { preview.setFile({}); resultTile.setFile({}); }
+                // Out of the stack before the file goes, not after -- a row whose
+                // file has been trashed underneath it would paint from a thumbnail of
+                // something that is no longer there.
+                takeStack->removeTake(f);
                 if (f.moveToTrash()) ++moved;
                 if (sidecar.existsAsFile()) sidecar.moveToTrash();
             }
@@ -853,11 +900,11 @@ void GenerateContent::generate() {
             obj->setProperty("wall_ms", payload.getProperty("wall_ms", 0));
             wav.withFileExtension("json").replaceWithText(juce::JSON::toString(lastRecipe, false));
         }
-        resultTile.setFile(wav);
-        preview.setFile(wav);
+        // addTake selects it, and the selection callback sets preview/resultTile and
+        // enables the buttons -- one path, so a take opened by clicking an older row is
+        // in exactly the same state as one that just finished rendering.
+        takeStack->addTake(wav);
         revealButton.setEnabled(true);
-        keepButton.setEnabled(true);
-        discardButton.setEnabled(true);
         const auto ms = static_cast<int>(payload.getProperty("wall_ms", 0));
         statusLabel.setText(wav.getFileName() + " - done in "
                             + juce::String(ms / 1000.0, 1) + "s - drag the tile into your DAW",
@@ -1131,16 +1178,44 @@ void GenerateContent::resized() {
     if (trainingBenchVisible) datasetsLabel.setBounds(row(16, 3));
     else datasetsLabel.setBounds({});
     progressBar.setBounds(row(12));
-    preview.setBounds(row(110));
+
+    // Phase 4. Clean up is folder-wide, not per-take, so it sits with the stack rather
+    // than inside the expanded row -- it means "sweep everything nobody kept", and a
+    // button that says that while living inside ONE take would read as being about that
+    // take.
     {
-        auto line = row(38);
-        cleanupButton.setBounds(line.removeFromRight(92).withSizeKeepingCentre(92, 24));
-        line.removeFromRight(6);
-        discardButton.setBounds(line.removeFromRight(76).withSizeKeepingCentre(76, 24));
-        line.removeFromRight(4);
-        keepButton.setBounds(line.removeFromRight(60).withSizeKeepingCentre(60, 24));
-        line.removeFromRight(8);
-        resultTile.setBounds(line);
+        auto line = row(26);
+        cleanupButton.setBounds(line.removeFromRight(92).withSizeKeepingCentre(92, 22));
+        takesLabel.setBounds(line);
     }
+
+    // The stack takes the room, the log keeps a readable minimum. The log is a
+    // diagnostic; the takes are the work.
+    auto logHeight = juce::jmin(juce::jmax(90, r.getHeight() / 4), r.getHeight());
+    auto takesArea = r.removeFromTop(juce::jmax(0, r.getHeight() - logHeight - 6));
+    takesView.setBounds(takesArea);
+    r.removeFromTop(6);
     logView.setBounds(r);
+
+    // The viewport asks its content for a size; the stack cannot set its own.
+    if (takeStack != nullptr)
+    {
+        takeStack->setSize(takesView.getWidth() - (takesView.isVerticalScrollBarShown() ? 10 : 0),
+                            juce::jmax(takeStack->getIdealHeight(), takesArea.getHeight()));
+
+        // Inside the expanded row: the big waveform, then the drag tile with Keep and
+        // Discard beside it. Positioned by this class, not by TakeStack -- the stack
+        // knows where the hole is, not what belongs in it.
+        auto slot = takeStack->getExpandedContentArea();
+        if (!slot.isEmpty())
+        {
+            auto buttons = slot.removeFromBottom(30);
+            preview.setBounds(slot.withTrimmedBottom(4));
+            keepButton.setBounds(buttons.removeFromRight(60).withSizeKeepingCentre(60, 24));
+            buttons.removeFromRight(4);
+            discardButton.setBounds(buttons.removeFromRight(76).withSizeKeepingCentre(76, 24));
+            buttons.removeFromRight(8);
+            resultTile.setBounds(buttons);
+        }
+    }
 }

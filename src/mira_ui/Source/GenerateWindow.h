@@ -7,6 +7,7 @@
 
 #include "mira/db/Database.h"
 #include "MiraLookAndFeel.h"
+#include "TakeStack.h"
 #include "PromptBuilderWindow.h"
 #include "Sa3Worker.h"
 #include "WaveformView.h"
@@ -164,6 +165,7 @@ private:
     juce::File projectFolder;         // invalid = no project, Keep behaves as it always did
     void keepResultIntoCue(const juce::File& wav, const juce::String& cueName);
     juce::StringArray listExistingCues() const;
+    juce::var recipeFor(const juce::File& wav) const;
 
 public:
     // MIRA-GENERATE.md Phase 1: "switching project switches the output folder". Same
@@ -215,6 +217,16 @@ private:
     // file drag would make both feel broken.
     WaveformView preview;
     ResultTile resultTile;
+    // MIRA-GENERATE.md Phase 4. The window held ONE result until now -- each generation
+    // replaced the last, so comparing two meant regenerating. The stack keeps every take
+    // of the session until it is kept or discarded, and hosts preview/resultTile/Keep/
+    // Discard inside whichever row is expanded (see TakeStack's note on why they are
+    // hosted rather than duplicated per row).
+    juce::AudioFormatManager takeFormatManager;
+    juce::AudioThumbnailCache takeThumbnailCache { 64 };
+    std::unique_ptr<TakeStack> takeStack;
+    juce::Viewport takesView;
+    juce::Label takesLabel; // "Takes (n)" -- the stack has no header of its own
     juce::TextButton stopButton { "Stop" };
     // Memory readout. Generation RAM scales with clip length (peak was 11 GB at 30 s on
     // a 16 GB machine), and a second SA3 process -- a forgotten gradio, say -- is enough
