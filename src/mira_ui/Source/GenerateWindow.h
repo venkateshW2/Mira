@@ -341,6 +341,11 @@ private:
     // run after a start or a Stop costs ~44 s more than the rest. The estimate has to
     // know which kind of run this is or it is wrong by 44 s in one direction or the other.
     bool modelLoaded = false;
+    // AUDIO IN folds away. It is the tallest section in the right pane and the one least
+    // often wanted, and with it open the Generate button fell below the fold on a normal
+    // window -- "the generate button is actually hidden and need to scroll for it".
+    bool audioInCollapsed = true;
+    juce::TextButton audioInCollapse;
     int busySteps = 0;
     double busySeconds = 0.0;
     bool busyHadLoad = false;

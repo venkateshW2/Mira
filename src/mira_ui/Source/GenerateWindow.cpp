@@ -144,6 +144,11 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
         sl.strength.setRange(0.0, 2.0, 0.05);
         sl.strength.setValue(1.0, juce::dontSendNotification);
+        // Its slot's colour, the same one the lane strip draws that LoRA in, so blend and
+        // step-window read as two controls over one thing -- and so neither is mistaken
+        // for a settings slider.
+        sl.strength.setColour(juce::Slider::trackColourId, MiraLookAndFeel::slotTint(i));
+        sl.strength.setDoubleClickReturnValue(true, 1.0);
         sl.strength.setSliderStyle(juce::Slider::LinearHorizontal);
         sl.strength.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
         tip(sl.strength, "0 = base model (bypass), 1 = as trained, above 1 = overdriven.");
@@ -207,7 +212,11 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         s.setValue(value, juce::dontSendNotification);
         s.setSliderStyle(juce::Slider::LinearHorizontal);
         s.setTextBoxStyle(juce::Slider::TextBoxRight, false, 56, 20);
-        tip(s, tipText);
+        // Double-click returns to the value it was built with. Four sliders that each
+        // reach into a 40-fold range need a way back that is not "remember what it said".
+        s.setDoubleClickReturnValue(true, value);
+        tip(s, tipText + "  Default " + juce::String(value, interval < 1.0 ? 1 : 0)
+                    + " -- double-click to return to it.");
         rightPane.addAndMakeVisible(s);
     };
     stepsSlider.onValueChange = [this] {
@@ -499,6 +508,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // The progress strip lives in the LEFT pane, under the takes header: the bar fills
     // in the rectangle the take then lands in. Calibration is per machine and persists,
     // so the "we have never timed a run" state is entered once in the app's life.
+    audioInCollapse.setColour(juce::TextButton::buttonColourId, MiraLookAndFeel::surface2);
+    audioInCollapse.setColour(juce::TextButton::textColourOffId, MiraLookAndFeel::textDim);
+    audioInCollapse.onClick = [this] { audioInCollapsed = !audioInCollapsed; resized(); };
+    tip(audioInCollapse, "Fold the init-audio and inpaint controls away.");
+    rightPane.addAndMakeVisible(audioInCollapse);
+
     genProgress.setVisible(false);
     if (const auto k = database.getSetting("gen_calibration"))
         genProgress.setCalibration(juce::String(*k).getDoubleValue());
@@ -1613,29 +1628,46 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
     // --- audio in: init audio and inpainting, one clearly-bounded section instead of a
     // row of controls that never said they belonged together.
     heading(inpaintHeading, "AUDIO IN");
-    {
-        auto line = row(26);
-        place(initAudioButton, line.removeFromLeft(100));
-        line.removeFromLeft(4);
-        place(clearInitButton, line.removeFromLeft(26));
-        line.removeFromLeft(6);
-        place(inpaintToggle, line.removeFromRight(120));
-        line.removeFromRight(6);
-        place(initLabel, line);
+    if (applyBounds) {
+        // The arrow sits on the heading's own line, at the right, where the rule ends.
+        auto h = inpaintHeading.getBounds();
+        audioInCollapse.setButtonText(audioInCollapsed ? juce::String(juce::CharPointer_UTF8("\xe2\x96\xb8"))
+                                                        : juce::String(juce::CharPointer_UTF8("\xe2\x96\xbe")));
+        audioInCollapse.setBounds(h.removeFromRight(22).withSizeKeepingCentre(22, 18));
     }
-    if (inpaintStrip != nullptr) place(*inpaintStrip, row(62, 4));
-    if (inpaintToggle.getToggleState()) {
-        place(inpaintHelp, row(30, 4));
-        // The numbers stay, beside the picture: a range dragged by eye still has to be
-        // typeable when a cue has to start at exactly 12.0s.
-        auto line = row(26);
-        place(inpaintStart, line.removeFromLeft(line.getWidth() / 2 - 3));
-        line.removeFromLeft(6);
-        place(inpaintEnd, line);
-    } else if (applyBounds) {
-        inpaintHelp.setBounds({});
-        inpaintStart.setBounds({}); inpaintEnd.setBounds({});
+    if (audioInCollapsed) {
+        if (applyBounds) {
+            initAudioButton.setBounds({}); clearInitButton.setBounds({});
+            inpaintToggle.setBounds({});   initLabel.setBounds({});
+            inpaintHelp.setBounds({});     inpaintStart.setBounds({}); inpaintEnd.setBounds({});
+            if (inpaintStrip != nullptr) inpaintStrip->setBounds({});
+        }
+    } else {
+        {
+            auto line = row(26);
+            place(initAudioButton, line.removeFromLeft(100));
+            line.removeFromLeft(4);
+            place(clearInitButton, line.removeFromLeft(26));
+            line.removeFromLeft(6);
+            place(inpaintToggle, line.removeFromRight(120));
+            line.removeFromRight(6);
+            place(initLabel, line);
+        }
+        if (inpaintStrip != nullptr) place(*inpaintStrip, row(62, 4));
+        if (inpaintToggle.getToggleState()) {
+            place(inpaintHelp, row(30, 4));
+            // The numbers stay, beside the picture: a range dragged by eye still has to
+            // be typeable when a cue has to start at exactly 12.0s.
+            auto line = row(26);
+            place(inpaintStart, line.removeFromLeft(line.getWidth() / 2 - 3));
+            line.removeFromLeft(6);
+            place(inpaintEnd, line);
+        } else if (applyBounds) {
+            inpaintHelp.setBounds({});
+            inpaintStart.setBounds({}); inpaintEnd.setBounds({});
+        }
     }
+
 
     // --- where it lands. Grouped together and labelled, instead of the output folder
     // button sitting between "Add LoRA file..." and "Build prompt..." with nothing to say
@@ -1679,6 +1711,13 @@ void GenerateContent::resized() {
     auto top = r.removeFromTop(22);
     pressureLabel.setBounds(top.removeFromRight(260));
     statusLabel.setBounds(top);
+    // Directly under the status line, full width, and only while it is running. Anywhere
+    // inside a pane costs that pane height permanently; here it costs 22px of the one
+    // strip in the window that has nothing else to do.
+    if (genProgress.isVisible()) {
+        r.removeFromTop(2);
+        genProgress.setBounds(r.removeFromTop(GenerateProgress::kHeight));
+    }
     r.removeFromTop(6);
 
     // The log is a diagnostic and lives under both panes, full width.
@@ -1708,10 +1747,6 @@ void GenerateContent::resized() {
         header.removeFromRight(6);
         takesLabel.setBounds(header);
         leftArea.removeFromTop(4);
-        if (genProgress.isVisible()) {
-            genProgress.setBounds(leftArea.removeFromTop(GenerateProgress::kHeight));
-            leftArea.removeFromTop(4);
-        }
         takesView.setBounds(leftArea);
     }
 

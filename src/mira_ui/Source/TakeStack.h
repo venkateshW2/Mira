@@ -258,7 +258,18 @@ public:
                 // The triangle toggles open/shut; anywhere else on the row focuses it.
                 // Separated on purpose: with several rows open, "click to play this one"
                 // and "click to close this one" must not be the same gesture.
-                if (e.x < 22) { take.expanded = !take.expanded; if (take.expanded) focusedFile = take.file; rebuild(); }
+                // focus(), NOT focusedFile = take.file. Assigning the field moves the
+                // hosted preview into this row without ever telling the owner, so the
+                // preview arrived here still holding the PREVIOUS take's file and its
+                // running transport -- the old take's waveform and its travelling
+                // playhead, drawn inside the new take's row. Indistinguishable from the
+                // two takes being the same audio. Exactly the bug addTake had; the note
+                // above about setting the field is the reason it is a function.
+                if (e.x < 22)
+                {
+                    take.expanded = !take.expanded;
+                    if (take.expanded) focus(take.file); else rebuild();
+                }
                 else          { take.expanded = true; focus(take.file); }
                 return;
             }

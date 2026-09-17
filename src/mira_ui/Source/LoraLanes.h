@@ -216,8 +216,7 @@ private:
                                        juce::jmax(3, stepToX(L.hi + 1) - stepToX(L.lo)), grid.getHeight());
             // One colour per slot so two lanes can be told apart at a glance -- the whole
             // point of the picture is seeing how they overlap.
-            const juce::Colour tint = i == 0 ? MiraLookAndFeel::accent
-                                              : (i == 1 ? juce::Colour(0xff5aa9e6) : juce::Colour(0xff7ec98f));
+            const juce::Colour tint = MiraLookAndFeel::slotTint(i);
             g.setColour(tint.withAlpha(0.55f));
             g.fillRoundedRectangle(bar.toFloat(), 2.0f);
             g.setColour(tint);

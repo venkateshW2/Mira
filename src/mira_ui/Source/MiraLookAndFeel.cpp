@@ -283,6 +283,16 @@ juce::Font MiraLookAndFeel::getPopupMenuFont()
     return compactMenus ? sansRegular(12.5f) : LookAndFeel_V4::getPopupMenuFont();
 }
 
+juce::Colour MiraLookAndFeel::slotTint(int slot)
+{
+    switch (slot)
+    {
+        case 0:  return juce::Colour(0xff9b8cff);   // violet
+        case 1:  return juce::Colour(0xff5aa9e6);   // blue
+        default: return juce::Colour(0xff7ec98f);   // green
+    }
+}
+
 void MiraLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
                                         float sliderPos, float minSliderPos, float maxSliderPos,
                                         juce::Slider::SliderStyle style, juce::Slider& slider)
@@ -313,8 +323,14 @@ void MiraLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int widt
     g.setColour(surface2);
     g.fillRoundedRectangle(bar, 3.0f);
 
+    // The fill colour is the slider's own when one was set, so a caller can mark a
+    // family of sliders apart without a second LookAndFeel. Everything unmarked stays
+    // accent, which is what the settings column is.
+    const juce::Colour fill = slider.isColourSpecified(juce::Slider::trackColourId)
+                                  ? slider.findColour(juce::Slider::trackColourId) : accent;
+
     auto filled = bar.withRight(juce::jlimit(bar.getX(), bar.getRight(), sliderPos));
-    g.setColour(accent.withAlpha(on ? 0.5f : 0.18f));
+    g.setColour(fill.withAlpha(on ? 0.5f : 0.18f));
     g.fillRoundedRectangle(filled, 3.0f);
 
     // The value edge, hard and bright. This is the grab target and the thing the eye
@@ -322,7 +338,7 @@ void MiraLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int widt
     if (filled.getWidth() >= 1.0f)
     {
         const float w = slider.isMouseOverOrDragging() ? 3.0f : 2.0f;
-        g.setColour(on ? accent.brighter(0.25f) : textDim);
+        g.setColour(on ? fill.brighter(0.25f) : textDim);
         g.fillRect(filled.getRight() - w, bar.getY(), w, bar.getHeight());
     }
 

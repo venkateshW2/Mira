@@ -11,8 +11,11 @@
 // another to receive it -- and it was a bare indeterminate bar beside a "generating...
 // [230s]" label, which says how long you have waited and nothing about how long is left.
 //
-// It now sits at the top of the takes column, which is exactly where the finished take
-// appears: the bar fills, and the take lands in the same rectangle.
+// It now runs full width across the TOP of the window, directly under the status line it
+// belongs to, and it is one line tall with its own caption inside it. It was briefly at
+// the top of the takes column -- where the take lands, which reads well -- but a 44px
+// block there costs a take row for the whole generation, and the takes column is the part
+// of this window that is always short of room.
 //
 // The estimate is MEASURED, not invented (convention 2, and 6: never substitute a made-up
 // number for one you do not have). Generation cost is very close to linear in
@@ -27,7 +30,7 @@
 class GenerateProgress : public juce::Component, private juce::Timer
 {
 public:
-    static constexpr int kHeight = 44;
+    static constexpr int kHeight = 18;
 
     // Model load is a one-off cost per worker process, not part of the per-step work, so
     // it is added to the estimate rather than folded into k -- otherwise the first
@@ -71,8 +74,7 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        auto r = getLocalBounds().reduced(0, 4);
-        auto bar = r.removeFromTop(18).toFloat();
+        auto bar = getLocalBounds().reduced(0, 2).toFloat();
 
         g.setColour(MiraLookAndFeel::surface2);
         g.fillRoundedRectangle(bar, 3.0f);
@@ -83,7 +85,7 @@ public:
         const double frac = estimate > 0.0 ? juce::jlimit(0.01, 0.985, elapsed / estimate) : 1.0;
 
         auto filled = bar.withWidth(juce::jmax(3.0f, static_cast<float>(bar.getWidth() * frac)));
-        g.setColour(MiraLookAndFeel::accent.withAlpha(estimate > 0.0 ? 0.55f : 0.28f));
+        g.setColour(MiraLookAndFeel::accent.withAlpha(estimate > 0.0 ? 0.5f : 0.22f));
         g.fillRoundedRectangle(filled, 3.0f);
 
         // The shimmer: diagonal bands travelling along whatever is filled. This is the
@@ -92,7 +94,7 @@ public:
         {
             juce::Graphics::ScopedSaveState clip (g);
             g.reduceClipRegion(filled.getSmallestIntegerContainer());
-            g.setColour(juce::Colours::white.withAlpha(0.07f));
+            g.setColour(juce::Colours::white.withAlpha(0.06f));
             const float period = 26.0f;
             const float shift = std::fmod(static_cast<float>(elapsed) * 34.0f, period);
             for (float x = filled.getX() - period + shift; x < filled.getRight(); x += period)
@@ -113,12 +115,10 @@ public:
             g.fillRect(filled.getRight() - 2.0f, bar.getY(), 2.0f, bar.getHeight());
         }
 
-        r.removeFromTop(3);
-        g.setColour(MiraLookAndFeel::textDim);
-        g.setFont(juce::Font(juce::FontOptions(10.5f)));
-        g.drawText(caption(elapsed), r, juce::Justification::centredLeft);
-        if (estimate > 0.0)
-            g.drawText("this take lands here", r, juce::Justification::centredRight);
+        g.setColour(MiraLookAndFeel::text);
+        g.setFont(juce::Font(juce::FontOptions(10.0f)));
+        g.drawText(caption(elapsed), getLocalBounds().withTrimmedLeft(8),
+                    juce::Justification::centredLeft, true);
     }
 
 private:

@@ -1652,30 +1652,73 @@ void WaveformView::resized()
     // (below) can sit at the true horizontal centre of the whole row, not just the
     // centre of whatever's left over. "volume bar should look professional with a mute
     // button" / Soundly reference screenshot's own left-aligned volume cluster.
-    auto leftZone = row.removeFromLeft(140);
+    // The row is laid out against a BUDGET, because it is no longer only ever the full
+    // width of a window: inside a take row in the generate window it can be squeezed to a
+    // few hundred pixels. With fixed 140 + 256 zones the centred play button ended up
+    // underneath the zoom cluster and simply disappeared -- reported as "when the window
+    // is squeezed the play button vanishes from the track". A control that is drawn
+    // behind another control is worse than one that is dropped, because nothing says it
+    // is gone.
+    //
+    // Priority, most important last to be dropped: play > time > volume > zoom > lanes.
+    const int full = row.getWidth();
+    const bool haveZoom  = full >= 140 + 256 + 60;
+    const bool haveLanes = full >= 140 + 200 + 60;
+    const int leftWidth  = full >= 300 ? 140 : (full >= 220 ? 92 : 24);
+
+    auto leftZone = row.removeFromLeft(leftWidth);
     muteButton.setBounds(leftZone.removeFromLeft(24).withSizeKeepingCentre(24, 24));
-    leftZone.removeFromLeft(6);
-    auto volumeCol = leftZone;
-    volumePercentLabel.setBounds(volumeCol.removeFromTop(12));
-    volumeSlider.setBounds(volumeCol);
+    if (leftWidth > 24)
+    {
+        leftZone.removeFromLeft(6);
+        auto volumeCol = leftZone;
+        volumePercentLabel.setBounds(volumeCol.removeFromTop(12));
+        volumeSlider.setBounds(volumeCol);
+    }
+    else
+    {
+        // Hidden by empty bounds rather than setVisible: resized() is the one place that
+        // decides what fits, and a setVisible(false) here would have to be undone
+        // somewhere else the next time the row grows.
+        volumePercentLabel.setBounds({});
+        volumeSlider.setBounds({});
+    }
 
-    // Right zone: zoom controls + time readout.
-    auto rightZone = row.removeFromRight(256);
+    // Right zone: whatever of zoom + time still fits.
+    int rightWidth = 76;                       // the clock always earns its place
+    if (haveLanes) rightWidth += 8 + 52;
+    if (haveZoom)  rightWidth += 8 + 26 + 4 + 40 + 4 + 26;
+    auto rightZone = row.removeFromRight(juce::jmin(rightWidth, juce::jmax(0, row.getWidth() - 40)));
+
     timeLabel.setBounds(rightZone.removeFromRight(76));
-    rightZone.removeFromRight(8);
-    zoomInButton.setBounds(rightZone.removeFromRight(26));
-    rightZone.removeFromRight(4);
-    zoomResetButton.setBounds(rightZone.removeFromRight(40));
-    rightZone.removeFromRight(4);
-    zoomOutButton.setBounds(rightZone.removeFromRight(26));
-    rightZone.removeFromRight(8);
-    lanesButton.setBounds(rightZone.removeFromRight(52));
+    if (haveZoom)
+    {
+        rightZone.removeFromRight(8);
+        zoomInButton.setBounds(rightZone.removeFromRight(26));
+        rightZone.removeFromRight(4);
+        zoomResetButton.setBounds(rightZone.removeFromRight(40));
+        rightZone.removeFromRight(4);
+        zoomOutButton.setBounds(rightZone.removeFromRight(26));
+    }
+    else
+    {
+        zoomInButton.setBounds({}); zoomResetButton.setBounds({}); zoomOutButton.setBounds({});
+    }
+    if (haveLanes)
+    {
+        rightZone.removeFromRight(8);
+        lanesButton.setBounds(rightZone.removeFromRight(52));
+    }
+    else lanesButton.setBounds({});
 
-    // Play button: true centre of the whole component's width, "play button can be in
-    // the centre" -- computed from getWidth(), not from whatever's left of row after the
-    // two zones above. Vertically centred within the row itself, not pinned to its top.
-    playButton.setBounds(getWidth() / 2 - playSize / 2, row.getY() + (row.getHeight() - playSize) / 2, playSize,
-                          playSize);
+    // Play button: centred on the component when that lands in the gap the two zones
+    // left behind, and pushed into that gap when it does not. `row` is now exactly the
+    // space nothing else claimed, so it cannot be drawn underneath anything.
+    const int wanted = getWidth() / 2 - playSize / 2;
+    const int x = row.getWidth() >= playSize
+                      ? juce::jlimit(row.getX(), row.getRight() - playSize, wanted)
+                      : wanted;
+    playButton.setBounds(x, row.getY() + (row.getHeight() - playSize) / 2, playSize, playSize);
 }
 
 void WaveformView::setPlaybackGain(float gain)

@@ -23,6 +23,13 @@ public:
     static const juce::Colour text;       // --text #e8eaf0
     static const juce::Colour textDim;    // --text-dim #8992a6
     static const juce::Colour textFaint;  // --text-faint #545c6e
+
+    // One colour per LoRA slot, shared by the lane strip and that slot's blend slider so
+    // the two controls for one LoRA are visibly the same LoRA. Deliberately NOT the
+    // accent: the accent is what every settings slider uses, and the blend sliders had to
+    // stop looking like settings ("can lora blend slider colour be different from the
+    // setting slider colours").
+    static juce::Colour slotTint(int slot);
     static const juce::Colour accent;     // --accent #e8a33d — warm amber, selection/primary accent
     static const juce::Colour accentSoft; // --accent-soft rgba(232,163,61,0.14)
     static const juce::Colour active;     // --active #4fb8ae — teal, active-region/beat/selection
