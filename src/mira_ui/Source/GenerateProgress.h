@@ -39,6 +39,7 @@ public:
 
     void start(int steps, double seconds, bool includeModelLoad)
     {
+        running = true;
         startMs = juce::Time::getMillisecondCounter();
         estimate = (calibration > 0.0)
                        ? calibration * steps * seconds + (includeModelLoad ? kModelLoadSeconds : 0.0)
@@ -48,11 +49,14 @@ public:
         repaint();
     }
 
-    void stop() { stopTimer(); setVisible(false); }
+    void stop() { running = false; stopTimer(); setVisible(false); }
 
+    // Zero until start() has actually run. getMillisecondCounter() is time since BOOT,
+    // so an unstarted strip that subtracts a zero startMs reports the machine's uptime as
+    // its elapsed time -- which is exactly what happened, as "generating 754:13".
     double elapsedSeconds() const
     {
-        return (juce::Time::getMillisecondCounter() - startMs) / 1000.0;
+        return running ? (juce::Time::getMillisecondCounter() - startMs) / 1000.0 : 0.0;
     }
 
     // Seconds per (step x second-of-audio) on this machine. Persisted by the owner.
@@ -140,6 +144,7 @@ private:
         return "generating " + clock(elapsed) + " of about " + clock(estimate);
     }
 
+    bool running = false;
     juce::uint32 startMs = 0;
     double estimate = 0.0;
     double calibration = 0.0;

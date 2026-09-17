@@ -514,10 +514,15 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     tip(audioInCollapse, "Fold the init-audio and inpaint controls away.");
     rightPane.addAndMakeVisible(audioInCollapse);
 
-    genProgress.setVisible(false);
     if (const auto k = database.getSetting("gen_calibration"))
         genProgress.setCalibration(juce::String(*k).getDoubleValue());
-    addAndMakeVisible(genProgress);
+    // addChildComponent, NOT addAndMakeVisible: the latter sets visible to TRUE, which
+    // silently undid the setVisible(false) that used to sit right above it. The strip
+    // was therefore up from launch, never started, reading the raw millisecond counter
+    // as its start time -- so it showed the machine's UPTIME as a generation that was
+    // not running. (The ProgressBar it replaced had the identical mistake; at progress 0
+    // it just drew an empty bar, so nobody ever saw it.)
+    addChildComponent(genProgress);
 
     datasetsLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.45f));
     datasetsLabel.setFont(juce::FontOptions(11.0f));
@@ -739,6 +744,11 @@ void GenerateContent::syncLoraLanes() {
         const int sel = sl.box.getSelectedId();
         const bool have = sel > 1 && sel - 1 <= loraFiles.size();
         loraLanes.setLane(i, have ? sl.box.getText() : juce::String(), sl.stepLo, sl.stepHi);
+        // An empty slot's blend slider was still drawn full and reading 1.00, in its own
+        // colour -- three loaded LoRAs, as far as the picture was concerned. It has
+        // nothing to scale, so it is disabled and reads as such.
+        sl.strength.setEnabled(have);
+        sl.blendLabel.setEnabled(have);
     }
 }
 
