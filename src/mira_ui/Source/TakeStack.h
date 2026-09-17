@@ -63,8 +63,13 @@ public:
             take.thumbnail->addChangeListener(&repainter);
         }
         takes.push_back(std::move(take));
-        if (expand) focusedFile = file;
-        rebuild();
+        // focus(), not focusedFile = file. Setting the field and rebuilding marks the row
+        // as focused but never ANNOUNCES it, so the preview kept whatever file it already
+        // had: a new generation appeared in the list showing the PREVIOUS take's
+        // waveform, and only a click put the right audio in it. One way to become
+        // focused, and it always tells the window.
+        if (expand) focus(file);
+        else        rebuild();
     }
 
     // Keep moved the file into the cue folder, so the row follows it there rather than

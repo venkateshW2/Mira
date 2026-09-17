@@ -1238,9 +1238,11 @@ void GenerateContent::generate() {
             obj->setProperty("wall_ms", payload.getProperty("wall_ms", 0));
             wav.withFileExtension("json").replaceWithText(juce::JSON::toString(lastRecipe, false));
         }
-        // addTake selects it, and the selection callback sets preview/resultTile and
-        // enables the buttons -- one path, so a take opened by clicking an older row is
-        // in exactly the same state as one that just finished rendering.
+        // addTake focuses it, and onFocused sets preview/resultTile and enables the
+        // buttons -- one path, so a take opened by clicking an older row is in exactly
+        // the same state as one that just finished rendering. (This comment described
+        // what the code was MEANT to do; addTake was not actually firing onFocused, so a
+        // new take showed the previous one's waveform until it was clicked.)
         takeStack->addTake(wav);
         revealButton.setEnabled(true);
         const auto ms = static_cast<int>(payload.getProperty("wall_ms", 0));
