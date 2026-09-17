@@ -44,7 +44,31 @@ public:
     }
 
     juce::File getFile() const { return file; }
-    double getLengthSeconds() const { return thumbnail ? thumbnail->getTotalLength() : 0.0; }
+    double getAudioSeconds() const { return thumbnail ? thumbnail->getTotalLength() : 0.0; }
+
+    // "impaint works like extensions... so start from the waveform and end it the next
+    // time bound, so it's like extending the track also."
+    //
+    // It does, and the sampler already supports it: sa3_mlx.py ZERO-PADS init audio up to
+    // the requested duration before encoding it. So a 30 s take asked for at 60 s, with
+    // the range set 30..60, keeps the first half bit-exact and generates a second half
+    // that has to follow from it. That is an extension.
+    //
+    // Which means the timeline here is the DURATION being generated, not the length of
+    // the file -- the end handle has to be able to travel past where the audio stops, or
+    // the one thing this is best at cannot be asked for.
+    void setTimeline(double seconds)
+    {
+        timelineSeconds = juce::jmax(0.0, seconds);
+        repaint();
+    }
+
+    double getTimelineSeconds() const
+    {
+        // Falls back to the audio's own length before a duration is set, so the strip is
+        // never drawing against a zero-width timeline.
+        return timelineSeconds > 0.0 ? timelineSeconds : getAudioSeconds();
+    }
 
     void setRange(double startSec, double endSec)
     {
@@ -80,11 +104,30 @@ public:
             return;
         }
 
-        const double length = thumbnail->getTotalLength();
+        const double audioLen = thumbnail->getTotalLength();
         auto wave = r.reduced(2);
 
+        // The audio occupies only its own share of the timeline. The rest is empty --
+        // that is the part an extension writes into, and it is drawn as empty rather
+        // than left looking like audio that happens to be silent.
+        const int audioRight = secondsToX(audioLen);
+        juce::Rectangle<int> audioArea = wave.withRight(juce::jmax(wave.getX() + 1, audioRight));
         g.setColour(MiraLookAndFeel::textDim.withAlpha(0.7f));
-        thumbnail->drawChannels(g, wave, 0.0, length, 1.0f);
+        thumbnail->drawChannels(g, audioArea, 0.0, audioLen, 1.0f);
+
+        if (audioRight < wave.getRight() - 1)
+        {
+            juce::Rectangle<int> empty = wave.withLeft(audioRight);
+            g.setColour(MiraLookAndFeel::textDim.withAlpha(0.14f));
+            for (int x = empty.getX(); x < empty.getRight(); x += 5)
+                g.fillRect(x, empty.getCentreY(), 2, 1);
+            g.setColour(MiraLookAndFeel::textDim.withAlpha(0.5f));
+            g.setFont(juce::Font(juce::FontOptions(10.0f)));
+            if (empty.getWidth() > 60)
+                g.drawText("new", empty, juce::Justification::centred);
+            g.setColour(MiraLookAndFeel::textDim.withAlpha(0.4f));
+            g.fillRect(audioRight, wave.getY(), 1, wave.getHeight());
+        }
 
         // The region that will be REGENERATED. Everything outside it is kept bit-exact by
         // the sampler's paste-back, so the highlight is literally "this part goes away".
@@ -111,7 +154,7 @@ public:
 
     void mouseDown(const juce::MouseEvent& e) override
     {
-        if (getLengthSeconds() <= 0.0) return;
+        if (getTimelineSeconds() <= 0.0) return;
         // Whichever edge is nearer, unless the click is well outside the selection, in
         // which case it starts a new one.
         const int x0 = secondsToX(rangeStart), x1 = secondsToX(rangeEnd);
@@ -120,7 +163,7 @@ public:
         else
         {
             grab = Grab::End;
-            rangeStart = juce::jlimit(0.0, getLengthSeconds(), xToSeconds(e.x));
+            rangeStart = juce::jlimit(0.0, getTimelineSeconds(), xToSeconds(e.x));
             rangeEnd = rangeStart;
         }
         mouseDrag(e);
@@ -128,8 +171,8 @@ public:
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
-        if (grab == Grab::None || getLengthSeconds() <= 0.0) return;
-        const double t = juce::jlimit(0.0, getLengthSeconds(), xToSeconds(e.x));
+        if (grab == Grab::None || getTimelineSeconds() <= 0.0) return;
+        const double t = juce::jlimit(0.0, getTimelineSeconds(), xToSeconds(e.x));
         if (grab == Grab::Start) rangeStart = t;
         else                     rangeEnd = t;
         if (rangeEnd < rangeStart) std::swap(rangeStart, rangeEnd);
@@ -173,7 +216,7 @@ private:
 
     int secondsToX(double seconds) const
     {
-        const double length = getLengthSeconds();
+        const double length = getTimelineSeconds();
         if (length <= 0.0) return getLocalBounds().getX() + 2;
         auto wave = getLocalBounds().reduced(2);
         return wave.getX() + juce::roundToInt(seconds / length * wave.getWidth());
@@ -183,7 +226,7 @@ private:
     {
         auto wave = getLocalBounds().reduced(2);
         if (wave.getWidth() <= 0) return 0.0;
-        return (static_cast<double>(x - wave.getX()) / wave.getWidth()) * getLengthSeconds();
+        return (static_cast<double>(x - wave.getX()) / wave.getWidth()) * getTimelineSeconds();
     }
 
     juce::AudioFormatManager& formatManager;
@@ -191,6 +234,7 @@ private:
     std::unique_ptr<juce::AudioThumbnail> thumbnail;
     juce::File file;
     double rangeStart = 0.0, rangeEnd = 10.0;
+    double timelineSeconds = 0.0; // the DURATION being generated, not the file's length
     Grab grab = Grab::None;
     bool dragging = false;
 };

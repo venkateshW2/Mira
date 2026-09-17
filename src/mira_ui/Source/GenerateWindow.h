@@ -175,6 +175,17 @@ private:
     void keepResultIntoCue(const juce::File& wav, const juce::String& cueName);
     juce::StringArray listExistingCues() const;
     juce::var recipeFor(const juce::File& wav) const;
+    // The LoRA step window is measured in SAMPLER steps and compared against the Steps
+    // value (buildLoraSpecs: `hi < nSteps` is what "to the last step" means). A slider
+    // running to 50 while Steps is 8 was therefore offering 42 positions that do not
+    // exist -- dragging through them changed nothing, which is most of why it felt like
+    // the slider was broken. The range follows Steps instead.
+    void syncLoraStepRanges();
+    // The inpaint range is bounded by the DURATION, not by the source file's length, so
+    // the end handle can reach past where the audio stops -- which is what an extension
+    // is. sa3_mlx.py zero-pads the init audio up to the requested duration, so the region
+    // beyond the file is real, addressable timeline.
+    void syncInpaintSliderRanges();
 
 public:
     // MIRA-GENERATE.md Phase 1: "switching project switches the output folder". Same

@@ -219,6 +219,16 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         tip(s, tipText);
         rightPane.addAndMakeVisible(s);
     };
+    stepsSlider.onValueChange = [this] {
+        syncLoraStepRanges();
+        if (inpaintStrip != nullptr) inpaintStrip->repaint();
+    };
+    secondsSlider.onValueChange = [this] {
+        // The inpaint timeline IS the duration being generated -- that is what makes
+        // extending a take possible at all (see InpaintStrip::setTimeline).
+        if (inpaintStrip != nullptr) inpaintStrip->setTimeline(secondsSlider.getValue());
+        syncInpaintSliderRanges();
+    };
     setupNumber(secondsSlider, 10, 380, 1, 30,
                 "Output length. CHANGING THIS RELOADS THE MODEL (~44s). RAM grows with it.");
     setupNumber(stepsSlider, 4, 50, 1, 8,
@@ -281,8 +291,9 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // context and regenerates what is inside it, and a paste-back makes the kept part
     // bit-exact. The prompt conditions the WHOLE generation, not just the gap -- there is
     // one cross-attention prompt, so it describes the piece the gap has to belong to.
-    inpaintHelp.setText("Regenerates only the highlighted range. Everything outside it is kept exactly. "
-                         "The prompt above describes the whole piece, not just the gap.",
+    inpaintHelp.setText("Regenerates only the highlighted range; everything outside it is kept exactly. "
+                         "Drag the range past the end of the audio to EXTEND it. The prompt above "
+                         "describes the whole piece, not just the gap.",
                          juce::dontSendNotification);
     inpaintHelp.setFont(juce::Font(juce::FontOptions(11.0f)));
     inpaintHelp.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
@@ -296,13 +307,20 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         initAudio = f;
         initLabel.setText(f.getFileName(), juce::dontSendNotification);
         inpaintToggle.setToggleState(true, juce::sendNotification);
-        const double len = inpaintStrip->getLengthSeconds();
-        if (len > 0.0) {
-            inpaintStart.setRange(0.0, len, 0.01);
-            inpaintEnd.setRange(0.0, len, 0.01);
-            inpaintStrip->setRange(0.0, juce::jmin(len, 10.0));
-            inpaintStart.setValue(0.0, juce::dontSendNotification);
-            inpaintEnd.setValue(juce::jmin(len, 10.0), juce::dontSendNotification);
+        inpaintStrip->setTimeline(secondsSlider.getValue());
+        syncInpaintSliderRanges();
+        const double audio = inpaintStrip->getAudioSeconds();
+        const double total = secondsSlider.getValue();
+        if (audio > 0.0) {
+            // Default to the EXTENSION when the dropped audio is shorter than the
+            // duration: that is the reason to drop a take in here rather than a file, and
+            // a default of "regenerate the first ten seconds of what you just made" would
+            // be the least likely thing wanted.
+            const double s0 = audio < total - 0.5 ? audio : 0.0;
+            const double s1 = audio < total - 0.5 ? total : juce::jmin(audio, 10.0);
+            inpaintStrip->setRange(s0, s1);
+            inpaintStart.setValue(s0, juce::dontSendNotification);
+            inpaintEnd.setValue(s1, juce::dontSendNotification);
         }
         resized();
     };
@@ -372,6 +390,10 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // the top of the window with the expanded row left empty below it. Ownership of a
     // child is the thing that decides whose coordinate space its bounds are in.
     tip(preview, "Play and scrub. Drag the strip below to get the file into your DAW.");
+
+    syncLoraStepRanges();
+    if (inpaintStrip != nullptr) inpaintStrip->setTimeline(secondsSlider.getValue());
+    syncInpaintSliderRanges();
 
     // Last, so nothing added above can take these back (see the note beside preview).
     takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton });
@@ -576,6 +598,33 @@ void promptForCue(const juce::StringArray& existingCues, const juce::String& ini
 // The take's own settings, from the .json written beside it at render time. Falls back
 // to lastRecipe only when the sidecar is missing (a take generated before sidecars, or
 // one whose write failed), and returns void rather than guessing when neither exists.
+void GenerateContent::syncInpaintSliderRanges() {
+    const double total = juce::jmax(1.0, secondsSlider.getValue());
+    for (auto* sl : { &inpaintStart, &inpaintEnd }) {
+        const double held = sl->getValue();
+        sl->setRange(0.0, total, 0.01);
+        sl->setValue(juce::jlimit(0.0, total, held), juce::dontSendNotification);
+    }
+    if (inpaintStrip != nullptr)
+        inpaintStrip->setRange(inpaintStart.getValue(), inpaintEnd.getValue());
+}
+
+void GenerateContent::syncLoraStepRanges() {
+    const int nSteps = juce::jmax(1, static_cast<int>(stepsSlider.getValue()));
+    for (auto& sl : slots) {
+        for (auto* st : { &sl.minStep, &sl.maxStep }) {
+            const bool wasAtEnd = st->getValue() >= st->getMaximum();
+            st->setRange(1, nSteps, 1);
+            // A slider parked at the old maximum meant "all the way to the end", so it
+            // follows the new end rather than being left stranded mid-range by a change
+            // it had no opinion about.
+            if (wasAtEnd) st->setValue(nSteps, juce::dontSendNotification);
+        }
+        if (sl.minStep.getValue() > sl.maxStep.getValue())
+            sl.minStep.setValue(sl.maxStep.getValue(), juce::dontSendNotification);
+    }
+}
+
 juce::var GenerateContent::recipeFor(const juce::File& wav) const {
     auto sidecar = wav.withFileExtension("json");
     if (sidecar.existsAsFile()) {
