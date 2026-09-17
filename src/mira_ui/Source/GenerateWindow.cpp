@@ -156,6 +156,15 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         }
         sl.minStep.setValue(1, juce::dontSendNotification);
         sl.maxStep.setValue(8, juce::dontSendNotification);
+        for (auto* pair : { &sl.blendLabel, &sl.structureLabel, &sl.timbreLabel }) {
+            pair->setFont(juce::Font(juce::FontOptions(10.0f)));
+            pair->setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+            pair->setJustificationType(juce::Justification::centredRight);
+            rightPane.addAndMakeVisible(*pair);
+        }
+        sl.blendLabel.setText("blend", juce::dontSendNotification);
+        sl.structureLabel.setText("structure", juce::dontSendNotification);
+        sl.timbreLabel.setText("timbre", juce::dontSendNotification);
         tip(sl.minStep, "First step this LoRA applies to. Early steps shape structure.");
         tip(sl.maxStep, "Last step this LoRA applies to. Late steps shape timbre.");
     }
@@ -248,7 +257,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     outputFolder.createDirectory();
     takeFormatManager.registerBasicFormats();
     takeStack = std::make_unique<TakeStack>(laf, takeFormatManager, takeThumbnailCache);
-    takeStack->onSelected = [this](const juce::File& f) {
+    takeStack->onFocused = [this](const juce::File& f) {
         preview.setFile(f);
         resultTile.setFile(f);
         const bool have = f.existsAsFile();
@@ -257,9 +266,9 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         revealButton.setEnabled(have);
     };
     takeStack->onHeightChanged = [this] {
-        takesLabel.setText(takeStack->getTakeCount() == 0
+        takesLabel.setText(takeStack->getTotalCount() == 0
                                ? juce::String("Takes")
-                               : "Takes (" + juce::String(takeStack->getTakeCount()) + ")",
+                               : "Takes (" + juce::String(takeStack->getTotalCount()) + ")",
                            juce::dontSendNotification);
         resized();
     };
@@ -588,7 +597,7 @@ void GenerateContent::keepResult() {
     database.addFilesToCollection(id, { record->id });
 
     if (onLibraryChanged) onLibraryChanged();
-    takeStack->removeTake(wav);
+    takeStack->markKept(wav, wav);
     statusLabel.setText(wav.getFileName() + " - kept in mira, collection \"Generated\"",
                         juce::dontSendNotification);
     log("kept: " + wav.getFileName());
@@ -674,7 +683,9 @@ void GenerateContent::keepResultIntoCue(const juce::File& wav, const juce::Strin
     database.setHumanField(record->id, "$.cue", "\"" + cueSlug.toStdString() + "\"");
 
     if (onLibraryChanged) onLibraryChanged();
-    takeStack->removeTake(wav); // filed -- it is a cue now, not a take awaiting judgement
+    // The row FOLLOWS the file into the cue and moves up into KEPT, rather than
+    // vanishing: what has been kept so far is the thing the session is steered by.
+    takeStack->markKept(wav, target);
     statusLabel.setText(target.getFileName() + " - kept in " + cueSlug, juce::dontSendNotification);
     log("kept: " + cueSlug + "/" + target.getFileName());
 }
@@ -695,7 +706,7 @@ void GenerateContent::discardResult() {
     // Gone from the stack either way: if the move to Trash failed the file is still
     // there, but leaving a row whose buttons no longer do anything is worse than a log
     // line saying what happened.
-    takeStack->removeTake(wav);
+    takeStack->markDiscarded(wav);
     revealButton.setEnabled(false);
     statusLabel.setText(ok ? name + " - moved to Trash"
                            : "could not move " + name + " to Trash",
@@ -735,8 +746,9 @@ void GenerateContent::cleanupUnkept() {
                 const auto sidecar = f.withFileExtension("json");
                 // Out of the stack before the file goes, not after -- a row whose
                 // file has been trashed underneath it would paint from a thumbnail of
-                // something that is no longer there.
-                takeStack->removeTake(f);
+                // something that is no longer there. Clean up FORGETS rather than marking
+                // discarded: it is a bulk sweep of things never judged, not a decision.
+                takeStack->forget(f);
                 if (f.moveToTrash()) ++moved;
                 if (sidecar.existsAsFile()) sidecar.moveToTrash();
             }
@@ -1144,18 +1156,25 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
     heading(loraHeading, "LORA");
     for (int i = 0; i < kLoraSlots; ++i) {
         auto& sl = slots[static_cast<size_t>(i)];
-        // 26, not 22. "the slider movement is not smooth, clicking is difficult" -- a
-        // LinearHorizontal slider in a 22px row leaves a track a few pixels tall, so the
-        // grab area was smaller than the pointer. The row height IS the hit target.
-        auto line = row(26, 4);
-        place(sl.label, line.removeFromLeft(46));
-        place(sl.box, line.removeFromLeft(juce::jmax(150, line.getWidth() / 3)));
-        line.removeFromLeft(5);
-        place(sl.strength, line.removeFromLeft(juce::jmax(110, line.getWidth() / 3)));
-        line.removeFromLeft(5);
-        auto half = line.getWidth() / 2 - 3;
-        place(sl.minStep, line.removeFromLeft(juce::jmax(70, half)));
+        // TWO rows per slot, not one. "the lora slider issue is moving from 1-8, the
+        // steps are very small to move and slider is actually very difficult to move" --
+        // the step sliders were about 40px wide for a range of 1 to 50, so one pixel was
+        // more than one step and the grab area was narrower than the pointer. Width is
+        // the fix, and width means giving each slot a second line.
+        auto head = row(24, 2);
+        place(sl.label, head.removeFromLeft(48));
+        place(sl.box, head);
+
+        auto line = row(26, 10);
+        const int labelW = 52;
+        const int cell = juce::jmax(90, (line.getWidth() - 3 * labelW - 12) / 3);
+        place(sl.blendLabel, line.removeFromLeft(labelW).withTrimmedRight(4));
+        place(sl.strength, line.removeFromLeft(cell));
         line.removeFromLeft(6);
+        place(sl.structureLabel, line.removeFromLeft(labelW).withTrimmedRight(4));
+        place(sl.minStep, line.removeFromLeft(cell));
+        line.removeFromLeft(6);
+        place(sl.timbreLabel, line.removeFromLeft(labelW).withTrimmedRight(4));
         place(sl.maxStep, line);
     }
 
@@ -1271,7 +1290,7 @@ void GenerateContent::resized() {
         // Discard beside it. These are children of the STACK, so the bounds below are in
         // the stack's coordinate space -- which is exactly why nothing else may
         // addAndMakeVisible them (see the constructor).
-        auto slot = takeStack->getExpandedContentArea();
+        auto slot = takeStack->getFocusedContentArea();
         if (!slot.isEmpty()) {
             auto buttons = slot.removeFromBottom(30);
             preview.setBounds(slot.withTrimmedBottom(4));

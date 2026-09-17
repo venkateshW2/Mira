@@ -3135,7 +3135,9 @@ public:
                 if (onGenerationWindowClosed) onGenerationWindowClosed();
             });
         };
-        projectWindow->content->setProject(project); // Keep now asks for a cue (Phase 3)
+        // setProject BEFORE setOutputFolder: loading the existing takes needs to know
+        // the project in order to find the cue folders that hold the kept ones.
+        projectWindow->content->setProject(project);
         projectWindow->content->setOutputFolder(projectTakesFolder());
     }
 

@@ -2,7 +2,6 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_utils/juce_audio_utils.h>
-#include <map>
 #include <memory>
 #include <vector>
 
@@ -10,85 +9,111 @@
 
 // MIRA-GENERATE.md Phase 4 -- the take stack.
 //
-// Generation produces ten takes for every one worth keeping, and until now the window
-// held exactly ONE: each result replaced the last, so comparing two meant regenerating
-// or digging through Finder. This is the list, newest first, with the selected take
-// expanded in place.
+// Three sections, in this order: KEPT, TAKES, DISCARDED. "so ones u keep it goes away
+// from the project window, instead move it on top so i can keep checking what the keep
+// files are from the same window". A kept take leaving the window was wrong: keeping is
+// the decision the whole session is FOR, and the record of what has been kept so far is
+// the thing you steer by. Discarded rows stay too, greyed, as a record of what was
+// already rejected -- which stops the same idea being generated and thrown away twice.
 //
-// ONE component paints every row rather than a child Component per take. Rows are a
-// filename, a mini waveform and a state dot; a Component each would be a hundred lines of
-// lifetime management for something that cannot receive focus and has no controls of its
-// own -- the expanded row is where the controls live, and those are HOSTED (see below).
-//
-// The expanded row does not draw its own waveform either. It leaves a hole, and the
-// components handed to setHostedComponents are positioned into it. That is deliberate and
-// it is the whole reason this class exists in this shape: WaveformView opens an
-// AudioDeviceManager in its constructor, so one per row would open one audio device per
-// take. There is exactly one WaveformView, one transport and one drag-out tile in the
-// window, and expanding a row moves them rather than making more.
+// Rows expand INDEPENDENTLY and nothing auto-collapses ("let the take not auto collapse,
+// let two or be open so easy to play"). Two takes can sit open side by side for
+// comparison. Exactly one of them is FOCUSED, and the focused one gets the live
+// transport: there is one WaveformView in the window because it owns an
+// AudioDeviceManager, so one row at a time can play. Other expanded rows draw their own
+// static waveform from a thumbnail, which is cheap. Clicking an expanded row focuses it.
 class TakeStack : public juce::Component
 {
 public:
+    enum class State { Kept, Pending, Discarded };
+
     TakeStack(const MiraLookAndFeel& lafIn, juce::AudioFormatManager& formatManagerIn,
                juce::AudioThumbnailCache& cacheIn)
         : laf(lafIn), formatManager(formatManagerIn), cache(cacheIn)
     {
+        repainter.owner = this;
     }
 
-    static constexpr int kRowHeight = 30;
-    static constexpr int kExpandedHeight = 188;
+    static constexpr int kRowHeight = 28;
+    static constexpr int kHeaderHeight = 22;
+    static constexpr int kExpandedBody = 172; // waveform + control strip, below the row
 
-    // Newest first: the take just generated is the one being judged, so it goes to the
-    // top and opens. A take already in the list is re-selected rather than duplicated
-    // (regenerating over the same filename is possible, if unusual).
-    void addTake(const juce::File& file)
+    void addTake(const juce::File& file, State state = State::Pending, bool expand = true)
     {
-        for (size_t i = 0; i < takes.size(); ++i)
-            if (takes[i].file == file) { select(static_cast<int>(i)); return; }
+        for (auto& t : takes)
+            if (t.file == file) { if (expand) focus(t.file); return; }
 
         Take take;
         take.file = file;
-        take.thumbnail = std::make_unique<juce::AudioThumbnail>(256, formatManager, cache);
-        take.thumbnail->setSource(new juce::FileInputSource(file));
-        take.thumbnail->addChangeListener(&repainter);
-        takes.insert(takes.begin(), std::move(take));
-        // The selection is an index, so inserting at the front moves whatever was
-        // selected down one. Tracking the FILE instead would be tidier in the abstract
-        // and worse here: two rows can briefly share a name during a rename.
-        if (selected >= 0) ++selected;
-        select(0);
+        take.state = state;
+        take.expanded = expand;
+        if (file.existsAsFile())
+        {
+            take.thumbnail = std::make_unique<juce::AudioThumbnail>(256, formatManager, cache);
+            take.thumbnail->setSource(new juce::FileInputSource(file));
+            take.thumbnail->addChangeListener(&repainter);
+        }
+        takes.push_back(std::move(take));
+        if (expand) focusedFile = file;
+        rebuild();
     }
 
-    // Kept or discarded -- either way the take leaves the stack. It does NOT leave on
-    // its own: "rows survive until kept or discarded" is the point, so nothing here is
-    // driven by a timer or by the file vanishing.
-    void removeTake(const juce::File& file)
+    // Keep moved the file into the cue folder, so the row follows it there rather than
+    // being removed and re-added -- the row keeps its place and its expansion.
+    void markKept(const juce::File& oldFile, const juce::File& newFile)
     {
-        for (size_t i = 0; i < takes.size(); ++i)
+        for (auto& t : takes)
         {
-            if (takes[i].file != file) continue;
-            takes.erase(takes.begin() + static_cast<long>(i));
-            // Select the row that took its place, so a run of Discards keeps working
-            // without moving the mouse. Falls back to the new last row, then to nothing.
-            int next = juce::jmin(static_cast<int>(i), static_cast<int>(takes.size()) - 1);
-            selected = -1;
-            if (next >= 0) select(next);
-            else { updateLayout(); if (onSelected) onSelected({}); }
+            if (t.file != oldFile) continue;
+            t.file = newFile;
+            t.state = State::Kept;
+            if (newFile.existsAsFile())
+            {
+                t.thumbnail = std::make_unique<juce::AudioThumbnail>(256, formatManager, cache);
+                t.thumbnail->setSource(new juce::FileInputSource(newFile));
+                t.thumbnail->addChangeListener(&repainter);
+            }
+            if (focusedFile == oldFile) focusedFile = newFile;
+            rebuild();
             return;
         }
     }
 
-    juce::File getSelectedFile() const
+    // The file is in the Trash; the row stays as a record. Its thumbnail goes, because
+    // there is nothing left to draw and a stale one would be a picture of a file that no
+    // longer exists.
+    void markDiscarded(const juce::File& file)
     {
-        if (selected < 0 || selected >= static_cast<int>(takes.size())) return {};
-        return takes[static_cast<size_t>(selected)].file;
+        for (auto& t : takes)
+        {
+            if (t.file != file) continue;
+            t.state = State::Discarded;
+            t.expanded = false;
+            t.thumbnail.reset();
+            if (focusedFile == file) focusedFile = juce::File();
+            rebuild();
+            return;
+        }
     }
 
-    int getTakeCount() const { return static_cast<int>(takes.size()); }
+    void forget(const juce::File& file)
+    {
+        for (size_t i = 0; i < takes.size(); ++i)
+            if (takes[i].file == file)
+            {
+                if (focusedFile == file) focusedFile = juce::File();
+                takes.erase(takes.begin() + static_cast<long>(i));
+                rebuild();
+                return;
+            }
+    }
 
-    // The window's single WaveformView, drag tile and per-take buttons. They become
-    // children of this component so they scroll with the row they belong to; passing an
-    // empty list detaches them again.
+    void clear() { takes.clear(); focusedFile = juce::File(); rebuild(); }
+
+    juce::File getFocusedFile() const { return focusedFile; }
+    int getPendingCount() const { return countOf(State::Pending); }
+    int getTotalCount() const { return static_cast<int>(takes.size()); }
+
     void setHostedComponents(std::vector<juce::Component*> components)
     {
         for (auto* c : hosted)
@@ -96,28 +121,38 @@ public:
         hosted = std::move(components);
         for (auto* c : hosted)
             if (c != nullptr) addAndMakeVisible(c);
-        updateLayout();
+        rebuild();
     }
 
-    // The rectangle the hosted components get, inside the expanded row. The caller lays
-    // its own components out within this -- the stack knows where the hole is, not what
-    // goes in it.
-    juce::Rectangle<int> getExpandedContentArea() const
+    // Where the live transport and the per-take buttons go: inside the FOCUSED expanded
+    // row. Empty when nothing is focused, and the owner then leaves those components
+    // unplaced rather than guessing at a position.
+    juce::Rectangle<int> getFocusedContentArea() const
     {
-        if (selected < 0) return {};
-        int y = selected * kRowHeight + kRowHeight;
-        return { 6, y, juce::jmax(0, getWidth() - 12), kExpandedHeight - kRowHeight - 6 };
+        int y = 0;
+        for (const auto& row : rows)
+        {
+            if (row.kind == RowKind::Header) { y += kHeaderHeight; continue; }
+            const auto& take = takes[row.takeIndex];
+            if (take.file == focusedFile && take.expanded)
+                return { 6, y + kRowHeight, juce::jmax(0, getWidth() - 12), kExpandedBody - 6 };
+            y += kRowHeight + (take.expanded ? kExpandedBody : 0);
+        }
+        return {};
     }
 
-    std::function<void(const juce::File&)> onSelected;
-    // Fires when the layout changes height, so the owner can resize this inside its
-    // Viewport -- a Viewport asks its content for a size, it is not told one.
+    std::function<void(const juce::File&)> onFocused;
     std::function<void()> onHeightChanged;
 
     int getIdealHeight() const
     {
-        if (takes.empty()) return kRowHeight;
-        return static_cast<int>(takes.size()) * kRowHeight + (selected >= 0 ? kExpandedHeight - kRowHeight : 0);
+        int h = 0;
+        for (const auto& row : rows)
+        {
+            if (row.kind == RowKind::Header) { h += kHeaderHeight; continue; }
+            h += kRowHeight + (takes[row.takeIndex].expanded ? kExpandedBody : 0);
+        }
+        return juce::jmax(h, kRowHeight);
     }
 
     void paint(juce::Graphics& g) override
@@ -128,33 +163,53 @@ public:
         {
             g.setColour(MiraLookAndFeel::textDim);
             g.setFont(juce::Font(juce::FontOptions(12.0f)));
-            g.drawText("no takes yet", getLocalBounds().reduced(8, 0), juce::Justification::centredLeft);
+            g.drawText("no takes yet", getLocalBounds().reduced(10, 0), juce::Justification::centredLeft);
             return;
         }
 
         int y = 0;
-        for (size_t i = 0; i < takes.size(); ++i)
+        for (const auto& row : rows)
         {
-            const bool isSelected = static_cast<int>(i) == selected;
-            juce::Rectangle<int> row { 0, y, getWidth(), kRowHeight };
-            paintRow(g, takes[i], row, isSelected);
-            y += isSelected ? kExpandedHeight : kRowHeight;
+            if (row.kind == RowKind::Header)
+            {
+                paintHeader(g, { 0, y, getWidth(), kHeaderHeight }, row.headerText, row.headerCount);
+                y += kHeaderHeight;
+                continue;
+            }
+            const auto& take = takes[row.takeIndex];
+            paintRow(g, take, { 0, y, getWidth(), kRowHeight });
+            y += kRowHeight + (take.expanded ? kExpandedBody : 0);
         }
     }
 
-    void resized() override { updateLayout(); }
+    void resized() override { rebuild(); }
 
     void mouseDown(const juce::MouseEvent& e) override
     {
         int y = 0;
-        for (size_t i = 0; i < takes.size(); ++i)
+        for (const auto& row : rows)
         {
-            const bool isSelected = static_cast<int>(i) == selected;
-            // Only the ROW strip toggles, never the expanded area below it -- a click on
-            // the waveform is a scrub, and collapsing the row out from under it would be
-            // the worst possible response to that.
-            if (e.y >= y && e.y < y + kRowHeight) { select(static_cast<int>(i)); return; }
-            y += isSelected ? kExpandedHeight : kRowHeight;
+            if (row.kind == RowKind::Header) { y += kHeaderHeight; continue; }
+            auto& take = takes[row.takeIndex];
+            const int bodyHeight = take.expanded ? kExpandedBody : 0;
+
+            if (e.y >= y && e.y < y + kRowHeight)
+            {
+                // The triangle toggles open/shut; anywhere else on the row focuses it.
+                // Separated on purpose: with several rows open, "click to play this one"
+                // and "click to close this one" must not be the same gesture.
+                if (e.x < 22) { take.expanded = !take.expanded; if (take.expanded) focusedFile = take.file; rebuild(); }
+                else          { take.expanded = true; focus(take.file); }
+                return;
+            }
+            // A click in an open row's body focuses it without collapsing anything --
+            // this is what makes two open takes A/B-able in one click.
+            if (bodyHeight > 0 && e.y >= y + kRowHeight && e.y < y + kRowHeight + bodyHeight)
+            {
+                if (take.file != focusedFile) focus(take.file);
+                return;
+            }
+            y += kRowHeight + bodyHeight;
         }
     }
 
@@ -162,67 +217,138 @@ private:
     struct Take
     {
         juce::File file;
+        State state = State::Pending;
+        bool expanded = false;
         std::unique_ptr<juce::AudioThumbnail> thumbnail;
     };
 
-    // AudioThumbnail loads on a background thread and broadcasts when more of the peaks
-    // are ready; without a listener the mini waveforms stay blank until something else
-    // happens to repaint.
+    enum class RowKind { Header, Take };
+    struct Row
+    {
+        RowKind kind = RowKind::Take;
+        size_t takeIndex = 0;
+        juce::String headerText;
+        int headerCount = 0;
+    };
+
     struct Repainter : juce::ChangeListener
     {
         juce::Component* owner = nullptr;
         void changeListenerCallback(juce::ChangeBroadcaster*) override { if (owner) owner->repaint(); }
     };
 
-    void select(int index)
+    int countOf(State s) const
     {
-        if (index < 0 || index >= static_cast<int>(takes.size())) return;
-        selected = index;
-        updateLayout();
-        if (onSelected) onSelected(takes[static_cast<size_t>(index)].file);
+        int n = 0;
+        for (const auto& t : takes) if (t.state == s) ++n;
+        return n;
     }
 
-    void updateLayout()
+    void focus(const juce::File& file)
     {
-        repainter.owner = this;
-        auto area = getExpandedContentArea();
+        focusedFile = file;
+        rebuild();
+        if (onFocused) onFocused(file);
+    }
+
+    // Rebuilds the visible row order: KEPT, then TAKES, then DISCARDED, each with a
+    // header and only when it has anything in it. Order within a section is the order
+    // takes were added, so the list does not reshuffle under the pointer.
+    void rebuild()
+    {
+        rows.clear();
+        auto section = [this](State state, const char* title) {
+            const int n = countOf(state);
+            if (n == 0) return;
+            Row header;
+            header.kind = RowKind::Header;
+            header.headerText = title;
+            header.headerCount = n;
+            rows.push_back(header);
+            for (size_t i = 0; i < takes.size(); ++i)
+                if (takes[i].state == state) { Row r; r.takeIndex = i; rows.push_back(r); }
+        };
+        section(State::Kept, "KEPT");
+        section(State::Pending, "TAKES");
+        section(State::Discarded, "DISCARDED");
+
+        auto area = getFocusedContentArea();
         for (auto* c : hosted)
             if (c != nullptr) c->setVisible(!area.isEmpty());
+
         if (onHeightChanged) onHeightChanged();
         repaint();
     }
 
-    void paintRow(juce::Graphics& g, const Take& take, juce::Rectangle<int> row, bool isSelected)
+    void paintHeader(juce::Graphics& g, juce::Rectangle<int> area, const juce::String& text, int count)
     {
-        if (isSelected)
+        g.setColour(MiraLookAndFeel::textDim);
+        g.setFont(juce::Font(juce::FontOptions(10.0f, juce::Font::bold)));
+        g.drawText(text + "  (" + juce::String(count) + ")", area.reduced(10, 0),
+                    juce::Justification::centredLeft);
+        g.setColour(MiraLookAndFeel::textDim.withAlpha(0.2f));
+        g.fillRect(area.getX() + 10, area.getBottom() - 1, area.getWidth() - 20, 1);
+    }
+
+    void paintRow(juce::Graphics& g, const Take& take, juce::Rectangle<int> row)
+    {
+        const bool isFocused = take.file == focusedFile;
+        const bool dimmed = take.state == State::Discarded;
+
+        if (take.expanded)
         {
-            g.setColour(MiraLookAndFeel::surface2);
-            g.fillRect(row.withHeight(kExpandedHeight));
+            g.setColour(isFocused ? MiraLookAndFeel::surface2
+                                  : MiraLookAndFeel::surface2.withAlpha(0.45f));
+            g.fillRect(row.withHeight(kRowHeight + kExpandedBody));
+        }
+        if (isFocused)
+        {
+            // A left edge marking which row the transport belongs to. With several rows
+            // open, nothing else says which one the Play button will play.
+            g.setColour(MiraLookAndFeel::accent);
+            g.fillRect(row.getX(), row.getY(), 3, kRowHeight);
         }
 
-        auto text = row.reduced(8, 0);
+        auto text = row.reduced(10, 0);
+        auto tri = text.removeFromLeft(12).toFloat();
+        if (!dimmed)
+        {
+            juce::Path p;
+            float cx = tri.getCentreX(), cy = tri.getCentreY();
+            if (take.expanded) p.addTriangle(cx - 4, cy - 2, cx + 4, cy - 2, cx, cy + 3);
+            else               p.addTriangle(cx - 2, cy - 4, cx + 3, cy, cx - 2, cy + 4);
+            g.setColour(take.expanded ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
+            g.fillPath(p);
+        }
 
-        // A disclosure triangle, pointing down when open. The only affordance saying the
-        // row does anything at all.
-        juce::Path tri;
-        auto t = text.removeFromLeft(12).toFloat();
-        float cx = t.getCentreX(), cy = t.getCentreY();
-        if (isSelected) tri.addTriangle(cx - 4, cy - 2, cx + 4, cy - 2, cx, cy + 3);
-        else            tri.addTriangle(cx - 2, cy - 4, cx + 3, cy, cx - 2, cy + 4);
-        g.setColour(isSelected ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
-        g.fillPath(tri);
+        text.removeFromLeft(6);
+        auto wave = text.removeFromRight(juce::jmin(190, text.getWidth() / 3));
 
-        text.removeFromLeft(4);
-        auto wave = text.removeFromRight(juce::jmin(180, text.getWidth() / 3));
-
-        g.setColour(isSelected ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
+        g.setColour(dimmed ? MiraLookAndFeel::textDim.withAlpha(0.5f)
+                           : (isFocused ? MiraLookAndFeel::text : MiraLookAndFeel::textDim));
         g.setFont(juce::Font(juce::FontOptions(12.0f)));
         g.drawText(take.file.getFileNameWithoutExtension(), text, juce::Justification::centredLeft, true);
 
         if (take.thumbnail != nullptr && take.thumbnail->getTotalLength() > 0.0)
         {
-            g.setColour(MiraLookAndFeel::textDim.withAlpha(isSelected ? 0.85f : 0.45f));
+            g.setColour(MiraLookAndFeel::textDim.withAlpha(isFocused ? 0.85f : 0.45f));
             take.thumbnail->drawChannels(g, wave.reduced(2, 5), 0.0, take.thumbnail->getTotalLength(), 1.0f);
+        }
+
+        // An expanded row that is NOT focused draws its own large waveform here. The
+        // focused one leaves this area empty because the live WaveformView is sitting in
+        // it -- one transport, whichever row holds it.
+        if (take.expanded && !isFocused && take.thumbnail != nullptr
+            && take.thumbnail->getTotalLength() > 0.0)
+        {
+            juce::Rectangle<int> body { row.getX() + 6, row.getBottom(),
+                                         row.getWidth() - 12, kExpandedBody - 40 };
+            g.setColour(MiraLookAndFeel::textDim.withAlpha(0.55f));
+            take.thumbnail->drawChannels(g, body.reduced(2), 0.0, take.thumbnail->getTotalLength(), 1.0f);
+            g.setColour(MiraLookAndFeel::textDim);
+            g.setFont(juce::Font(juce::FontOptions(11.0f)));
+            g.drawText("click to play this take", body.withY(body.getBottom() + 6).withHeight(20),
+                        juce::Justification::centred);
         }
     }
 
@@ -230,7 +356,8 @@ private:
     juce::AudioFormatManager& formatManager;
     juce::AudioThumbnailCache& cache;
     std::vector<Take> takes;
-    int selected = -1;
+    std::vector<Row> rows;
+    juce::File focusedFile;
     std::vector<juce::Component*> hosted;
     Repainter repainter;
 };

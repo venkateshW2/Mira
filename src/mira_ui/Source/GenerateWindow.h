@@ -9,6 +9,7 @@
 #include "MiraLookAndFeel.h"
 #include "TakeStack.h"
 #include "LoraLibraryWindow.h"
+#include "NativeWindowChrome.h"
 #include "PromptBuilderWindow.h"
 #include "Sa3Worker.h"
 #include "WaveformView.h"
@@ -109,6 +110,12 @@ private:
         juce::ComboBox box;
         juce::Slider strength, minStep, maxStep;
         juce::Label label;
+        // "have slider with heading like Lorablend - timbre - structure". The three
+        // numbers are a blend amount and a step window, and without words on them they
+        // read as three anonymous sliders. Early diffusion steps shape structure and
+        // arrangement, late steps shape timbre and texture -- which is what makes the
+        // step window worth exposing at all, and the labels now say so.
+        juce::Label blendLabel, structureLabel, timbreLabel;
     };
     static constexpr int kLoraSlots = 3;
     std::array<LoraSlot, kLoraSlots> slots;
@@ -204,6 +211,33 @@ public:
         if (!folder.isDirectory()) return;
         outputFolder = folder;
         log("output folder: " + folder.getFullPathName());
+        loadExistingTakes();
+    }
+
+    // "the old takes are not showing up." The stack was session-only, so reopening a
+    // project showed an empty list beside a folder full of takes. Everything already in
+    // the takes folder comes back as PENDING, and everything already filed into a cue
+    // comes back as KEPT -- the disk is the record, which is the same reason Clean up
+    // asks the library rather than keeping a list of its own.
+    //
+    // Collapsed, and nothing is focused: reopening a project should not start playing
+    // something, and forty open rows would be useless.
+    void loadExistingTakes()
+    {
+        if (takeStack == nullptr) return;
+        takeStack->clear();
+
+        if (projectFolder.isDirectory())
+            for (const auto& cue : projectFolder.findChildFiles(juce::File::findDirectories, false))
+            {
+                if (cue.getFileName() == "takes") continue;
+                for (const auto& f : cue.findChildFiles(juce::File::findFiles, false, "*.wav"))
+                    takeStack->addTake(f, TakeStack::State::Kept, false);
+            }
+
+        if (outputFolder.isDirectory())
+            for (const auto& f : outputFolder.findChildFiles(juce::File::findFiles, false, "*.wav"))
+                takeStack->addTake(f, TakeStack::State::Pending, false);
     }
 
 private:
@@ -298,7 +332,12 @@ protected:
                     const juce::String& windowTitle, bool showTrainingBench, bool floatAbove)
         : juce::DocumentWindow(windowTitle, MiraLookAndFeel::surface, juce::DocumentWindow::allButtons)
     {
-        setUsingNativeTitleBar(true);
+        // mira's own title bar, not the OS one -- "the title bar and the stuff can be
+        // like mira". MainWindow made this choice first and for the same reason: the
+        // native bar is plain OS gray and cannot take MiraLookAndFeel's colours, so it
+        // sits visibly disconnected from the window under it.
+        setUsingNativeTitleBar(false);
+        setTitleBarHeight(34);
         content = new GenerateContent(laf, std::move(studioRoot), db);
         setContentOwned(content, false);
         setResizable(true, false);
@@ -311,6 +350,8 @@ protected:
         setAlwaysOnTop(floatAbove);
         setVisible(true);
         toFront(true);
+        // After setVisible -- that is what creates the peer the corner mask needs.
+        mira_ui::chrome::applyRoundedCorners(*this, 10.0f);
     }
 };
 
