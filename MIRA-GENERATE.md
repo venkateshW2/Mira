@@ -387,6 +387,39 @@ UI timer through `WaveformView::setPlaybackGain`, not rendered. Good enough to j
 by ear; a fade under about half a second will audibly step. That is a reason for Phase 6 to
 render properly, not a reason to trust this for the last word.
 
+### Phase 5a — what using it actually found
+
+Phases 1–5 were built and then used for a session. Everything below came out of that,
+which is the only reason any of it is right.
+
+| reported | actual cause |
+|---|---|
+| "resize destroys the ui, the prompt gets hidden" | one top-down column ran out of height; anything past the bottom was laid out at zero size. **Two scrolling panes.** |
+| a waveform floating at the top, the open row empty | `setHostedComponents` reparented `preview` to the stack, then a later `addAndMakeVisible` took it back — while `resized()` kept giving it the *stack's* coordinates |
+| "the slider is very difficult to move" | the step sliders were ~40px wide for a range of 1–50: one pixel was worth more than one step |
+| the step slider "does nothing above 8" | the window is in **sampler steps**, compared against Steps. At Steps 8 there is no ninth step. The range follows Steps now |
+| "new takes don't come there" | `addTake` set `focusedFile` and rebuilt but never *announced* it, so the preview kept the previous file |
+| "the playing waveform is smaller" | `WaveformView` spends height on a ruler and transport *inside its own bounds*, so the focused row gave less of its height to the waveform than the static rows did |
+| "there is no selection to trim" | the selection worked and had since it was written — drawn as a 10% white wash with no edges, invisible over a bright waveform |
+| "the browser fonts changed and are smaller" | **my regression**: popup metrics overridden on `MiraLookAndFeel` itself to fit the LoRA list, which shrank every context menu in the app. Compactness is opt-in now |
+
+**The general lesson.** Four of these were features that existed and worked but could not
+be *seen*, and one was a fix for one control applied to the whole app. Convention 8 covers
+the first; the second is its own trap — a fix for one list is not a change of house style.
+
+### Phase 5b — the path-normalisation bug
+
+Not part of this plan, found while chasing "analysis does nothing", and it changes an
+assumption the export phase depends on: **paths are not comparable with `==`**.
+
+macOS returns the same filename as NFD from `readdir` and NFC from JUCE's directory walk,
+so a file whose name contains an accent was invisible to the file table's database
+pairing, and `mira analyze` could not find paths the UI handed it. Fixed in
+`Database::findByPath` via `mira::pathsEquivalent`; see CLAUDE.md convention 9.
+
+**Phase 6 must not reintroduce it.** Export resolves a take's row from a path, and a cue
+folder named after a project with an accent in it is not a hypothetical.
+
 ### Phase 6 — export
 
 - [ ] Render segment + fades -> wav (`AudioFormatReaderSource` -> `AudioFormatWriter`,

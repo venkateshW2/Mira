@@ -4,7 +4,7 @@ The index to every document in this repo: what each one is, whether it is curren
 when to read it. **Start here.** If you are picking the project up after a break, or you
 are an agent with no memory of the last session, this file is the entry point.
 
-**Last updated: 2026-09-17.** Keep the *Recent work* log at the bottom current — that is
+**Last updated: 2026-09-17 (evening).** Keep the *Recent work* log at the bottom current — that is
 this file's second job.
 
 ---
@@ -53,7 +53,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | [ANALYSIS.md](ANALYSIS.md) | **what mira measures and what reaches the model.** Every caption field, what it means, how to edit it, what is deliberately not captioned | current (2026-09-15) |
 | [PRD.md](PRD.md) | the design: stack, models, phases, licence reasoning, every "why this and not that" | current as design; §-numbers are cited throughout the code |
 | [TASKS.md](TASKS.md) | the build checklist, phase by phase. Phases 0–5 complete, **Phase 6 in progress** | live — tick items here |
-| [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — planned, nothing built (2026-09-17) |
+| [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — **phases 1–5 built**, 6–7 open (2026-09-17) |
 
 ### Captioning and training
 
@@ -97,6 +97,8 @@ src/mira/caption/     CaptionFields (measurement → words) + Sa3Renderer (words
 src/mira/db/          Database — the one SQLite surface
 src/mira/main.cpp     the CLI: scan / analyze / caption / tag / similar / search / stats
 src/mira_ui/Source/   the JUCE app
+                      TakeStack.h / InpaintStrip.h / LoraLibraryWindow.h — MIRA-GENERATE
+src/mira/db/          + PathNormalise.{h,cpp} — NFC/NFD path matching (convention 9)
 scripts/              retag-latents.py and friends
 taxonomy/             *.yaml label normalisation
 sa3-studio/           the LoRA training rig (underfit + stable-audio-3), plus latents/
@@ -133,13 +135,108 @@ These are not style preferences. Each one exists because breaking it caused a re
    flatness), tempo drift (r=0.79 with jitter) and `flux_stddev` (r=0.71 with `flux_mean`)
    are all measured and all deliberately uncaptioned.
 8. **Open the UI before claiming it works.** Compiling is not verifying. This has been got
-   wrong more than once.
+   wrong more than once, and again on 2026-09-17: a waveform selection that had worked
+   since it was written was reported as a finished feature while being drawn as a 10%
+   wash nobody could see.
+9. **Never compare two file paths with `==`.** macOS returns the same filename as
+   different bytes depending on which API asked -- `readdir` gives NFD, JUCE's directory
+   walk gives NFC -- so `"Göransson"` discovered one way never matches the same file
+   discovered the other. Go through `mira::pathsEquivalent` / `Database::findByPath`
+   ([PathNormalise.h](src/mira/db/PathNormalise.h)). This hid for months and cost most of
+   a day: 46 of 82 files in one folder read as unanalysed while holding 80 KB of analysis
+   each, and `mira analyze` answered "nothing to analyze" for paths it had just written.
+10. **Measure before explaining.** The bug above survived three rounds of plausible
+    theories -- stale rows, interrupted batches, a missing refresh -- each argued from
+    screenshots. One `MIRA_TRACE_ROWS` pass over the real library answered it in a minute.
+    A row showing a dash means `inDatabase && analyzedAt` is false; from the outside the
+    two halves look identical, so only an instrument can tell them apart.
 
 ---
 
 ## Recent work
 
 Newest first. Keep this current — it is how the next session finds the thread.
+
+### 2026-09-17 evening — a file whose name has an accent in it
+
+**The bug that ate the afternoon, and the one worth remembering.** Analysis appeared not
+to run: right-click Analyze did nothing, rows stayed dashed, and re-running the CLI said
+`nothing to analyze` for files that plainly were not analysed.
+
+macOS returns the same filename as two different byte sequences depending on which API
+asks. mira had both in play at once:
+
+| discovered by | bytes for `ö` | form |
+|---|---|---|
+| scanner (`readdir` / `std::filesystem`) | `6f cc 88` (`o` + combining) | NFD |
+| file table (JUCE `RangedDirectoryIterator`) | `c3 b6` | NFC |
+
+`files.path` is compared with `=`, so those never match. **Every file with a decomposable
+character in its name was invisible to the file table's database pairing** — and because
+the UI hands the CLI *JUCE's* paths, `mira analyze` could not find them either and
+correctly reported nothing to do.
+
+- **Measured, not argued.** `MIRA_TRACE_ROWS=1` (kept — `FileTable.cpp`) prints every row
+  the walk could not pair with an analysed record. Against the real library: **46 of 82
+  files in one folder NOT FOUND**, each holding 50–80 KB of analysis. After the fix, 0;
+  48 rows recovered library-wide.
+- **Fixed at the lookup, not in the data.** `Database::findByPath` tries the exact bytes
+  first and the other normalisation only on a miss, so the common case costs nothing and
+  both callers are fixed at once. [PathNormalise.h](src/mira/db/PathNormalise.h) wraps
+  CoreFoundation; `mira_core` now links it.
+- **Deliberately not a migration.** Rewriting 2,500 rows to one form fixes today and
+  breaks again the moment anything writes the other; both forms are legitimate and the
+  filesystem accepts either. Matching on a canonical key is the invariant.
+- Three rounds of plausible wrong theories preceded the measurement — stale rows, an
+  interrupted batch, a missing refresh. Conventions 9 and 10 exist because of this.
+
+**Two real gaps found on the way, both fixed and both worth keeping:**
+
+- `enqueueAnalyze` returned **silently** when everything asked for was already queued, and
+  said nothing when it did queue. A slow job that says nothing is indistinguishable from
+  one that never started.
+- The file table is a snapshot, and nothing that changed the library from **outside** the
+  window could tell it to look again — a `mira analyze` run in a terminal (how long runs
+  survive a rebuild) left the rows stale indefinitely. Now a 2.5 s `stat()` of the
+  database file, plus `File → Reload from Library`.
+
+### 2026-09-17 — MIRA-GENERATE phases 1–5
+
+The generation-and-delivery workflow, built from [MIRA-GENERATE.md](MIRA-GENERATE.md).
+Phases 1–5 done, 6–7 planned. Nothing that already worked was changed.
+
+- **Projects are folders** (§3.1). `File → New Project` creates a directory, registers it
+  as a `ui_folder_roots` row under a new PROJECTS group, and becomes the output folder.
+  The group declares category **`projects`**, not `music` as the plan first said —
+  `category` is the group's *identity key*, so a PROJECTS group under `music` would never
+  have been found and every project would have been filed into MUSIC, silently.
+- **`ui_settings(key, value)`** added: `current_project`, `lora_names`, and the audio
+  device state — which had never persisted at all, because the app has no `PropertiesFile`
+  and `initialiseWithDefaultDevices` ran unconditionally at every launch.
+- **Window lifetime** (§3.3): closing the browser used to quit the app outright, killing a
+  running generation. It hides while a generation window is up; `Window → Library` returns.
+- **Keep files a take into a cue** (Phase 3): `<project>/<cue>/{project}_{cue}_v{n}`, the
+  version read from the cue folder rather than a session counter. Raw takes live in
+  `<project>/takes/` — never the project root, which *is* the deliverable.
+- **The take stack** (Phase 4, `TakeStack.h`): KEPT / TAKES / DISCARDED, collapsible, rows
+  expanding independently. One `WaveformView` moved between rows rather than one per row —
+  it owns an `AudioDeviceManager`, so a waveform per take would be an audio device per
+  take. Cmd-click multi-selects for bulk keep/discard.
+- **Cut and fade** (Phase 5): a `segments` row plus `segments.human` for fades and gain.
+  Nothing touches the audio until export. `WaveformView` already had click-drag selection;
+  it was invisible, drawn as a 10% wash with no edges.
+- **`lastRecipe` was wrong the moment two takes could coexist** — Keep wrote whatever was
+  generated *most recently*. It reads the take's own `.json` sidecar now.
+- **The generate window is two panes** (takes left, everything else right), both scrolling,
+  after a single top-down column kept laying controls out at zero height off the bottom —
+  the prompt builder's clipped-fields bug for the third time in this project.
+- **`Window → LoRA Library`** names checkpoints (`tar-step20000-epoch833` → `TRENT-ATTICUS`),
+  adds them by symlink, removes them. Names live in `ui_settings` keyed by filename.
+- **Inpainting is extension**, verified in `sa3_mlx.py`: init audio is zero-padded to the
+  requested duration, so a range past the end of the audio generates a continuation. The
+  strip's timeline is the duration, not the file length.
+- **The LoRA step window is in sampler steps** and compared against Steps, so a slider
+  running to 50 while Steps was 8 offered 42 positions that did not exist.
 
 ### 2026-09-17 — the tempo was wrong, and now it is not
 
@@ -290,6 +387,21 @@ separate faults, each fixed and each re-measured against the same six.
 ---
 
 ## ⛔ Start here next session
+
+**MIRA-GENERATE Phase 6 — export.** Render trim + fades to wav **at the take's native
+44,100 Hz** (SA3 generates at 44.1 and nothing else; the playback path resamples to the
+device rate through JUCE's `ResamplingAudioSource`, which is fine for auditioning and is
+not a mastering SRC), delivery name from the template with tokens dropped when a field is
+unsupported, export a cue or a whole project. Details in
+[MIRA-GENERATE.md](MIRA-GENERATE.md) §4.
+
+**Known and left alone:** 8 rows under `TO-TRAIN/AlessandroCortini` point at Nate Smith
+files that were moved to `TO-TRAIN/natesmithdrums` and rescanned there. They are stale
+rows for files that no longer exist at that path and will never analyse. Harmless.
+
+---
+
+## The LoRA training thread (older)
 
 **Four LoRAs to train, and only four: `amt`, `lou`, `tron`, `trn`.** Everything else is
 either already good or deliberately left alone. The decision and the sizing are in
