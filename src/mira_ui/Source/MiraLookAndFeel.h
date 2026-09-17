@@ -103,9 +103,14 @@ public:
     void fillTextEditorBackground(juce::Graphics&, int width, int height, juce::TextEditor&) override;
     void drawTextEditorOutline(juce::Graphics&, int width, int height, juce::TextEditor&) override;
 
-    // "the lora dropdown is too big and lot of spacing" -- JUCE's default popup row is
-    // sized from the menu font plus generous padding, which on a list of 21 checkpoints
-    // filled the screen. A menu is a list to scan, not a set of buttons to aim at.
+    // "the lora dropdown is too big and lot of spacing" -- but the first version of this
+    // overrode popup sizing for the WHOLE APP, which shrank every context menu in the
+    // browser too: "the browser fonts also changed and is smaller than before, its a no
+    // to that". Compactness is now opt-in per component (see setCompactMenus below), and
+    // only the three LoRA pickers ask for it. A fix for one list is not a change of
+    // house style.
+    void setCompactMenus(bool shouldBeCompact) { compactMenus = shouldBeCompact; }
+
     void getIdealPopupMenuItemSize(const juce::String& text, bool isSeparator, int standardMenuItemHeight,
                                     int& idealWidth, int& idealHeight) override;
     juce::Font getPopupMenuFont() override;
@@ -120,4 +125,7 @@ public:
 private:
     juce::Typeface::Ptr sansRegularTypeface, sansMediumTypeface, sansSemiBoldTypeface;
     juce::Typeface::Ptr monoRegularTypeface, monoMediumTypeface;
+
+private:
+    bool compactMenus = false;
 };

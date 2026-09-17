@@ -175,6 +175,11 @@ private:
     juce::File outputFolder;
     bool trainingBenchVisible = true; // the SA3 Generate window keeps its bench
     juce::File projectFolder;         // invalid = no project, Keep behaves as it always did
+
+    // A second look-and-feel instance, identical to the app's except that its popup menus
+    // are compact -- attached ONLY to the three LoRA pickers, which are the one place a
+    // 21-item list with section headings has to fit on screen.
+    MiraLookAndFeel compactMenuLaf;
     // ---- MIRA-GENERATE.md Phase 5: cut and fade -------------------------------------
     //
     // Non-destructive, per §3.5: the trim is a `segments` row on the take and the fades

@@ -136,6 +136,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         sl.label.setText("LoRA " + juce::String(i + 1), juce::dontSendNotification);
         rightPane.addAndMakeVisible(sl.label);
         tip(sl.box, "LoRA for this slot. Fill two slots to blend styles.");
+        sl.box.setLookAndFeel(&compactMenuLaf); // compact popup, this control only
         rightPane.addAndMakeVisible(sl.box);
 
         sl.strength.setRange(0.0, 2.0, 0.05);
@@ -407,6 +408,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // child is the thing that decides whose coordinate space its bounds are in.
     tip(preview, "Play and scrub. Drag the strip below to get the file into your DAW.");
 
+    compactMenuLaf.setCompactMenus(true);
     syncLoraStepRanges();
     if (inpaintStrip != nullptr) inpaintStrip->setTimeline(secondsSlider.getValue());
     syncInpaintSliderRanges();
@@ -491,6 +493,11 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
 GenerateContent::~GenerateContent() {
     stopTimer();
+    // Detach before compactMenuLaf dies. It is declared AFTER the slots, so it would be
+    // destroyed first and leave three ComboBoxes holding a dangling LookAndFeel pointer
+    // through their own destructors -- a use-after-free that JUCE asserts on in debug and
+    // simply crashes in release.
+    for (auto& sl : slots) sl.box.setLookAndFeel(nullptr);
     worker.reset();   // blocks until the child exits cleanly
 }
 

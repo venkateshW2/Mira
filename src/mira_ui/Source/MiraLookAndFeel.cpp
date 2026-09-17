@@ -269,8 +269,10 @@ void MiraLookAndFeel::getIdealPopupMenuItemSize(const juce::String& text, bool i
 {
     LookAndFeel_V4::getIdealPopupMenuItemSize(text, isSeparator, standardMenuItemHeight,
                                                idealWidth, idealHeight);
-    // A menu is a list to read down, not a row of targets to aim at. 21 LoRA checkpoints
-    // under their run headings ran off the screen at the default spacing.
+    // Only where it was asked for. Everywhere else keeps the app's normal menu metrics --
+    // shrinking every context menu in the browser to fix one dropdown was a regression,
+    // not a refinement.
+    if (!compactMenus) return;
     if (isSeparator) idealHeight = 7;
     else             idealHeight = juce::jmin(idealHeight, 22);
     idealWidth = juce::jmin(idealWidth, 320);
@@ -278,7 +280,7 @@ void MiraLookAndFeel::getIdealPopupMenuItemSize(const juce::String& text, bool i
 
 juce::Font MiraLookAndFeel::getPopupMenuFont()
 {
-    return sansRegular(12.5f);
+    return compactMenus ? sansRegular(12.5f) : LookAndFeel_V4::getPopupMenuFont();
 }
 
 void MiraLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height,
