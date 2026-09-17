@@ -126,6 +126,8 @@ public:
 
     juce::File getFocusedFile() const { return focusedFile; }
     int getPendingCount() const { return countOf(State::Pending); }
+    int getKeptCount() const { return countOf(State::Kept); }
+    int getDiscardedCount() const { return countOf(State::Discarded); }
     int getTotalCount() const { return static_cast<int>(takes.size()); }
 
     void setHostedComponents(std::vector<juce::Component*> components)
@@ -187,7 +189,8 @@ public:
         {
             if (row.kind == RowKind::Header)
             {
-                paintHeader(g, { 0, y, getWidth(), kHeaderHeight }, row.headerText, row.headerCount);
+                paintHeader(g, { 0, y, getWidth(), kHeaderHeight }, row.headerText, row.headerCount,
+                             row.section);
                 y += kHeaderHeight;
                 continue;
             }
@@ -204,7 +207,12 @@ public:
         int y = 0;
         for (const auto& row : rows)
         {
-            if (row.kind == RowKind::Header) { y += kHeaderHeight; continue; }
+            if (row.kind == RowKind::Header)
+            {
+                if (e.y >= y && e.y < y + kHeaderHeight) { toggleSection(row.section); return; }
+                y += kHeaderHeight;
+                continue;
+            }
             auto& take = takes[row.takeIndex];
             const int bodyHeight = bodyHeightFor(take);
 
@@ -244,6 +252,7 @@ private:
         size_t takeIndex = 0;
         juce::String headerText;
         int headerCount = 0;
+        State section = State::Pending; // which section a header belongs to
     };
 
     struct Repainter : juce::ChangeListener
@@ -256,6 +265,14 @@ private:
     {
         if (!t.expanded) return 0;
         return kExpandedBody + (t.file == focusedFile ? kTransportChrome : 0);
+    }
+
+    bool isCollapsed(State s) const { return collapsed[static_cast<size_t>(s)]; }
+
+    void toggleSection(State s)
+    {
+        collapsed[static_cast<size_t>(s)] = !collapsed[static_cast<size_t>(s)];
+        rebuild();
     }
 
     int countOf(State s) const
@@ -285,7 +302,12 @@ private:
             header.kind = RowKind::Header;
             header.headerText = title;
             header.headerCount = n;
+            header.section = state;
             rows.push_back(header);
+            // A collapsed section contributes its header and nothing else, so every
+            // height, hit test and paint below follows automatically -- they all walk
+            // `rows`, and this is the one place that decides what is in it.
+            if (isCollapsed(state)) return;
             for (size_t i = 0; i < takes.size(); ++i)
                 if (takes[i].state == state) { Row r; r.takeIndex = i; rows.push_back(r); }
         };
@@ -301,12 +323,27 @@ private:
         repaint();
     }
 
-    void paintHeader(juce::Graphics& g, juce::Rectangle<int> area, const juce::String& text, int count)
+    void paintHeader(juce::Graphics& g, juce::Rectangle<int> area, const juce::String& text,
+                      int count, State section)
     {
+        const bool collapsed = isCollapsed(section);
+        auto r = area.reduced(10, 0);
+
+        // A disclosure triangle on the section itself -- with twenty takes and nine kept,
+        // the sections are the only thing that makes the list navigable, and a heading
+        // that cannot be shut is just a label.
+        auto tri = r.removeFromLeft(12).toFloat();
+        juce::Path p;
+        float cx = tri.getCentreX(), cy = tri.getCentreY();
+        if (collapsed) p.addTriangle(cx - 2, cy - 4, cx + 3, cy, cx - 2, cy + 4);
+        else           p.addTriangle(cx - 4, cy - 2, cx + 4, cy - 2, cx, cy + 3);
         g.setColour(MiraLookAndFeel::textDim);
+        g.fillPath(p);
+        r.removeFromLeft(5);
+
+        g.setColour(MiraLookAndFeel::accent.withAlpha(0.85f));
         g.setFont(juce::Font(juce::FontOptions(10.0f, juce::Font::bold)));
-        g.drawText(text + "  (" + juce::String(count) + ")", area.reduced(10, 0),
-                    juce::Justification::centredLeft);
+        g.drawText(text + "  (" + juce::String(count) + ")", r, juce::Justification::centredLeft);
         g.setColour(MiraLookAndFeel::textDim.withAlpha(0.2f));
         g.fillRect(area.getX() + 10, area.getBottom() - 1, area.getWidth() - 20, 1);
     }
@@ -384,5 +421,8 @@ private:
     std::vector<Row> rows;
     juce::File focusedFile;
     std::vector<juce::Component*> hosted;
+    // Indexed by State. Discarded starts shut: it is a record of decisions already made,
+    // and it is the section least likely to be wanted open.
+    bool collapsed[3] = { false, false, true };
     Repainter repainter;
 };

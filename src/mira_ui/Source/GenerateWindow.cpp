@@ -279,9 +279,18 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         revealButton.setEnabled(have);
     };
     takeStack->onHeightChanged = [this] {
-        takesLabel.setText(takeStack->getTotalCount() == 0
-                               ? juce::String("Takes")
-                               : "Takes (" + juce::String(takeStack->getTotalCount()) + ")",
+        // The BREAKDOWN, not the total. "Takes (22)" over a list whose first nine rows
+        // are kept cues said the wrong thing about all of them -- the whole point of the
+        // sections is that those are not takes any more.
+        const int kept = takeStack->getKeptCount();
+        const int pending = takeStack->getPendingCount();
+        const int discarded = takeStack->getDiscardedCount();
+        juce::StringArray bits;
+        if (kept > 0) bits.add(juce::String(kept) + " kept");
+        if (pending > 0) bits.add(juce::String(pending) + " takes");
+        if (discarded > 0) bits.add(juce::String(discarded) + " discarded");
+        takesLabel.setText(bits.isEmpty() ? juce::String("Takes")
+                                           : bits.joinIntoString(juce::String(juce::CharPointer_UTF8("  \xc2\xb7  "))),
                            juce::dontSendNotification);
         resized();
     };
