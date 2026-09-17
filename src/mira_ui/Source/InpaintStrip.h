@@ -13,33 +13,93 @@
 // cutting into, so choosing a range meant guessing seconds and listening to the result.
 // This is the audio, with the region to be regenerated shown on it.
 //
-// It draws a thumbnail; it does NOT play. Playback lives in one place in this window (the
-// take stack's WaveformView, which owns the AudioDeviceManager) and a second transport
-// here would be a second audio device for no gain -- the take is already auditionable in
-// the row above.
+// It plays, but it does NOT own an audio device. The one AudioDeviceManager in this
+// window belongs to WaveformView; this borrows it and adds its own callback, which
+// AudioDeviceManager supports and mixes. A second device would be a second output stream
+// competing for the same hardware, for nothing.
 class InpaintStrip : public juce::Component,
                       public juce::FileDragAndDropTarget,
-                      public juce::ChangeListener
+                      public juce::ChangeListener,
+                      private juce::Timer
 {
 public:
-    InpaintStrip(juce::AudioFormatManager& fm, juce::AudioThumbnailCache& cacheIn)
-        : formatManager(fm), cache(cacheIn)
+    InpaintStrip(juce::AudioFormatManager& fm, juce::AudioThumbnailCache& cacheIn,
+                  juce::AudioDeviceManager& deviceManagerIn)
+        : formatManager(fm), cache(cacheIn), deviceManager(deviceManagerIn)
     {
+        sourcePlayer.setSource(&transport);
+        deviceManager.addAudioCallback(&sourcePlayer);
+
+        playButton.setButtonText("Play");
+        playButton.onClick = [this] { togglePlay(); };
+        playButton.setEnabled(false);
+        addAndMakeVisible(playButton);
+
+        startTimerHz(20); // moves the playhead, and catches the end of the file
     }
 
-    ~InpaintStrip() override { if (thumbnail) thumbnail->removeChangeListener(this); }
+    ~InpaintStrip() override
+    {
+        stopTimer();
+        transport.stop();
+        transport.setSource(nullptr);
+        deviceManager.removeAudioCallback(&sourcePlayer);
+        sourcePlayer.setSource(nullptr);
+        if (thumbnail) thumbnail->removeChangeListener(this);
+    }
+
+    // Plays the SELECTION when there is one inside the audio, otherwise the whole file --
+    // the point of listening here is almost always "what am I about to replace?".
+    void togglePlay()
+    {
+        if (!file.existsAsFile()) return;
+        if (transport.isPlaying()) { transport.stop(); playButton.setButtonText("Play"); repaint(); return; }
+
+        const double audio = getAudioSeconds();
+        double from = 0.0;
+        if (rangeStart < audio) from = rangeStart;
+        transport.setPosition(juce::jlimit(0.0, juce::jmax(0.0, audio - 0.05), from));
+        transport.start();
+        playButton.setButtonText("Stop");
+        repaint();
+    }
+
+    void timerCallback() override
+    {
+        if (!transport.isPlaying())
+        {
+            if (playButton.getButtonText() == "Stop") { playButton.setButtonText("Play"); repaint(); }
+            return;
+        }
+        repaint();
+    }
 
     void setFile(const juce::File& f)
     {
         file = f;
         if (thumbnail) thumbnail->removeChangeListener(this);
         thumbnail.reset();
+
+        transport.stop();
+        transport.setSource(nullptr);
+        readerSource.reset();
+        playButton.setButtonText("Play");
+        playButton.setEnabled(file.existsAsFile());
+
         if (file.existsAsFile())
         {
             thumbnail = std::make_unique<juce::AudioThumbnail>(256, formatManager, cache);
             thumbnail->addChangeListener(this);
             thumbnail->setSource(new juce::FileInputSource(file));
+            if (auto* reader = formatManager.createReaderFor(file))
+            {
+                readerSource = std::make_unique<juce::AudioFormatReaderSource>(reader, true);
+                // The fourth argument is the source rate to correct for: SA3 writes
+                // 44.1 kHz and the device may be at 48, so without this it plays sharp.
+                transport.setSource(readerSource.get(), 0, nullptr, reader->sampleRate);
+            }
         }
+        resized();
         repaint();
     }
 
@@ -85,9 +145,14 @@ public:
     std::function<void(double, double)> onRangeChanged;
     std::function<void(const juce::File&)> onFileDropped;
 
+    void resized() override
+    {
+        playButton.setBounds(getLocalBounds().removeFromLeft(kPlayWidth).reduced(4, 8));
+    }
+
     void paint(juce::Graphics& g) override
     {
-        auto r = getLocalBounds();
+        auto r = getLocalBounds().withTrimmedLeft(kPlayWidth);
         g.setColour(MiraLookAndFeel::surface2);
         g.fillRoundedRectangle(r.toFloat(), 4.0f);
 
@@ -144,6 +209,13 @@ public:
         g.setColour(MiraLookAndFeel::text);
         g.drawText(juce::String(rangeStart, 1) + "s - " + juce::String(rangeEnd, 1) + "s",
                     sel.expanded(40, 0), juce::Justification::centredTop);
+
+        if (transport.isPlaying())
+        {
+            const int px = secondsToX(transport.getCurrentPosition());
+            g.setColour(MiraLookAndFeel::text);
+            g.fillRect(px, wave.getY(), 1, wave.getHeight());
+        }
 
         if (dragging)
         {
@@ -213,24 +285,30 @@ public:
 
 private:
     enum class Grab { None, Start, End };
+    static constexpr int kPlayWidth = 58; // gutter for the Play button, left of the waveform
 
     int secondsToX(double seconds) const
     {
         const double length = getTimelineSeconds();
         if (length <= 0.0) return getLocalBounds().getX() + 2;
-        auto wave = getLocalBounds().reduced(2);
+        auto wave = getLocalBounds().withTrimmedLeft(kPlayWidth).reduced(2);
         return wave.getX() + juce::roundToInt(seconds / length * wave.getWidth());
     }
 
     double xToSeconds(int x) const
     {
-        auto wave = getLocalBounds().reduced(2);
+        auto wave = getLocalBounds().withTrimmedLeft(kPlayWidth).reduced(2);
         if (wave.getWidth() <= 0) return 0.0;
         return (static_cast<double>(x - wave.getX()) / wave.getWidth()) * getTimelineSeconds();
     }
 
     juce::AudioFormatManager& formatManager;
     juce::AudioThumbnailCache& cache;
+    juce::AudioDeviceManager& deviceManager;
+    juce::AudioSourcePlayer sourcePlayer;
+    juce::AudioTransportSource transport;
+    std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
+    juce::TextButton playButton;
     std::unique_ptr<juce::AudioThumbnail> thumbnail;
     juce::File file;
     double rangeStart = 0.0, rangeEnd = 10.0;

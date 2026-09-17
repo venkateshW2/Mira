@@ -135,6 +135,9 @@ private:
     // cfg defaults to 1.0, the value every generation before this used, so adding the
     // control changes nothing until it is deliberately moved.
     juce::Slider cfgSlider;
+    // Three of the four settings sliders had no label at all -- only a number box, so
+    // "30 / 8 / 5374" sat in a column with nothing saying which was which.
+    juce::Label secondsLabel, stepsLabel, seedLabel;
     juce::Label cfgLabel, negativeLabel;
     juce::TextEditor negativeEditor;
     juce::TextButton generateButton { "Generate" };

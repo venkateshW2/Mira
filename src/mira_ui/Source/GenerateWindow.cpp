@@ -285,6 +285,17 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     rightPane.addAndMakeVisible(loraHeading);
     rightPane.addAndMakeVisible(settingsHeading);
     rightPane.addAndMakeVisible(inpaintHeading);
+    {
+        struct Named { juce::Label* label; const char* text; };
+        for (auto n : { Named{ &secondsLabel, "duration" }, Named{ &stepsLabel, "steps" },
+                         Named{ &seedLabel, "seed" }, Named{ &cfgLabel, "cfg" } }) {
+            n.label->setText(n.text, juce::dontSendNotification);
+            n.label->setFont(juce::Font(juce::FontOptions(11.5f, juce::Font::bold)));
+            n.label->setColour(juce::Label::textColourId, MiraLookAndFeel::text);
+            n.label->setJustificationType(juce::Justification::centredRight);
+            rightPane.addAndMakeVisible(*n.label);
+        }
+    }
 
     // What inpainting actually does, in the window rather than in a doc. Checked against
     // sa3_mlx.py rather than assumed: the mask keeps everything OUTSIDE the range as
@@ -300,7 +311,10 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     inpaintHelp.setJustificationType(juce::Justification::topLeft);
     rightPane.addAndMakeVisible(inpaintHelp);
 
-    inpaintStrip = std::make_unique<InpaintStrip>(takeFormatManager, takeThumbnailCache);
+    // Borrows the window's one audio device from the take preview rather than opening a
+    // second output stream for the same hardware.
+    inpaintStrip = std::make_unique<InpaintStrip>(takeFormatManager, takeThumbnailCache,
+                                                    preview.getAudioDeviceManager());
     inpaintStrip->onFileDropped = [this](const juce::File& f) {
         // A drop IS the init audio -- the two were separate controls and it was never
         // obvious they were the same thing.
@@ -1276,13 +1290,19 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
     }
 
     heading(settingsHeading, "SETTINGS");
-    place(secondsSlider, row(26, 4));
-    place(stepsSlider, row(26, 4));
-    place(seedSlider, row(26, 4));
     {
-        auto line = row(26, 4);
-        place(cfgLabel, line.removeFromLeft(38));
-        place(cfgSlider, line);
+        // Every settings slider gets its name in the same column, so the four read as one
+        // group rather than as a stack of anonymous bars with numbers on the end.
+        const int labelW = 60;
+        auto labelled = [&](juce::Label& l, juce::Slider& sl) {
+            auto line = row(26, 4);
+            place(l, line.removeFromLeft(labelW).withTrimmedRight(6));
+            place(sl, line);
+        };
+        labelled(secondsLabel, secondsSlider);
+        labelled(stepsLabel, stepsSlider);
+        labelled(seedLabel, seedSlider);
+        labelled(cfgLabel, cfgSlider);
     }
     // --- audio in: init audio and inpainting, one clearly-bounded section instead of a
     // row of controls that never said they belonged together.

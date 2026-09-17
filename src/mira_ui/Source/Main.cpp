@@ -1310,9 +1310,12 @@ public:
                                     : k.substring(0, 1).toUpperCase() + k.substring(1);
                 parts.add(label + ": " + v);
             }
-            showGenerateWindow();
-            if (generateWindow != nullptr)
-                generateWindow->setPrompt(parts.joinIntoString(", "));
+            // The window that is ALREADY OPEN gets it. Sending a caption used to call
+            // showGenerateWindow unconditionally, so with a project window up and in use
+            // it opened a second, unrelated SA3 Generate window and put the prompt there
+            // -- and that second window loads its own ~5 GB of model. A project window
+            // open means the project window is where work is happening.
+            sendPromptToGenerator(parts.joinIntoString(", "));
         };
         // The selection handler above has already loaded the parent file by the time
         // this runs (FileTableModel::selectedRowsChanged calls it first).
@@ -3144,6 +3147,27 @@ public:
     // "a new window called load loras - we add the loras and name the lora - so they
     // come into the dropdown". Not a generation window: it holds no worker and no model,
     // so it does not count towards the last-window-closes rule.
+    // One place that answers "which window should a prompt go to?", so the right-click
+    // item and anything added later cannot disagree about it.
+    void sendPromptToGenerator(const juce::String& prompt)
+    {
+        if (projectWindow != nullptr)
+        {
+            projectWindow->setPrompt(prompt);
+            projectWindow->toFront(true);
+            return;
+        }
+        if (generateWindow == nullptr && getCurrentProject().isDirectory())
+        {
+            // No generator open at all, but there IS a project: open that rather than the
+            // training bench, which is the window the work was going to happen in anyway.
+            showProjectWindow();
+            if (projectWindow != nullptr) { projectWindow->setPrompt(prompt); return; }
+        }
+        showGenerateWindow();
+        if (generateWindow != nullptr) generateWindow->setPrompt(prompt);
+    }
+
     void showLoraLibraryWindow()
     {
         if (loraLibraryWindow != nullptr) { loraLibraryWindow->toFront(true); return; }
