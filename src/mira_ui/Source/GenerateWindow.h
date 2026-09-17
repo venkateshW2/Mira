@@ -161,6 +161,20 @@ private:
     juce::TextEditor nameEditor;                 // base filename, blank = timestamp
     juce::File outputFolder;
 
+public:
+    // MIRA-GENERATE.md Phase 1: "switching project switches the output folder". Same
+    // effect as picking one with the Output folder... button, minus the picker. An
+    // invalid folder is ignored rather than clearing the current one -- losing the
+    // output folder mid-session would strand the next generation.
+    void setOutputFolder(const juce::File& folder)
+    {
+        if (!folder.isDirectory()) return;
+        outputFolder = folder;
+        log("output folder: " + folder.getFullPathName());
+    }
+
+private:
+
     // audio2audio / inpainting. Both are already wired through the worker
     // (init_audio, inpaint_audio, inpaint_range) -- these are the missing controls.
     juce::TextButton initAudioButton { "Init audio..." };

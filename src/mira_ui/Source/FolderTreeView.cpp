@@ -348,6 +348,7 @@ void FolderGroupTreeItem::paintItem(juce::Graphics& g, int width, int height)
         else if (lowered == "music stems") effectiveCategory = "stems_music";
         else if (lowered == "samples") effectiveCategory = "samples";
         else if (lowered == "music") effectiveCategory = "music";
+        else if (lowered == "projects") effectiveCategory = "projects";
     }
 
     // "so now if u have a differtn icon for music lets do differnt icons for all the 4
@@ -387,6 +388,21 @@ void FolderGroupTreeItem::paintItem(juce::Graphics& g, int width, int height)
         flag.addTriangle(markerX + 1.4f, iconY - 1.0f, markerX + 5.0f, iconY + 1.0f, markerX + 1.4f, iconY + 3.0f);
         g.fillPath(flag);
         g.setColour(neutral);
+    }
+    else if (effectiveCategory == "projects")
+    {
+        // A box with an arrow leaving it: a project is a set of cues that gets handed
+        // over (MIRA-GENERATE.md §3.1 -- the folder IS the deliverable). Deliberately
+        // not a folder glyph and deliberately not stem bars, the two things it could
+        // otherwise be mistaken for.
+        float boxW = iconH * 0.72f;
+        g.drawRoundedRectangle(4.0f, iconY + iconH * 0.14f, boxW, iconH * 0.72f, 1.5f, 1.2f);
+        float arrowY = iconY + iconH * 0.5f;
+        float arrowX = 4.0f + boxW + 1.5f;
+        g.fillRect(arrowX, arrowY - 0.7f, 5.0f, 1.4f);
+        juce::Path head;
+        head.addTriangle(arrowX + 4.0f, arrowY - 3.0f, arrowX + 8.0f, arrowY, arrowX + 4.0f, arrowY + 3.0f);
+        g.fillPath(head);
     }
     else if (effectiveCategory == "collections")
     {
@@ -589,6 +605,72 @@ void FolderTreeView::promptCategorizeNewFolder(const juce::File& folder)
                              default: break; // Cancel (5) or the native close control -- folder is not added at all
                          }
                      });
+}
+
+// MIRA-GENERATE.md Phase 1. Name first, then where to put it: the name is the thing the
+// user has in their head, and it becomes both the directory name and every exported
+// filename's first token (§3.7), so asking for it first matches the order they think in.
+void FolderTreeView::promptNewProject()
+{
+    promptForText("New Project", "Project name:", "", this, [this](juce::String name) {
+        name = name.trim();
+        if (name.isEmpty()) return; // cancelled, or nothing typed -- no silent "Untitled"
+        folderChooser = std::make_unique<juce::FileChooser>(
+            "Where should \"" + name + "\" live?",
+            juce::File::getSpecialLocation(juce::File::userMusicDirectory));
+        auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
+        folderChooser->launchAsync(flags, [this, name](const juce::FileChooser& chooser) {
+            auto parent = chooser.getResult();
+            if (!parent.isDirectory()) return; // cancelled
+            auto folder = parent.getChildFile(name);
+            // An existing directory is adopted rather than refused: "New Project" over a
+            // folder of takes from a previous session is a reasonable thing to want, and
+            // registerProject is idempotent either way. Nothing inside is touched.
+            if (!folder.isDirectory() && !folder.createDirectory().wasOk())
+            {
+                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "New Project",
+                    "Could not create:\n" + folder.getFullPathName());
+                return;
+            }
+            registerProject(folder);
+        });
+    });
+}
+
+void FolderTreeView::promptOpenProject()
+{
+    folderChooser = std::make_unique<juce::FileChooser>(
+        "Open a project folder", juce::File::getSpecialLocation(juce::File::userMusicDirectory));
+    auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
+    folderChooser->launchAsync(flags, [this](const juce::FileChooser& chooser) {
+        auto folder = chooser.getResult();
+        if (!folder.isDirectory()) return; // cancelled
+        registerProject(folder);
+    });
+}
+
+void FolderTreeView::registerProject(const juce::File& folder)
+{
+    auto path = folder.getFullPathName().toStdString();
+    bool isNewRoot = true;
+    for (const auto& info : database.listFolderRootInfos())
+        if (info.path == path) { isNewRoot = false; break; }
+
+    database.addFolderRoot(path); // idempotent (INSERT OR IGNORE)
+    // "projects", not "music", even though a generated cue IS music (MIRA-GENERATE.md
+    // §3.2 originally said music). findOrCreateCategoryGroup keys a group BY its
+    // category, so a PROJECTS group filed under "music" could never be found -- the
+    // older MUSIC group wins findFolderGroupByCategory's ORDER BY added_at -- and every
+    // new project would have been filed into MUSIC instead. Nothing routes analysis off
+    // "music" either way: only a `stems*` category is ever read (MainComponent::
+    // isStemPath, rootWantsStemDeclaration), so a project folder gets exactly the
+    // treatment §3.2 asked for -- router-decided content type, no stem declaration.
+    database.setFolderRootGroup(path, findOrCreateCategoryGroup("projects", "Projects"));
+    rebuildRoots();
+    // Only scan a root mira has never seen. Reopening a project must not re-trigger a
+    // full scan of a folder that is already indexed and being added to take by take.
+    if (isNewRoot && onFolderAdded) onFolderAdded(folder);
+    if (onProjectOpened) onProjectOpened(folder);
 }
 
 void FolderTreeView::promptRecategorizeRoot(const juce::File& folder)

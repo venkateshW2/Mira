@@ -147,6 +147,17 @@ CREATE TABLE IF NOT EXISTS ui_collection_files (
     PRIMARY KEY (collection_id, file_id)
 );
 CREATE INDEX IF NOT EXISTS idx_collection_files_file ON ui_collection_files(file_id);
+
+-- UI preferences that have to survive a relaunch and are not a property of any file:
+-- the current project (MIRA-GENERATE.md Phase 1) is the first and so far only one.
+-- Deliberately a key/value table rather than a JUCE PropertiesFile: the project is a
+-- ui_folder_roots path, and a preference living in a different store from the row it
+-- points at is the kind of split that goes stale. Nothing in the analysis pipeline
+-- reads this table; losing it costs a menu default, never data.
+CREATE TABLE IF NOT EXISTS ui_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 )SQL";
 
 FileRecord fromRow(SQLite::Statement& q) {
@@ -946,6 +957,27 @@ void Database::setFolderGroupCategory(int64_t groupId, const std::string& catego
     upd.bind(1, category);
     upd.bind(2, groupId);
     upd.exec();
+}
+
+std::optional<std::string> Database::getSetting(const std::string& key) {
+    SQLite::Statement q(db, "SELECT value FROM ui_settings WHERE key = ?");
+    q.bind(1, key);
+    if (!q.executeStep()) return std::nullopt;
+    return q.getColumn(0).getString();
+}
+
+void Database::setSetting(const std::string& key, const std::optional<std::string>& value) {
+    if (!value) {
+        SQLite::Statement del(db, "DELETE FROM ui_settings WHERE key = ?");
+        del.bind(1, key);
+        del.exec();
+        return;
+    }
+    SQLite::Statement ins(db, "INSERT INTO ui_settings (key, value) VALUES (?, ?) "
+                              "ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+    ins.bind(1, key);
+    ins.bind(2, *value);
+    ins.exec();
 }
 
 std::optional<std::string> Database::jsonObjectTopKey(const std::string& json, const std::string& path) {

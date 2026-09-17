@@ -398,6 +398,13 @@ public:
     std::optional<FolderGroup> findFolderGroupByName(const std::string& name);
     void setFolderGroupCategory(int64_t groupId, const std::string& category);
 
+    // Small key/value store for UI preferences that must survive a relaunch (see the
+    // ui_settings schema comment). `setSetting(key, nullopt)` erases the key rather than
+    // storing an empty string, so "never set" and "set to nothing" stay distinguishable
+    // -- the same omit-rather-than-guess discipline the caption fields follow.
+    std::optional<std::string> getSetting(const std::string& key);
+    void setSetting(const std::string& key, const std::optional<std::string>& value);
+
     // Collections -- mira-side folders whose members are individual files rather than
     // folder roots ("allow me to add files and then i can make a folder inside mira and
     // organise it"). See the ui_collections comment in Database.cpp for why this is its

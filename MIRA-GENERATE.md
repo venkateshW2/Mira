@@ -1,6 +1,6 @@
 # MIRA GENERATE — plan and task list
 
-**Written 2026-09-17.** Status: **planned, nothing built.**
+**Written 2026-09-17.** Status: **Phase 1 built; Phases 2-7 planned.**
 
 A generation-and-delivery workflow inside mira: start a project, generate cues, keep the
 takes worth keeping, cut and fade them, hand the folder over.
@@ -88,15 +88,32 @@ Why the folder wins:
 What collections were going to provide and no longer need to: nothing. Chosen/alt status
 moves to `files.human`, which already exists for exactly this kind of user decision.
 
-### 3.2 PROJECTS must declare a content type
+### 3.2 PROJECTS declares its own category, `projects` — corrected 2026-09-17
 
 `ui_folder_groups`' schema comment is explicit that a group is an **analysis category** —
 *"filing a folder under Score Stems declares its files as stems at scan time"* — and warns
-against blurring that meaning.
+against blurring that meaning. This section first concluded that PROJECTS should therefore
+declare **`music`**, since generated cues are full pieces.
 
-So PROJECTS declares **`music`**. Generated cues are full pieces, not stems or one-shots.
-This is a deliberate decision, not a default: it keeps the group as meaningful as the four
-that exist rather than making PROJECTS the first purely-organisational one.
+**That was wrong, and would have been a silent bug.** `category` is not only a description,
+it is the group's *identity key*: `FolderTreeView::findOrCreateCategoryGroup` resolves a
+category to a group id via `findFolderGroupByCategory`, which is
+`... WHERE category = ? ORDER BY added_at LIMIT 1`. The live library already has:
+
+```
+1|SCORE STEMS|stems      3|MUSIC|music
+2|SAMPLES|(none)         4|MUSIC STEMS|stems_music
+```
+
+MUSIC is older, so it wins that lookup. A PROJECTS group under `music` would never have
+been created at all, and every new project would have been filed into **MUSIC** instead —
+with no error anywhere.
+
+PROJECTS therefore declares **`projects`**, and §3.2's actual intent is unaffected: nothing
+routes analysis off `music`. The only category ever read by the pipeline is a `stems*`
+prefix (`MainComponent::isStemPath`, `rootWantsStemDeclaration`), so a project folder gets
+exactly what was wanted — router-decided content type, no stem declaration, no marker
+workflow. The group also gets its own icon, which `music` would have denied it.
 
 ### 3.3 Two windows, independent lifetimes
 
@@ -177,12 +194,21 @@ deliver by hand.
 
 ### Phase 1 — projects exist
 
-- [ ] `PROJECTS` as a fifth `ui_folder_groups` row, declaring content type `music` (§3.2)
-- [ ] `File -> New Project`: name + parent location -> create directory -> insert
-      `ui_folder_roots` row with `group_id = PROJECTS` -> set as current project
-- [ ] Current project shown in the window title; switching project switches output folder
-- [ ] Window lifetime: quit only when the last window closes (§3.3)
-- [ ] `File -> Open Project` for an existing project folder
+**Built 2026-09-17.** Compiles and runs; the clicking-through below is the user's to do.
+
+- [x] `PROJECTS` as a fifth `ui_folder_groups` row, declaring category `projects` (§3.2),
+      created on first use by `FolderTreeView::registerProject` with its own tree icon
+- [x] `File -> New Project`: name, then parent location -> create directory -> insert
+      `ui_folder_roots` row under PROJECTS -> set as current project -> first scan
+- [x] Current project in the window title (`MIRA — <name>`); setting it retargets the
+      generate window's output folder, and opening that window picks it up too
+- [x] Window lifetime: closing the browser hides it while a generation window is up, and
+      the app quits when that last window goes (§3.3). `Window -> Library` brings it back
+- [x] `File -> Open Project` for an existing project folder (never re-scans a known root)
+
+**New in the database:** `ui_settings(key, value)`, holding `current_project`. Migration
+verified against a copy of the live 2,544-file library — table created, nothing else
+touched.
 
 **Exit:** a project can be created, appears in the browser tree under PROJECTS, and
 nothing can be generated without a home.

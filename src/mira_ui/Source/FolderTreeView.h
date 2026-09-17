@@ -150,6 +150,19 @@ public:
     // trigger the identical flow instead of duplicating it.
     void promptAddFolder() { addFolderClicked(); }
 
+    // MIRA-GENERATE.md Phase 1. A project is a real directory registered as an ordinary
+    // folder root under the PROJECTS group (§3.1) -- not a collection, so "deliver the
+    // cue folders" is a folder copy and Show in Finder points at something real. Both
+    // flows end in the same registerProject() below; New also creates the directory.
+    void promptNewProject();
+    void promptOpenProject();
+
+    // Fires once a project has been created or opened, with its folder. MainComponent
+    // stores it as the current project (window title, and the generate window's output
+    // folder once Phase 2 lands) -- this class knows how to make one, not what being
+    // "current" means.
+    std::function<void(const juce::File&)> onProjectOpened;
+
     // Fires with every click on a folder row (left-click; right-click still opens the
     // "Scan this folder..." menu independently) — TASKS.md Phase 5 discussion: clicking
     // a folder shows everything under it, recursively; clicking a subfolder narrows
@@ -208,6 +221,11 @@ private:
     void promptCategorizeNewFolder(const juce::File& folder);
     void promptRecategorizeRoot(const juce::File& folder);
     int64_t findOrCreateCategoryGroup(const char* category, const char* displayName);
+    // Adds `folder` as a root under the PROJECTS group and announces it. Shared by New
+    // and Open so a reopened project is filed exactly like a freshly created one --
+    // addFolderRoot is idempotent, so opening a project already in the library is a
+    // no-op plus a regrouping, never a duplicate row.
+    void registerProject(const juce::File& folder);
     void newGroupClicked();
     void promptRenameRoot(const juce::File& folder);
     void promptMoveToGroup(const juce::File& folder);

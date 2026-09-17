@@ -1212,6 +1212,9 @@ public:
         // "scanning is mira's job not the user's job" — a newly added root gets scanned
         // automatically, no manual Scan click required.
         folderTree->onFolderAdded = [this](const juce::File& f) { enqueueScan(f.getFullPathName()); };
+        // MIRA-GENERATE.md Phase 1: a project is just a folder root, so the tree already
+        // knows how to make and file one -- all that is "current" about it lives here.
+        folderTree->onProjectOpened = [this](const juce::File& f) { setCurrentProject(f); };
         folderTree->onCollectionSelected = [this](int64_t collectionId) {
             fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
         };
@@ -1528,6 +1531,52 @@ public:
     // Real macOS menu bar's File > Add Folder... (Main.cpp's MiraMenuBarModel) reaches
     // through this rather than duplicating FolderTreeView's picker flow.
     FolderTreeView& getFolderTree() { return *folderTree; }
+
+    // MIRA-GENERATE.md Phase 1. The current project is a path, stored in the library
+    // rather than a preferences file so it can never disagree with the ui_folder_roots
+    // row it names (see the ui_settings schema comment). A project whose folder has been
+    // deleted or unmounted since last launch is silently forgotten rather than reported
+    // as an error -- nothing is lost, and the first New/Open Project sets it again.
+    static constexpr const char* kCurrentProjectKey = "current_project";
+
+    juce::File getCurrentProject() const
+    {
+        auto stored = database->getSetting(kCurrentProjectKey);
+        if (!stored) return {};
+        juce::File folder { juce::String(*stored) }; // braced: parenthesised is a function declaration
+        return folder.isDirectory() ? folder : juce::File();
+    }
+
+    void setCurrentProject(const juce::File& folder)
+    {
+        if (folder.isDirectory())
+            database->setSetting(kCurrentProjectKey, folder.getFullPathName().toStdString());
+        else
+            database->setSetting(kCurrentProjectKey, std::nullopt);
+        // The generate window, if it happens to be open, writes into the project from
+        // now on. Phase 2's project window will bind to this the same way; until then
+        // this is what "switching project switches the output folder" means.
+        if (generateWindow != nullptr) generateWindow->content->setOutputFolder(folder);
+        if (onWindowTitleChanged) onWindowTitleChanged();
+    }
+
+    // Set by MainWindow so the title bar can show the current project. A callback rather
+    // than a direct call because MainComponent is constructed before its window finishes
+    // setting itself up, and it has no pointer back either way.
+    std::function<void()> onWindowTitleChanged;
+
+    // MIRA-GENERATE.md §3.3. Closing the browser used to quit the app outright, taking
+    // a running generation with it, because every tool window here is owned by this
+    // component. Rather than re-parent them, MainWindow hides itself while one of these
+    // is up and quits when the last one goes -- hidden is not destroyed, so the windows
+    // below stay alive and the DB connection they share stays open.
+    //
+    // Deliberately narrow: only the generate window (and Phase 2's project window)
+    // counts. A File Details or Log window is not a reason to keep the app running with
+    // no library in sight, and calling this "the last window" when it only tracks some
+    // of them would be the kind of half-truth convention 6 exists to prevent.
+    bool hasGenerationWindowOpen() const { return generateWindow != nullptr; }
+    std::function<void()> onGenerationWindowClosed;
 
     // Real macOS menu bar's File > Rescan (MiraMenuBarModel below) — "rescan can be in
     // the osx toolbar... not in the ui". Rescans whatever folder's currently scoped in
@@ -3001,8 +3050,16 @@ public:
             if (folderTree != nullptr) folderTree->refresh();
         };
         generateWindow->onClosed = [this] {
-            juce::MessageManager::callAsync([this] { generateWindow.reset(); });
+            juce::MessageManager::callAsync([this] {
+                generateWindow.reset();
+                if (onGenerationWindowClosed) onGenerationWindowClosed();
+            });
         };
+        // A window opened while a project is current writes into it from the start,
+        // not only if the project is switched afterwards (MIRA-GENERATE.md Phase 1).
+        // No project current leaves ~/Music/mira-generated exactly as it was.
+        if (auto project = getCurrentProject(); project.isDirectory())
+            generateWindow->content->setOutputFolder(project);
     }
 
     void showLogWindow()
@@ -4193,9 +4250,47 @@ public:
         // AppKit clips and shadows the rounded shape itself. Called after setVisible --
         // that's what creates the peer this needs.
         mira_ui::chrome::applyRoundedCorners(*this, 10.0f);
+
+        // The other half of closeButtonPressed: once the window that was keeping the app
+        // alive has gone, there is nothing left to be in front of.
+        content->onGenerationWindowClosed = [this] {
+            if (!isVisible()) juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        };
+        content->onWindowTitleChanged = [this] { updateTitle(); };
+        updateTitle();
     }
 
-    void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+    // "Current project shown in the window title" (MIRA-GENERATE.md Phase 1). The app
+    // name stays first so the window is still recognisably MIRA in the window switcher.
+    void updateTitle()
+    {
+        auto project = mainComponent != nullptr ? mainComponent->getCurrentProject() : juce::File();
+        // Escaped bytes wrapped in CharPointer_UTF8, never a raw non-ASCII literal --
+        // the codebase convention (FileDetailsWindow.cpp's dash(), FolderTreeView's
+        // bullet), and this is why: written as a plain "MIRA - " the em dash rendered as
+        // "MIRA a<EUR>" in the title bar, its UTF-8 bytes decoded as Latin-1.
+        auto dash = juce::String(juce::CharPointer_UTF8(" \xe2\x80\x94 "));
+        setName(project.isDirectory() ? "MIRA" + dash + project.getFileName() : juce::String("MIRA"));
+    }
+
+    // MIRA-GENERATE.md §3.3: quit only when the last window closes. This used to quit
+    // unconditionally, which meant closing the browser killed a generation in progress.
+    void closeButtonPressed() override
+    {
+        if (mainComponent != nullptr && mainComponent->hasGenerationWindowOpen())
+        {
+            setVisible(false); // hidden, NOT destroyed -- it owns the generate window
+            return;
+        }
+        juce::JUCEApplication::getInstance()->systemRequestedQuit();
+    }
+
+    // Window > Library, and the generate window closing while this one is hidden.
+    void reveal()
+    {
+        setVisible(true);
+        toFront(true);
+    }
 
     MainComponent& getMainComponent() { return *mainComponent; }
 
@@ -4250,6 +4345,12 @@ public:
     // purely a manual "do it again" escape hatch, not scanning's normal entry point.
     std::function<void()> onRescan;
     std::function<void()> onAudioSettings;
+    // MIRA-GENERATE.md Phase 1. Above Add Folder in the File menu, with a separator:
+    // a project IS a folder root, but it is the thing a session starts with, and the
+    // two Add items are library maintenance.
+    std::function<void()> onNewProject;
+    std::function<void()> onOpenProject;
+    std::function<void()> onShowLibrary;
 
     // The analyze pipeline's opt-in stages (TASKS.md Phase 5 leftovers: "--chords /
     // --transcribe / --recheck-tempo exist on the CLI but aren't exposed anywhere in
@@ -4283,6 +4384,9 @@ public:
         juce::PopupMenu menu;
         if (topLevelMenuIndex == 0)
         {
+            menu.addItem(20, "New Project...");
+            menu.addItem(21, "Open Project...");
+            menu.addSeparator();
             menu.addItem(1, "Add Folder...");
             menu.addItem(3, "Add Files...");
             menu.addItem(2, "Rescan");
@@ -4338,6 +4442,10 @@ public:
         {
             // Audio Settings lives here rather than in its own one-item top-level menu now
             // that there is a Window menu to hold it and the log.
+            // Brings the browser back when it has been closed while a generation
+            // window kept the app alive (MIRA-GENERATE.md §3.3).
+            menu.addItem(22, "Library");
+            menu.addSeparator();
             menu.addItem(MainComponent::kShowGenerate, "SA3 Generate...");
             menu.addItem(MainComponent::kShowPrepare, "Prepare for Training...");
             menu.addSeparator();
@@ -4353,7 +4461,10 @@ public:
 
     void menuItemSelected(int menuItemID, int) override
     {
-        if (menuItemID == 1 && onAddFolder) onAddFolder();
+        if (menuItemID == 22 && onShowLibrary) onShowLibrary();
+        else if (menuItemID == 20 && onNewProject) onNewProject();
+        else if (menuItemID == 21 && onOpenProject) onOpenProject();
+        else if (menuItemID == 1 && onAddFolder) onAddFolder();
         else if (menuItemID == 3 && onAddFiles) onAddFiles();
         else if (menuItemID == 2 && onRescan) onRescan();
         else if (menuItemID == 6 && onAudioSettings) onAudioSettings();
@@ -4396,6 +4507,9 @@ public:
 
         menuModel.onAddFolder = [this] { mainWindow->getMainComponent().getFolderTree().promptAddFolder(); };
         menuModel.onAddFiles = [this] { mainWindow->getMainComponent().getFolderTree().promptAddFiles(); };
+        menuModel.onNewProject = [this] { mainWindow->getMainComponent().getFolderTree().promptNewProject(); };
+        menuModel.onOpenProject = [this] { mainWindow->getMainComponent().getFolderTree().promptOpenProject(); };
+        menuModel.onShowLibrary = [this] { mainWindow->reveal(); };
         menuModel.onRescan = [this] { mainWindow->getMainComponent().rescanCurrentOrAll(); };
         menuModel.buildTagsMenu = [this](juce::PopupMenu& menu) {
             mainWindow->getMainComponent().buildTagsMenu(menu);
