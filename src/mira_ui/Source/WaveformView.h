@@ -240,6 +240,14 @@ public:
     // without a stop point, auditioning a 90-second cue on a 41-minute reel runs on into the
     // next four cues, and naming what you just heard means having heard only that.
     void playRange(double startSeconds, double endSeconds);
+
+    // MIRA-GENERATE.md Phase 5: "audition plays the EDIT, not the raw take". An edit is a
+    // trim plus fades plus a gain, and the trim is playRange above -- these two are the
+    // rest of it. The envelope is applied by the caller stepping this from a timer, which
+    // is an APPROXIMATION of what export renders sample-by-sample; it is accurate enough
+    // to judge a fade by ear and is not what writes the file.
+    void setPlaybackGain(float gain);
+    double getPlayPositionSeconds() const;
     void stopPlayback();
     bool isPlaying() const { return transportSource.isPlaying(); }
     // Fires when playback stops for ANY reason, including a ranged audition reaching its

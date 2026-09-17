@@ -175,6 +175,35 @@ private:
     juce::File outputFolder;
     bool trainingBenchVisible = true; // the SA3 Generate window keeps its bench
     juce::File projectFolder;         // invalid = no project, Keep behaves as it always did
+    // ---- MIRA-GENERATE.md Phase 5: cut and fade -------------------------------------
+    //
+    // Non-destructive, per §3.5: the trim is a `segments` row on the take and the fades
+    // and gain are JSON in `segments.human`. Nothing is written to audio until export, so
+    // a cue can be re-cut next week without regenerating and the source take is never
+    // damaged. That is also what lets a kept take reopen with its edit intact.
+    juce::TextButton trimButton { "Trim to selection" };
+    juce::TextButton clearTrimButton { "Full length" };
+    juce::TextButton auditionButton { "Play edit" };
+    juce::Label editLabel;
+    juce::Slider fadeInSlider, fadeOutSlider, gainSlider;
+    juce::Label fadeInLabel, fadeOutLabel, gainLabel;
+
+    // The segment of the take currently in the preview, or 0 when it has none yet.
+    int64_t editSegmentId = 0;
+    juce::File editFile;
+
+    void loadEditFor(const juce::File& wav);
+    void writeEditFields();
+    void applyTrimFromSelection();
+    void clearTrim();
+    void auditionEdit();
+    void stopAudition();
+    void refreshEditControls();
+    // The audition envelope, stepped from the timer. An approximation of what export
+    // renders; see WaveformView::setPlaybackGain.
+    bool auditioning = false;
+    double auditionStart = 0.0, auditionEnd = 0.0;
+
     void keepResultIntoCue(const juce::File& wav, const juce::String& cueName);
     juce::StringArray listExistingCues() const;
     juce::var recipeFor(const juce::File& wav) const;

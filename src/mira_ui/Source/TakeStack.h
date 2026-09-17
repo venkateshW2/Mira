@@ -42,7 +42,10 @@ public:
     // Without this the playing take's waveform came out visibly SHORTER than the static
     // ones beside it -- the rows were the same height, but only one of them was giving
     // most of that height to the waveform.
-    static constexpr int kTransportChrome = 64;
+    // Raised for Phase 5's edit row (trim, fades, gain) sitting between the waveform
+    // and the keep/discard strip. Counted here rather than stolen from the waveform,
+    // which is the mistake that made the playing take the smallest one.
+    static constexpr int kTransportChrome = 64 + 32;
 
     void addTake(const juce::File& file, State state = State::Pending, bool expand = true)
     {

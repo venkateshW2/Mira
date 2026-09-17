@@ -186,6 +186,10 @@ public:
 
     void setSegmentHumanField(int64_t segmentId, const std::string& jsonPath,
                                const std::string& jsonValueJson);
+    // Moves an existing segment's bounds. Re-trimming a take (MIRA-GENERATE.md Phase 5)
+    // has to keep the SAME row, because its `human` holds the fades and gain -- delete
+    // and re-create would silently drop the edit every time a handle moved.
+    void updateSegmentRange(int64_t segmentId, double startSeconds, double endSeconds);
     void deleteSegment(int64_t segmentId);
     // Moving a declared boundary (review round 6's cue editing). Dragging one cue boundary
     // writes twice -- the cue that starts there and the one that ends there -- because cues

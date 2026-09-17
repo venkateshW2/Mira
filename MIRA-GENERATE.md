@@ -1,6 +1,6 @@
 # MIRA GENERATE — plan and task list
 
-**Written 2026-09-17.** Status: **Phases 1-4 built; Phases 5-7 planned.**
+**Written 2026-09-17.** Status: **Phases 1-5 built; Phases 6-7 planned.**
 
 A generation-and-delivery workflow inside mira: start a project, generate cues, keep the
 takes worth keeping, cut and fade them, hand the folder over.
@@ -363,10 +363,29 @@ label when there is not — never both, and never a name invented locally.
 
 ### Phase 5 — cut and fade
 
-- [ ] Trim handles on the expanded waveform, written as a `segments` row
-- [ ] Fade in/out and gain handles, written to `segments.human` (§3.5)
-- [ ] Audition plays the edit, not the raw take
-- [ ] Re-opening a kept take restores its edit
+**Built 2026-09-17.**
+
+- [x] Trim from a waveform selection, written as a `segments` row. `WaveformView` already
+      had click-drag selection and `getSelectionSeconds()`, so this is a button, not new
+      machinery
+- [x] Fade in / fade out / gain, written to `segments.human` one key at a time (§3.5)
+- [x] Audition plays the edit — trimmed, faded, gained — not the raw take
+- [x] Re-opening a kept take restores its edit, and draws the trim on the waveform
+
+**One segment per take is the edit.** Not a list: a take is a single cue, and *"which of
+these four segments did you mean?"* is a question export must never have to ask.
+Re-trimming moves the **same row** via a new `Database::updateSegmentRange`, because that
+row's `human` holds the fades — delete-and-recreate would silently drop the edit every
+time a handle moved.
+
+**An edit needs a library row, so Keep comes first.** A take still sitting in `takes/` has
+no `files` row, so there is nowhere non-destructive to put a trim. It says so rather than
+writing somewhere that will never be read back — convention 6.
+
+**The audition envelope is an approximation, and is labelled one.** It is stepped from the
+UI timer through `WaveformView::setPlaybackGain`, not rendered. Good enough to judge a fade
+by ear; a fade under about half a second will audibly step. That is a reason for Phase 6 to
+render properly, not a reason to trust this for the last word.
 
 ### Phase 6 — export
 

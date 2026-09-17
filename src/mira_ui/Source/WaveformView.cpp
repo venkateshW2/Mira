@@ -1660,3 +1660,16 @@ void WaveformView::resized()
     playButton.setBounds(getWidth() / 2 - playSize / 2, row.getY() + (row.getHeight() - playSize) / 2, playSize,
                           playSize);
 }
+
+void WaveformView::setPlaybackGain(float gain)
+{
+    // Still respects mute and the volume slider: an audition envelope scales what the
+    // user set, it does not override it.
+    const float user = muted ? 0.0f : static_cast<float>(volumeSlider.getValue());
+    transportSource.setGain(juce::jlimit(0.0f, 4.0f, gain) * user);
+}
+
+double WaveformView::getPlayPositionSeconds() const
+{
+    return transportSource.getCurrentPosition();
+}

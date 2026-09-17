@@ -352,6 +352,14 @@ void Database::setHumanField(int64_t fileId, const std::string& jsonPath, const 
     update.exec();
 }
 
+void Database::updateSegmentRange(int64_t segmentId, double startSeconds, double endSeconds) {
+    SQLite::Statement upd(db, "UPDATE segments SET start_seconds = ?, end_seconds = ? WHERE id = ?");
+    upd.bind(1, startSeconds);
+    upd.bind(2, endSeconds);
+    upd.bind(3, segmentId);
+    upd.exec();
+}
+
 void Database::setProvenanceField(int64_t fileId, const std::string& jsonPath,
                                    const std::string& jsonValueJson) {
     SQLite::Statement update(db, "UPDATE files SET provenance = json_set(provenance, ?, json(?)) WHERE id = ?");

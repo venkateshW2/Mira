@@ -268,8 +268,10 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     takeFormatManager.registerBasicFormats();
     takeStack = std::make_unique<TakeStack>(laf, takeFormatManager, takeThumbnailCache);
     takeStack->onFocused = [this](const juce::File& f) {
+        stopAudition();
         preview.setFile(f);
         resultTile.setFile(f);
+        loadEditFor(f); // Phase 5: the take's trim and fades come back with it
         const bool have = f.existsAsFile();
         keepButton.setEnabled(have);
         discardButton.setEnabled(have);
@@ -409,8 +411,49 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     if (inpaintStrip != nullptr) inpaintStrip->setTimeline(secondsSlider.getValue());
     syncInpaintSliderRanges();
 
+    // ---- Phase 5 edit controls. Hosted in the focused take row beside Keep/Discard,
+    // because an edit belongs to ONE take and there is no sense in which the window has a
+    // current trim independent of which take is open.
+    tip(trimButton, "Drag a selection on the waveform, then trim to it. Non-destructive: "
+                     "the file is untouched until export.");
+    trimButton.onClick = [this] { applyTrimFromSelection(); };
+    tip(clearTrimButton, "Remove the trim; the take goes back to full length.");
+    clearTrimButton.onClick = [this] { clearTrim(); };
+    tip(auditionButton, "Play the edit -- trimmed, faded and gained -- rather than the raw take.");
+    auditionButton.onClick = [this] { auditionEdit(); };
+
+    editLabel.setFont(juce::Font(juce::FontOptions(11.0f)));
+    editLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+
+    {
+        struct Fader { juce::Slider* slider; juce::Label* label; const char* name;
+                        double lo; double hi; double step; const char* suffix; const char* help; };
+        for (auto f : { Fader{ &fadeInSlider, &fadeInLabel, "fade in", 0.0, 10.0, 0.1, " s",
+                                "Fade in, applied from the trim start." },
+                         Fader{ &fadeOutSlider, &fadeOutLabel, "fade out", 0.0, 10.0, 0.1, " s",
+                                "Fade out, applied up to the trim end." },
+                         Fader{ &gainSlider, &gainLabel, "gain", -24.0, 6.0, 0.5, " dB",
+                                "Level applied to the whole edit." } }) {
+            f.slider->setRange(f.lo, f.hi, f.step);
+            f.slider->setValue(0.0, juce::dontSendNotification);
+            f.slider->setSliderStyle(juce::Slider::LinearHorizontal);
+            f.slider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 52, 18);
+            f.slider->setTextValueSuffix(f.suffix);
+            f.slider->onValueChange = [this] { writeEditFields(); };
+            tip(*f.slider, f.help);
+            f.label->setText(f.name, juce::dontSendNotification);
+            f.label->setFont(juce::Font(juce::FontOptions(11.0f)));
+            f.label->setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+            f.label->setJustificationType(juce::Justification::centredRight);
+        }
+    }
+    refreshEditControls();
+
     // Last, so nothing added above can take these back (see the note beside preview).
-    takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton });
+    takeStack->setHostedComponents({ &preview, &resultTile, &keepButton, &discardButton,
+                                      &trimButton, &clearTrimButton, &auditionButton, &editLabel,
+                                      &fadeInLabel, &fadeInSlider, &fadeOutLabel, &fadeOutSlider,
+                                      &gainLabel, &gainSlider });
 
     tip(stopButton, "Kill and restart the worker. Next run reloads the model (~44s).");
     stopButton.onClick = [this] { stopGeneration(); };
@@ -715,6 +758,143 @@ void GenerateContent::keepResult() {
 // The version number comes from what is ALREADY IN THE CUE FOLDER, never a session
 // counter (§5's fourth open question): reopening a project next week has to continue at
 // v4, not restart at v1.
+
+// ---- MIRA-GENERATE.md Phase 5: cut and fade ----------------------------------------
+//
+// One segment per take IS the edit. Not a list: a take is a single cue, and "which of
+// these four segments is the one you meant?" is a question export should never have to
+// ask. Re-trimming moves the same row, because its `human` holds the fades -- delete and
+// re-create would drop the edit every time a handle moved.
+
+void GenerateContent::loadEditFor(const juce::File& wav) {
+    editFile = wav;
+    editSegmentId = 0;
+    if (!wav.existsAsFile()) { refreshEditControls(); return; }
+
+    const auto record = database.findByPath(wav.getFullPathName().toStdString());
+    if (!record.has_value()) { refreshEditControls(); return; } // not kept yet -- no row to hang an edit on
+
+    for (const auto& seg : database.findSegmentsForFile(record->id)) {
+        editSegmentId = seg.id;
+        const auto human = juce::JSON::parse(juce::String(seg.human));
+        fadeInSlider.setValue(static_cast<double>(human.getProperty("fade_in", 0.0)),
+                               juce::dontSendNotification);
+        fadeOutSlider.setValue(static_cast<double>(human.getProperty("fade_out", 0.0)),
+                                juce::dontSendNotification);
+        gainSlider.setValue(static_cast<double>(human.getProperty("gain_db", 0.0)),
+                             juce::dontSendNotification);
+        // The trim drawn on the waveform, so reopening a kept take SHOWS its edit rather
+        // than only remembering it.
+        preview.setSegments({ { seg.id, seg.startSeconds, seg.endSeconds, {} } });
+        refreshEditControls();
+        return;
+    }
+
+    fadeInSlider.setValue(0.0, juce::dontSendNotification);
+    fadeOutSlider.setValue(0.0, juce::dontSendNotification);
+    gainSlider.setValue(0.0, juce::dontSendNotification);
+    preview.setSegments({});
+    refreshEditControls();
+}
+
+void GenerateContent::writeEditFields() {
+    if (editSegmentId == 0) return;
+    // One key at a time into `human`, the same merge discipline setHumanField follows --
+    // never a wholesale replace, so a tag someone put on this segment by hand survives a
+    // fade being nudged.
+    database.setSegmentHumanField(editSegmentId, "$.fade_in",
+                                   juce::String(fadeInSlider.getValue(), 3).toStdString());
+    database.setSegmentHumanField(editSegmentId, "$.fade_out",
+                                   juce::String(fadeOutSlider.getValue(), 3).toStdString());
+    database.setSegmentHumanField(editSegmentId, "$.gain_db",
+                                   juce::String(gainSlider.getValue(), 2).toStdString());
+}
+
+void GenerateContent::applyTrimFromSelection() {
+    auto selection = preview.getSelectionSeconds();
+    if (!selection.has_value()) {
+        statusLabel.setText("drag a selection on the waveform first", juce::dontSendNotification);
+        return;
+    }
+    const auto record = database.findByPath(editFile.getFullPathName().toStdString());
+    if (!record.has_value()) {
+        // A take still sitting in takes/ has no library row, so there is nowhere to put a
+        // non-destructive edit. Saying so beats writing it somewhere that will not be
+        // read back (convention 6).
+        statusLabel.setText("Keep this take first - an edit is stored against the library row",
+                            juce::dontSendNotification);
+        return;
+    }
+
+    const double a = juce::jmin(selection->first, selection->second);
+    const double b = juce::jmax(selection->first, selection->second);
+    if (b - a < 0.05) { statusLabel.setText("selection too short", juce::dontSendNotification); return; }
+
+    if (editSegmentId != 0) database.updateSegmentRange(editSegmentId, a, b);
+    else editSegmentId = database.createSegment(std::nullopt, record->id, a, b, "{}");
+
+    writeEditFields();
+    preview.setSegments({ { editSegmentId, a, b, {} } });
+    preview.clearSelection();
+    refreshEditControls();
+    statusLabel.setText("trimmed to " + juce::String(a, 2) + "s - " + juce::String(b, 2) + "s"
+                         + "  (nothing written to the file until export)",
+                         juce::dontSendNotification);
+    if (onLibraryChanged) onLibraryChanged();
+}
+
+void GenerateContent::clearTrim() {
+    if (editSegmentId == 0) return;
+    database.deleteSegment(editSegmentId);
+    editSegmentId = 0;
+    preview.setSegments({});
+    refreshEditControls();
+    statusLabel.setText("trim removed - the take is full length again", juce::dontSendNotification);
+    if (onLibraryChanged) onLibraryChanged();
+}
+
+void GenerateContent::auditionEdit() {
+    if (auditioning) { stopAudition(); return; }
+    if (!editFile.existsAsFile()) return;
+
+    auditionStart = 0.0;
+    auditionEnd = 0.0;
+    if (editSegmentId != 0)
+        if (auto seg = database.findSegmentById(editSegmentId)) {
+            auditionStart = seg->startSeconds;
+            auditionEnd = seg->endSeconds;
+        }
+    if (auditionEnd <= auditionStart) { auditionStart = 0.0; auditionEnd = 0.0; } // whole take
+
+    auditioning = true;
+    auditionButton.setButtonText("Stop");
+    if (auditionEnd > auditionStart) preview.playRange(auditionStart, auditionEnd);
+    else                             preview.playRange(0.0, 0.0);
+}
+
+void GenerateContent::stopAudition() {
+    auditioning = false;
+    auditionButton.setButtonText("Play edit");
+    preview.setPlaybackGain(1.0f);
+    preview.stopPlayback();
+}
+
+void GenerateContent::refreshEditControls() {
+    const bool haveFile = editFile.existsAsFile();
+    const bool haveTrim = editSegmentId != 0;
+    trimButton.setEnabled(haveFile);
+    clearTrimButton.setEnabled(haveTrim);
+    auditionButton.setEnabled(haveFile);
+    for (auto* sl : { &fadeInSlider, &fadeOutSlider, &gainSlider }) sl->setEnabled(haveTrim);
+
+    if (!haveFile)      editLabel.setText("", juce::dontSendNotification);
+    else if (!haveTrim) editLabel.setText("full length", juce::dontSendNotification);
+    else if (auto seg = database.findSegmentById(editSegmentId))
+        editLabel.setText(juce::String(seg->startSeconds, 2) + "s - " + juce::String(seg->endSeconds, 2)
+                           + "s  (" + juce::String(seg->endSeconds - seg->startSeconds, 2) + "s)",
+                           juce::dontSendNotification);
+}
+
 void GenerateContent::keepResultIntoCue(const juce::File& wav, const juce::String& cueName) {
     const auto cueSlug = slugify(cueName);
     const auto projectSlug = slugify(projectFolder.getFileName());
@@ -1206,6 +1386,27 @@ void GenerateContent::updatePressure() {
 
 void GenerateContent::timerCallback() {
     updatePressure();
+
+    // Phase 5: the audition envelope. Stepped from here rather than rendered, which makes
+    // it an APPROXIMATION of what export writes -- accurate enough to judge a fade by ear,
+    // and deliberately not the thing that produces the file. The timer runs at a few Hz,
+    // so a fade under about half a second will audibly step; that is a reason to render
+    // the export properly, not a reason to trust this for the last word.
+    if (auditioning) {
+        const double pos = preview.getPlayPositionSeconds();
+        const double end = auditionEnd > auditionStart ? auditionEnd : pos + 1.0;
+        const double fadeIn = fadeInSlider.getValue();
+        const double fadeOut = fadeOutSlider.getValue();
+        float gain = static_cast<float>(std::pow(10.0, gainSlider.getValue() / 20.0));
+
+        if (fadeIn > 0.0 && pos < auditionStart + fadeIn)
+            gain *= static_cast<float>(juce::jlimit(0.0, 1.0, (pos - auditionStart) / fadeIn));
+        if (fadeOut > 0.0 && pos > end - fadeOut)
+            gain *= static_cast<float>(juce::jlimit(0.0, 1.0, (end - pos) / fadeOut));
+
+        preview.setPlaybackGain(gain);
+        if (auditionEnd > auditionStart && pos >= auditionEnd - 0.01) stopAudition();
+    }
     if (!busy) return;
     const auto secs = (juce::Time::getMillisecondCounter() - busyStartMs) / 1000;
     statusLabel.setText(statusLabel.getText().upToFirstOccurrenceOf(" [", false, false)
@@ -1418,7 +1619,29 @@ void GenerateContent::resized() {
         auto slot = takeStack->getFocusedContentArea();
         if (!slot.isEmpty()) {
             auto buttons = slot.removeFromBottom(30);
+            // Phase 5's edit row, between the waveform and the keep/discard row: the
+            // order of the strip is the order of the decisions -- hear it, cut it, keep it.
+            auto edit = slot.removeFromBottom(28);
+            slot.removeFromBottom(4);
             preview.setBounds(slot.withTrimmedBottom(4));
+
+            auditionButton.setBounds(edit.removeFromLeft(86).withSizeKeepingCentre(86, 22));
+            edit.removeFromLeft(5);
+            trimButton.setBounds(edit.removeFromLeft(120).withSizeKeepingCentre(120, 22));
+            edit.removeFromLeft(4);
+            clearTrimButton.setBounds(edit.removeFromLeft(92).withSizeKeepingCentre(92, 22));
+            edit.removeFromLeft(8);
+            gainSlider.setBounds(edit.removeFromRight(juce::jmax(90, edit.getWidth() / 4)));
+            gainLabel.setBounds(edit.removeFromRight(36));
+            edit.removeFromRight(6);
+            fadeOutSlider.setBounds(edit.removeFromRight(juce::jmax(90, edit.getWidth() / 3)));
+            fadeOutLabel.setBounds(edit.removeFromRight(52));
+            edit.removeFromRight(6);
+            fadeInSlider.setBounds(edit.removeFromRight(juce::jmax(90, edit.getWidth() / 2)));
+            fadeInLabel.setBounds(edit.removeFromRight(46));
+            edit.removeFromRight(6);
+            editLabel.setBounds(edit);
+
             keepButton.setBounds(buttons.removeFromRight(64).withSizeKeepingCentre(64, 24));
             buttons.removeFromRight(5);
             discardButton.setBounds(buttons.removeFromRight(80).withSizeKeepingCentre(80, 24));
