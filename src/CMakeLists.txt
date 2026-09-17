@@ -177,6 +177,7 @@ add_subdirectory(${SQLITECPP_ROOT} sqlitecpp_build)
 # and without a second copy of the gating thresholds drifting out of sync with the CLI's.
 add_library(mira_core STATIC
   mira/db/Database.cpp
+  mira/db/PathNormalise.cpp
   mira/scan/Scanner.cpp
   # Cue detection is pure arithmetic over files.active_spans -- no audio, no models -- so
   # it belongs here rather than in the heavy `mira` target: mira_ui can run it directly in
@@ -199,6 +200,13 @@ target_include_directories(mira_core PUBLIC
   ${CMAKE_CURRENT_BINARY_DIR}/sqlite_vec_include
 )
 target_link_libraries(mira_core PUBLIC SQLiteCpp mira_sqlite3 mira_sqlite_vec)
+# CoreFoundation, for one thing only: Unicode normalisation of file paths
+# (Database::findByPath). macOS hands the same filename out in two different byte
+# sequences depending on which API asked -- see PathNormalise.h. mira is Apple Silicon
+# only (PRD), so a platform framework here costs no portability that existed.
+if(APPLE)
+    target_link_libraries(mira_core PUBLIC "-framework CoreFoundation")
+endif()
 target_compile_definitions(mira_core PUBLIC SQLITE_VEC_STATIC SQLITE_CORE)
 set_target_properties(mira_core PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 

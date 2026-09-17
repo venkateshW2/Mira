@@ -1,4 +1,5 @@
 #include "Database.h"
+#include "PathNormalise.h"
 
 #include <algorithm>
 #include <cstring>
@@ -274,8 +275,29 @@ bool Database::upsertScannedFile(const std::string& path, const std::string& sha
 }
 
 std::optional<FileRecord> Database::findByPath(const std::string& path) {
+    {
+        SQLite::Statement q(db, "SELECT * FROM files WHERE path = ?");
+        q.bind(1, path);
+        if (q.executeStep()) return fromRow(q);
+    }
+
+    // Exact match failed. Before concluding the file is not in the library, try the other
+    // Unicode normalisation -- macOS hands the same filename out as two different byte
+    // sequences depending on which API asked (see PathNormalise.h). The scanner stores
+    // what readdir gave it (NFD); JUCE's directory walk produces NFC; `=` on TEXT is a
+    // byte comparison, so "Göransson" written one way never matches the other.
+    //
+    // Measured, not theorised: 46 of 82 files in one folder reported as unanalysed while
+    // each held 50-80 KB of analysis, and `mira analyze` answered "nothing to analyze"
+    // for paths it had itself written minutes earlier.
+    //
+    // The fallback costs a second query only when the first one missed, which for a
+    // genuinely-absent file is the answer anyway.
+    const auto alternate = path.find("\xcc") != std::string::npos ? toNfc(path) : toNfd(path);
+    if (alternate == path) return std::nullopt;
+
     SQLite::Statement q(db, "SELECT * FROM files WHERE path = ?");
-    q.bind(1, path);
+    q.bind(1, alternate);
     if (!q.executeStep()) return std::nullopt;
     return fromRow(q);
 }

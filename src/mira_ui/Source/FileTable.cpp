@@ -1,5 +1,8 @@
 #include "FileTable.h"
 
+#include <cstdlib>
+#include <iostream>
+
 #include "mira/scan/Scanner.h"
 
 #include <algorithm>
@@ -561,6 +564,16 @@ FileTableModel::Row FileTableModel::buildRow(const juce::File& file, mira::Datab
         row.record.contentType = "unknown";
         row.inDatabase = false;
     }
+
+    // MIRA_TRACE_ROWS=1: print every row the walk could not pair with an analysed
+    // database row, with the exact path it looked up. A row shows a dash when either
+    // half of `inDatabase && analyzedAt` is false, and from the outside those two look
+    // identical -- this is the only way to tell "the lookup missed" from "the row is
+    // genuinely unanalysed" without guessing from screenshots.
+    static const bool traceRows = std::getenv("MIRA_TRACE_ROWS") != nullptr;
+    if (traceRows && !(row.inDatabase && row.record.analyzedAt))
+        std::cerr << (row.inDatabase ? "row-unanalysed " : "row-NOT-FOUND  ")
+                   << file.getFullPathName() << std::endl;
 
     auto stem = file.getFileNameWithoutExtension();
 
