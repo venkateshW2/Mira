@@ -29,6 +29,7 @@
 #include "GenerateWindow.h"
 #include "TrayIcon.h"
 #include "LaunchWindow.h"
+#include "CanvasWindow.h"
 #include "PrepareWindow.h"
 #include "LogView.h"
 
@@ -2698,6 +2699,9 @@ public:
         kUiScale110,
         kUiScale125,
         kUiScale150,
+        // The canvas experiment (CanvasWindow.h). Its own window, its own audio path,
+        // and nothing else in mira knows it exists -- which is the point.
+        kShowCanvas,
     };
 
     void buildTagsMenu(juce::PopupMenu& menu)
@@ -2844,6 +2848,7 @@ public:
             case kUiScale110: setUiScale(1.10); return;
             case kUiScale125: setUiScale(1.25); return;
             case kUiScale150: setUiScale(1.50); return;
+            case kShowCanvas: showCanvasWindow(); return;
             case kShowLog: showLogWindow(); return;
             case kShowGenerate: showGenerateWindow(); return;
             case kShowProject: showProjectWindow(); return;
@@ -3193,6 +3198,21 @@ public:
         }
         if (folder.isDirectory()) prepareWindow->setFolder(folder);
         prepareWindow->toFront(true);
+    }
+
+    // The canvas experiment. Opened from Window, closes on its own, and joins the app's
+    // single audio device like every other window that makes sound -- that is the ONLY
+    // thing it shares with the rest of mira.
+    void showCanvasWindow()
+    {
+        if (canvasWindow != nullptr) { canvasWindow->toFront(true); return; }
+        canvasFormats.registerBasicFormats();   // idempotent
+        canvasWindow = std::make_unique<mira::canvas::CanvasWindow>(laf, canvasFormats, canvasThumbs);
+        canvasWindow->getView().attachTo(sharedAudioDevice);
+        canvasWindow->getView().setProject(getCurrentProject());
+        canvasWindow->onClosed = [this] {
+            juce::MessageManager::callAsync([this] { canvasWindow.reset(); });
+        };
     }
 
     void showGenerateWindow()
@@ -4492,6 +4512,11 @@ private:
     // Declared here, not inside a window: it outlives every waveform that plays through
     // it, and the Audio Settings window holds a reference for the life of the app.
     juce::AudioDeviceManager sharedAudioDevice;
+    // The canvas's own format manager and thumbnail cache, so the experiment cannot
+    // disturb the browser's or the generate window's caches.
+    juce::AudioFormatManager canvasFormats;
+    juce::AudioThumbnailCache canvasThumbs { 128 };
+    std::unique_ptr<mira::canvas::CanvasWindow> canvasWindow;
     std::unique_ptr<LoraLibraryWindow> loraLibraryWindow;
     std::unique_ptr<PrepareWindow> prepareWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;
@@ -4781,6 +4806,8 @@ public:
             menu.addItem(MainComponent::kShowLoraLibrary, "LoRA Library...");
             menu.addItem(MainComponent::kShowGenerate, "SA3 Generate...");
             menu.addItem(MainComponent::kShowPrepare, "Prepare for Training...");
+            menu.addSeparator();
+            menu.addItem(MainComponent::kShowCanvas, "Canvas (experimental)...");
             menu.addSeparator();
             menu.addItem(MainComponent::kShowLog, "Log...");
             menu.addSeparator();

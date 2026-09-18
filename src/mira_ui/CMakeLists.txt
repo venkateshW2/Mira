@@ -65,6 +65,8 @@ target_sources(mira_ui PRIVATE
   Source/Sa3Worker.cpp
   Source/GenerateWindow.cpp
   Source/Export.cpp
+  Source/CanvasEngine.cpp
+  Source/CanvasWindow.cpp
   Source/PrepareWindow.cpp
     Source/PromptBuilderWindow.cpp
   Source/NativeBlur.mm
