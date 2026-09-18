@@ -1356,6 +1356,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         {
             panel->setPanelOnly(true);
             panel->setTrainingBenchVisible(false);
+            // Starts with nothing selected, so it never opens pointed at the default
+            // ~/Music/mira-generated it was constructed with.
+            panel->setNoTarget();
             addAndMakeVisible(panel);
         }
         // Selecting a block points the panel at that block's folder. Nothing opens, moves
@@ -1375,7 +1378,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             // cannot disagree about which block you are editing.
             blockLabel.setText(name.isEmpty() ? "no block selected" : name, juce::dontSendNotification);
             currentBlockFolder = folder;
+            // No block means no target: an empty panel that says "select a block" rather
+            // than 62 takes from a folder you never chose.
             if (folder != juce::File()) panel->setOutputFolder(folder);
+            else                        panel->setNoTarget();
         };
 
         view.onStateChanged = [this] {

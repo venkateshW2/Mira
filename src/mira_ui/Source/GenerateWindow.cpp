@@ -1892,11 +1892,19 @@ void GenerateContent::chooseEncodeFolder() {
     });
 }
 
-void GenerateContent::setBusy(bool nowBusy, const juce::String& what) {
-    busy = nowBusy;
-    generateButton.setEnabled(!busy);
+// One place that decides what is clickable. Generate needs BOTH a free worker and somewhere
+// to put the result -- without the second test the canvas panel offered to generate into a
+// folder no block owns.
+void GenerateContent::updateBusyControls() {
+    const bool haveTarget = outputFolder != juce::File();
+    generateButton.setEnabled(!busy && haveTarget);
     encodeButton.setEnabled(!busy);
     stopButton.setEnabled(busy);
+}
+
+void GenerateContent::setBusy(bool nowBusy, const juce::String& what) {
+    busy = nowBusy;
+    updateBusyControls();
     if (busy) {
         busyStartMs = juce::Time::getMillisecondCounter();
         statusLabel.setText(what + "...", juce::dontSendNotification);

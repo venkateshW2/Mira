@@ -105,6 +105,7 @@ private:
     int writeSidecars(const juce::File& folder, const juce::String& trigger);
     void zipLatents(const juce::File& latentsDir, const juce::File& zipOut);
     void setBusy(bool busy, const juce::String& what);
+    void updateBusyControls();
     void log(const juce::String& line);
     void timerCallback() override;
     void updatePressure();
@@ -376,6 +377,27 @@ public:
         preview.useSharedDeviceManager(shared);
     }
 
+    // Panel mode with nothing selected. The canvas's panel is built before any block
+    // exists, and a GenerateContent defaults its output folder to ~/Music/mira-generated
+    // -- so it opened showing 62 takes from every past session, with a Generate button
+    // that would have written a 63rd into a folder belonging to no block at all.
+    //
+    // No target means no list and no Generate. An empty panel that says why is the honest
+    // state; a full one pointing somewhere you did not choose is the dangerous one.
+    void setNoTarget()
+    {
+        outputFolder = juce::File();
+        if (takeStack != nullptr) takeStack->clear();
+        takesLabel.setText("select a block", juce::dontSendNotification);
+        preview.setFile({});
+        resultTile.setFile({});
+        keepButton.setEnabled(false);
+        discardButton.setEnabled(false);
+        revealButton.setEnabled(false);
+        updateBusyControls();
+        resized();
+    }
+
     void setOutputFolder(const juce::File& folder)
     {
         if (folder.getFullPathName().isEmpty()) return;
@@ -394,6 +416,7 @@ public:
         outputFolder = folder;
         log("output folder: " + folder.getFullPathName());
         loadExistingTakes();
+        updateBusyControls();
     }
 
     // "the old takes are not showing up." The stack was session-only, so reopening a
