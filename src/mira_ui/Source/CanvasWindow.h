@@ -174,6 +174,9 @@ private:
     // point of the canvas, and stacking without levels is just addition.
     std::vector<double> laneDb;
     std::vector<float> laneMeter;  // decayed peak per lane, for the header meters
+    // Peak hold, decaying far slower than the bar. A transient is over before your eye
+    // reaches the meter; the line is what lets you see it happened.
+    std::vector<float> laneHold;
     int faderLane = -1;            // which lane's fader is being dragged, or -1
     std::unique_ptr<juce::TextEditor> renameEditor;
     int renamingLane = -1;

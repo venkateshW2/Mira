@@ -70,22 +70,30 @@ void CanvasView::rebuildAudio()
     if (onStateChanged) onStateChanged();
 }
 
+// The header is a mixer strip: the name across the top, M/S and the fader under it, the
+// meter down the right edge. The name used to start at x=60 with nothing to its left,
+// because it shared a row with chips that were vertically centred somewhere else -- so it
+// read as floating rather than as a title, and the rename box landed in the same odd spot.
 juce::Rectangle<int> CanvasView::muteBoxFor(int lane) const
 {
-    return { 8, laneToY(lane) + laneHeight / 2 - 9, 22, 18 };
+    return laneHeight >= 46
+               ? juce::Rectangle<int>(8, laneToY(lane) + 25, 24, 18)
+               : juce::Rectangle<int>(kHeaderWidth - 76, laneToY(lane) + laneHeight / 2 - 9, 22, 18);
 }
 
 juce::Rectangle<int> CanvasView::soloBoxFor(int lane) const
 {
-    return { 34, laneToY(lane) + laneHeight / 2 - 9, 22, 18 };
+    return laneHeight >= 46
+               ? juce::Rectangle<int>(36, laneToY(lane) + 25, 24, 18)
+               : juce::Rectangle<int>(kHeaderWidth - 50, laneToY(lane) + laneHeight / 2 - 9, 22, 18);
 }
 
 juce::Rectangle<int> CanvasView::faderBoxFor(int lane) const
 {
     // Only while the lane is tall enough to hold one. A fader squeezed into 28px would be
     // a control you cannot aim at, which is worse than a control that is not there.
-    if (laneHeight < 44) return {};
-    return { 8, laneToY(lane) + laneHeight - 18, kHeaderWidth - 30, 8 };
+    if (laneHeight < 46) return {};
+    return { 66, laneToY(lane) + 28, kHeaderWidth - 92, 12 };
 }
 
 // Muted and deliberately NOT the accent: the accent means "selected" and "playing"
@@ -111,14 +119,14 @@ juce::Rectangle<int> CanvasView::meterBoxFor(int lane) const
     // VERTICAL, at the right edge of the header, running the lane's full height. A
     // horizontal meter stacked above a horizontal fader read as two faders, one of which
     // moved on its own -- and neither lined up with the other.
-    return { kHeaderWidth - 14, laneToY(lane) + 5, 6, juce::jmax(10, laneHeight - 14) };
+    return { kHeaderWidth - 18, laneToY(lane) + 4, 10, juce::jmax(12, laneHeight - 12) };
 }
 
 juce::Rectangle<int> CanvasView::nameBoxFor(int lane) const
 {
-    return laneHeight >= 44
-               ? juce::Rectangle<int>(60, laneToY(lane) + 4, kHeaderWidth - 66, laneHeight / 2)
-               : juce::Rectangle<int>(60, laneToY(lane), kHeaderWidth - 66, laneHeight);
+    return laneHeight >= 46
+               ? juce::Rectangle<int>(8, laneToY(lane) + 4, kHeaderWidth - 32, 20)
+               : juce::Rectangle<int>(8, laneToY(lane), kHeaderWidth - 84, laneHeight);
 }
 
 void CanvasView::beginRename(int lane)
@@ -127,8 +135,20 @@ void CanvasView::beginRename(int lane)
     renamingLane = lane;
     renameEditor = std::make_unique<juce::TextEditor>();
     renameEditor->setText(laneNames[lane], juce::dontSendNotification);
-    renameEditor->setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.0f)));
-    renameEditor->setBounds(nameBoxFor(lane).withHeight(20));
+    // IN PLACE: exactly the name's rectangle, the same font, no border and no box. The
+    // editor used to be a plain TextEditor at a slightly different size, in a name box
+    // that was itself offset from where the name appeared to be -- so renaming looked
+    // like a text field opening somewhere else rather than the name becoming editable.
+    renameEditor->setFont(laf.sansSemiBold(MiraLookAndFeel::textSize(12.5f)));
+    renameEditor->setBounds(nameBoxFor(lane));
+    renameEditor->setBorder(juce::BorderSize<int>(0));
+    renameEditor->setIndents(0, 1);
+    renameEditor->setJustification(juce::Justification::centredLeft);
+    renameEditor->setColour(juce::TextEditor::backgroundColourId, MiraLookAndFeel::surface.darker(0.2f));
+    renameEditor->setColour(juce::TextEditor::outlineColourId, laneColour(lane).withAlpha(0.5f));
+    renameEditor->setColour(juce::TextEditor::focusedOutlineColourId, laneColour(lane));
+    renameEditor->setColour(juce::TextEditor::textColourId, laneColour(lane).brighter(0.2f));
+    renameEditor->setColour(juce::TextEditor::highlightColourId, laneColour(lane).withAlpha(0.3f));
     renameEditor->onReturnKey = [this] { commitRename(); };
     renameEditor->onEscapeKey = [this] { renamingLane = -1; renameEditor.reset(); repaint(); };
     renameEditor->onFocusLost = [this] { commitRename(); };
@@ -140,7 +160,11 @@ void CanvasView::beginRename(int lane)
 void CanvasView::commitRename()
 {
     if (renameEditor == nullptr || renamingLane < 0) { renameEditor.reset(); renamingLane = -1; return; }
-    laneNames.set(renamingLane, renameEditor->getText().trim());
+    if (laneNames[renamingLane] != renameEditor->getText().trim())
+    {
+        laneNames.set(renamingLane, renameEditor->getText().trim());
+        markDirty();
+    }
     renamingLane = -1;
     renameEditor.reset();
     grabKeyboardFocus();
@@ -716,8 +740,8 @@ void CanvasView::paint(juce::Graphics& g)
             drawChip(muteBoxFor(lane), "M", muted,  MiraLookAndFeel::warn);
             drawChip(soloBoxFor(lane), "S", soloed, MiraLookAndFeel::accent);
 
-            g.setColour(muted ? MiraLookAndFeel::textFaint : laneColour(lane).withAlpha(0.9f));
-            g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.0f)));
+            g.setColour(muted ? MiraLookAndFeel::textFaint : laneColour(lane).brighter(0.2f));
+            g.setFont(laf.sansSemiBold(MiraLookAndFeel::textSize(12.5f)));
             if (lane != renamingLane)
                 g.drawText(laneNames[lane].isNotEmpty() ? laneNames[lane] : juce::String(lane + 1),
                             nameBoxFor(lane), juce::Justification::centredLeft, true);
@@ -725,37 +749,81 @@ void CanvasView::paint(juce::Graphics& g)
             if (auto meterBox = meterBoxFor(lane); !meterBox.isEmpty())
             {
                 const float level = lane < (int) laneMeter.size() ? laneMeter[(size_t) lane] : 0.0f;
-                g.setColour(MiraLookAndFeel::surface3);
-                g.fillRoundedRectangle(meterBox.toFloat(), 2.5f);
+                const float hold  = lane < (int) laneHold.size()  ? laneHold[(size_t) lane]  : 0.0f;
+
+                // A SCALE, not a bar. dBFS over -48..0, with ticks at -6, -12, -24 and -36
+                // so a level can be read rather than only compared -- that is the whole
+                // difference between a meter and a progress bar, and it is what was
+                // missing. Green to -6, amber to -1, red over: the colour answers "am I
+                // near clipping" without doing arithmetic on a decibel.
+                auto toY = [&](float db) {
+                    const float f = juce::jlimit(0.0f, 1.0f, (db + 48.0f) / 48.0f);
+                    return meterBox.getBottom() - meterBox.getHeight() * f;
+                };
+
+                g.setColour(MiraLookAndFeel::surface.darker(0.4f));
+                g.fillRoundedRectangle(meterBox.toFloat(), 2.0f);
+
                 if (level > 0.0005f)
                 {
-                    // dBFS mapped over -48..0, which is the range you actually judge a
-                    // balance in; a linear meter spends nine tenths of itself on the top
-                    // 20 dB and tells you nothing about anything quiet.
                     const float db = juce::Decibels::gainToDecibels(level);
-                    const float frac = juce::jlimit(0.0f, 1.0f, (db + 48.0f) / 48.0f);
-                    const float h = juce::jmax(2.0f, meterBox.getHeight() * frac);
-                    g.setColour(db > -1.0f ? MiraLookAndFeel::warn
-                                           : (db > -6.0f ? MiraLookAndFeel::accent
-                                                         : MiraLookAndFeel::active));
-                    g.fillRoundedRectangle(meterBox.toFloat().withTrimmedTop(meterBox.getHeight() - h), 2.5f);
+                    const float top = toY(db);
+                    // Drawn in three bands so the colour is where the LEVEL is, not one
+                    // colour for the whole column: a peak touching red should show red at
+                    // the top and green below it, the way a real meter does.
+                    auto band = [&](float lo, float hi, juce::Colour c) {
+                        const float y0 = toY(juce::jmin(hi, db)), y1 = toY(lo);
+                        if (y0 >= y1 || db < lo) return;
+                        g.setColour(c);
+                        g.fillRect(juce::Rectangle<float>((float) meterBox.getX() + 1.0f, y0,
+                                                           (float) meterBox.getWidth() - 2.0f, y1 - y0));
+                    };
+                    band(-48.0f, -6.0f, MiraLookAndFeel::active);
+                    band(-6.0f,  -1.0f, MiraLookAndFeel::accent);
+                    band(-1.0f,   0.0f, MiraLookAndFeel::warn);
+                    juce::ignoreUnused(top);
                 }
+
+                // Peak hold: the highest recent level, left behind as a line. Without it a
+                // transient is gone before your eye reaches the meter.
+                if (hold > 0.0005f)
+                {
+                    const float db = juce::Decibels::gainToDecibels(hold);
+                    g.setColour(db > -1.0f ? MiraLookAndFeel::warn : MiraLookAndFeel::text.withAlpha(0.85f));
+                    g.fillRect((float) meterBox.getX(), toY(db) - 1.0f, (float) meterBox.getWidth(), 1.5f);
+                }
+
+                g.setColour(MiraLookAndFeel::border.withAlpha(0.8f));
+                for (float tick : { -6.0f, -12.0f, -24.0f, -36.0f })
+                    g.fillRect((float) meterBox.getRight() - 3.0f, toY(tick), 3.0f, 1.0f);
             }
 
             if (auto fader = faderBoxFor(lane); !fader.isEmpty())
             {
                 const double db = laneDbAt(lane);
                 const float frac = (float) ((db + 60.0) / 66.0);
-                g.setColour(MiraLookAndFeel::surface3);
-                g.fillRoundedRectangle(fader.toFloat(), 3.0f);
-                g.setColour(muted ? MiraLookAndFeel::textFaint
-                                  : laneColour(lane).withAlpha(0.85f));
-                g.fillRoundedRectangle(fader.toFloat().withWidth(juce::jmax(3.0f, fader.getWidth() * frac)), 3.0f);
-                // Unity marked, because "where was 0 dB again" is the one question a
-                // fader with no numbers has to answer at a glance.
-                const int unity = fader.getX() + juce::roundToInt(fader.getWidth() * (60.0f / 66.0f));
-                g.setColour(MiraLookAndFeel::text.withAlpha(0.35f));
-                g.drawVerticalLine(unity, (float) fader.getY() - 1.0f, (float) fader.getBottom() + 1.0f);
+
+                // A GROOVE AND A CAP, not a filled bar. A bar cannot show you where the
+                // control is when the value is zero, and it reads as a meter that happens
+                // to be draggable -- which is exactly the confusion of having both.
+                auto groove = fader.toFloat().withSizeKeepingCentre((float) fader.getWidth(), 3.0f);
+                g.setColour(MiraLookAndFeel::surface.darker(0.3f));
+                g.fillRoundedRectangle(groove, 1.5f);
+                g.setColour(muted ? MiraLookAndFeel::textFaint : laneColour(lane).withAlpha(0.7f));
+                g.fillRoundedRectangle(groove.withWidth(juce::jmax(2.0f, groove.getWidth() * frac)), 1.5f);
+
+                // Unity marked, because "where was 0 dB again" is the one question a fader
+                // with no numbers has to answer at a glance.
+                const float unityX = fader.getX() + fader.getWidth() * (60.0f / 66.0f);
+                g.setColour(MiraLookAndFeel::text.withAlpha(0.3f));
+                g.fillRect(unityX, (float) fader.getY() + 1.0f, 1.0f, (float) fader.getHeight() - 2.0f);
+
+                const float capX = fader.getX() + fader.getWidth() * juce::jlimit(0.0f, 1.0f, frac);
+                auto cap = juce::Rectangle<float>(capX - 3.5f, (float) fader.getY(), 7.0f, (float) fader.getHeight());
+                g.setColour(muted ? MiraLookAndFeel::surface3 : laneColour(lane).brighter(0.25f));
+                g.fillRoundedRectangle(cap, 2.0f);
+                g.setColour(MiraLookAndFeel::surface.darker(0.5f));
+                g.drawRoundedRectangle(cap, 2.0f, 1.0f);
             }
         }
         // The ruler's own corner, so the seconds do not run under the headers.
@@ -826,6 +894,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     if (e.x < kHeaderWidth && e.y >= topRuler)
     {
         const int lane = yToLane(e.y);
+        if (lane >= laneCount) return;
         if (lane < CanvasAudioSource::kMaxLanes)
         {
             const juce::uint64 bit = juce::uint64 (1) << lane;
@@ -1201,6 +1270,7 @@ void CanvasView::timerCallback()
     {
         const int lanes = juce::jmax(4, (getHeight() - topRuler) / laneHeight + 1);
         if ((int) laneMeter.size() < lanes) laneMeter.resize((size_t) lanes, 0.0f);
+        if ((int) laneHold.size()  < lanes) laneHold.resize((size_t) lanes, 0.0f);
         for (int lane = 0; lane < lanes && lane < CanvasAudioSource::kMaxLanes; ++lane)
         {
             const float hit = player.readAndClearLanePeak(lane);
@@ -1208,6 +1278,8 @@ void CanvasView::timerCallback()
             // Instant attack, slow release: a meter that falls as fast as it rises is a
             // flicker you cannot read at 30 fps.
             held = hit > held ? hit : held * 0.80f;
+            auto& hold = laneHold[(size_t) lane];
+            hold = hit > hold ? hit : hold * 0.985f;   // ~2 s to fall away
         }
         repaint();
         return;
@@ -1215,6 +1287,7 @@ void CanvasView::timerCallback()
     // Let the meters fall to nothing after a stop rather than freezing mid-level.
     bool alive = false;
     for (auto& m : laneMeter) { if (m > 0.0005f) { m *= 0.8f; alive = true; } else m = 0.0f; }
+    for (auto& h : laneHold)  { if (h > 0.0005f) { h *= 0.9f; alive = true; } else h = 0.0f; }
     if (alive) { repaint(); return; }
 
     // Thumbnails load on a background thread and finish whenever they finish. Without
