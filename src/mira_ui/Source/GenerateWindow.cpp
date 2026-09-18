@@ -1817,15 +1817,24 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         encodeButton.setBounds({}); datasetsLabel.setBounds({});
     }
 
+    // Two lines, not one. Four fixed-width buttons came to 432px against a pane that is
+    // 360px wide once it is the slim column it was asked to be, so "Console" was drawn
+    // as an ellipsis and the row ran under the edge. Widths are shares of the line now,
+    // so the row fits whatever the pane is: Generate and Stop stay together because they
+    // are the same control in two states, and the two navigational buttons go below.
     {
-        auto line = row(32);
-        place(generateButton, line.removeFromLeft(120));
+        auto line = row(32, 6);
+        const int stopW = juce::jmin(90, line.getWidth() / 3);
+        place(generateButton, line.removeFromLeft(line.getWidth() - stopW - 6));
         line.removeFromLeft(6);
-        place(stopButton, line.removeFromLeft(80));
+        place(stopButton, line);
+    }
+    {
+        auto line = row(26);
+        const int half = (line.getWidth() - 6) / 2;
+        place(revealButton, line.removeFromLeft(half));
         line.removeFromLeft(6);
-        place(revealButton, line.removeFromLeft(130));
-        line.removeFromLeft(6);
-        place(consoleButton, line.removeFromLeft(84));
+        place(consoleButton, line);
     }
     return r.getY() - startY + 8;
 }
