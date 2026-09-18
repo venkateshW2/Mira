@@ -242,6 +242,43 @@ void CanvasView::addEmptyBlock()
     repaint();
 }
 
+void CanvasView::duplicateSelection()
+{
+    if (selected.empty()) return;
+
+    // Placed after the rightmost of what was copied, on the same lanes, so a duplicate
+    // lands where you would have dragged it rather than on top of the original.
+    double rightmost = 0.0;
+    double leftmost = 1e12;
+    for (const auto& i : items)
+        if (selected.count(i->block.id))
+        { rightmost = juce::jmax(rightmost, i->block.end()); leftmost = juce::jmin(leftmost, i->block.start); }
+    const double shift = juce::jmax(0.25, rightmost - leftmost);
+
+    std::vector<std::unique_ptr<Visual>> copies;
+    for (const auto& i : items)
+    {
+        if (selected.count(i->block.id) == 0) continue;
+        auto v = std::make_unique<Visual>();
+        v->block = i->block;                 // trim, fades, gain, lane, name all come too
+        v->block.id = nextId++;
+        v->block.start = i->block.start + shift;
+        v->settings = i->settings;
+        // The SAME take, not a new one. A duplicate that regenerated would be a different
+        // piece of audio wearing the same name.
+        setFileOn(*v, i->block.file);
+        v->block.length = i->block.length;   // setFileOn may have reset it to the file's
+        v->block.sourceOffset = i->block.sourceOffset;
+        copies.push_back(std::move(v));
+    }
+
+    selected.clear();
+    for (auto& c : copies) { selected.insert(c->block.id); items.push_back(std::move(c)); }
+    markDirty();
+    rebuildAudio();
+    repaint();
+}
+
 void CanvasView::applySettingsToSelection(const juce::var& settings)
 {
     if (auto* v = singleSelection()) { v->settings = settings; markDirty(); }
@@ -461,7 +498,7 @@ juce::Rectangle<int> CanvasView::boundsOf(const Visual& v) const
 
 void CanvasView::paint(juce::Graphics& g)
 {
-    g.fillAll(MiraLookAndFeel::surface);
+    g.fillAll(MiraLookAndFeel::surface2);
 
     const int lanes = laneCount;
     for (int lane = 0; lane < lanes; ++lane)
@@ -588,9 +625,15 @@ void CanvasView::paint(juce::Graphics& g)
         {
             g.setColour(isSelected ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
-            g.drawText(item->block.name.isNotEmpty() ? item->block.name
-                                                      : item->block.file.getFileNameWithoutExtension(),
-                        r.reduced(6, 2).removeFromTop(14), juce::Justification::centredLeft, true);
+            // "block1 _ name of the file": the block's own name AND what is in it. The
+            // block name alone says nothing about which take you chose, and the filename
+            // alone loses which part of the piece this is.
+            const auto label = item->block.name
+                             + (item->block.hasAudio()
+                                    ? "  -  " + item->block.file.getFileNameWithoutExtension()
+                                    : juce::String());
+            g.drawText(label, r.reduced(6, 2).removeFromTop(14),
+                        juce::Justification::centredLeft, true);
         }
     }
 
@@ -647,7 +690,9 @@ void CanvasView::paint(juce::Graphics& g)
                     const float db = juce::Decibels::gainToDecibels(level);
                     const float frac = juce::jlimit(0.0f, 1.0f, (db + 48.0f) / 48.0f);
                     const float h = juce::jmax(2.0f, meterBox.getHeight() * frac);
-                    g.setColour(level >= 1.0f ? MiraLookAndFeel::warn : MiraLookAndFeel::active);
+                    g.setColour(db > -1.0f ? MiraLookAndFeel::warn
+                                           : (db > -6.0f ? MiraLookAndFeel::accent
+                                                         : MiraLookAndFeel::active));
                     g.fillRoundedRectangle(meterBox.toFloat().withTrimmedTop(meterBox.getHeight() - h), 2.5f);
                 }
             }
@@ -800,7 +845,11 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     if (onOpenGenerator)
     {
         auto folder = blockFolderFor(*hit);
-        if (folder != juce::File()) onOpenGenerator(hit->block.name, folder);
+        const auto label = hit->block.name
+                         + (hit->block.hasAudio()
+                                ? "  -  " + hit->block.file.getFileNameWithoutExtension()
+                                : juce::String("  -  empty"));
+        if (folder != juce::File()) onOpenGenerator(label, folder);
     }
     dragOrigins.clear();
     for (const auto& i : items)
@@ -954,6 +1003,8 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
         return true;
     }
     if (key.getTextCharacter() == 'l')         { setLoopFromSelection(); return true; }
+    if (key.getModifiers().isCommandDown() && key.getKeyCode() == 'D')
+        { duplicateSelection(); return true; }
     if (key.getTextCharacter() == 'f')         { fit(); return true; }
     if (key.getTextCharacter() == '=' || key.getTextCharacter() == '+')
         { laneHeight = juce::jmin(320, laneHeight + 8); repaint(); return true; }
@@ -1040,11 +1091,18 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
         v->block.id = nextId++;
         v->thumb = std::make_unique<juce::AudioThumbnail>(512, formats, cache);
         v->thumb->setSource(new juce::FileInputSource(f));
+        // A drop below the last track MAKES that track, rather than leaving a region
+        // floating on a lane with no header, no fader and no mute -- which is what
+        // happened, and is why it looked like a region belonging to nothing.
+        laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, juce::jmax(laneCount, lane + 1));
+        if (laneNames[v->block.lane].isEmpty())
+            laneNames.set(v->block.lane, "track " + juce::String(v->block.lane + 1));
         selected.clear();
         selected.insert(v->block.id);
         items.push_back(std::move(v));
         at += len;
     }
+    markDirty();
     rebuildAudio();
     repaint();
 }
@@ -1112,7 +1170,17 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         button(openProjectButton, "Open...");
         button(saveProjectButton, "Save");
         button(addBlockButton, "+ Block");
+        button(duplicateButton, "Duplicate");
+        duplicateButton.onClick = [this] { view.duplicateSelection(); };
         button(addTrackButton, "+ Track");
+        button(panelToggle, "Generate >");
+        panelToggle.onClick = [this] {
+            panelCollapsed = !panelCollapsed;
+            panelToggle.setButtonText(panelCollapsed ? "Generate <" : "Generate >");
+            if (panel != nullptr) panel->setVisible(!panelCollapsed);
+            blockLabel.setVisible(!panelCollapsed);
+            resized();
+        };
         newProjectButton.onClick  = [this] { promptNewProject(); };
         openProjectButton.onClick = [this] { promptOpenProject(); };
         saveProjectButton.onClick = [this] { saveOrAsk(); };
@@ -1134,6 +1202,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         // which is what "feels united" means in practice.
         view.onOpenGenerator = [this](const juce::String& name, const juce::File& folder) {
             if (panel == nullptr) return;
+            // The same label the block carries on the canvas, so the panel and the track
+            // cannot disagree about which block you are editing.
             blockLabel.setText(name.isEmpty() ? "no block selected" : name, juce::dontSendNotification);
             currentBlockFolder = folder;
             if (folder != juce::File()) panel->setOutputFolder(folder);
@@ -1257,18 +1327,24 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         bar.removeFromLeft(6);
         addBlockButton.setBounds(bar.removeFromLeft(74));
         bar.removeFromLeft(6);
+        duplicateButton.setBounds(bar.removeFromLeft(86));
+        bar.removeFromLeft(6);
+        panelToggle.setBounds(bar.removeFromRight(96));
+        bar.removeFromRight(8);
         newProjectButton.setBounds(bar.removeFromLeft(56));
         bar.removeFromLeft(4);
         openProjectButton.setBounds(bar.removeFromLeft(70));
         bar.removeFromLeft(4);
         saveProjectButton.setBounds(bar.removeFromLeft(56));
         bar.removeFromLeft(12);
-        clock.setBounds(bar.removeFromRight(190));
+        clock.setBounds(bar.removeFromRight(180));
         bar.removeFromRight(8);
-        meter.setBounds(bar.removeFromRight(110));
+        meter.setBounds(bar.removeFromRight(72));
+        bar.removeFromRight(4);
+        masterMeter = bar.removeFromRight(120).withSizeKeepingCentre(120, 10);
         hint.setBounds(bar);
 
-        if (panel != nullptr)
+        if (panel != nullptr && !panelCollapsed)
         {
             const int wanted = juce::roundToInt(r.getWidth() * panelFraction);
             auto side = r.removeFromRight(juce::jlimit(260, juce::jmax(280, r.getWidth() - 320), wanted));
@@ -1276,12 +1352,36 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             panel->setBounds(side);
             sideDivider = r.removeFromRight(6);
         }
+        else sideDivider = {};
         view.setBounds(r);
     }
 
     void paint(juce::Graphics& g) override
     {
         g.fillAll(MiraLookAndFeel::surface2);
+        // The master meter, beside the number. Green up to -6, amber to -1, red over --
+        // the same reading every console gives you, so the colour alone answers "am I
+        // anywhere near clipping" without doing arithmetic on a decibel.
+        if (!masterMeter.isEmpty())
+        {
+            g.setColour(MiraLookAndFeel::surface3);
+            g.fillRoundedRectangle(masterMeter.toFloat(), 3.0f);
+            if (held > 0.0005f)
+            {
+                const float db = juce::Decibels::gainToDecibels(held);
+                const float frac = juce::jlimit(0.0f, 1.0f, (db + 48.0f) / 48.0f);
+                g.setColour(db > -1.0f ? MiraLookAndFeel::warn
+                                       : (db > -6.0f ? MiraLookAndFeel::accent
+                                                     : MiraLookAndFeel::active));
+                g.fillRoundedRectangle(masterMeter.toFloat().withWidth(
+                    juce::jmax(3.0f, masterMeter.getWidth() * frac)), 3.0f);
+            }
+            // -6 dBFS marked, which is where you start caring.
+            g.setColour(MiraLookAndFeel::text.withAlpha(0.3f));
+            g.drawVerticalLine(masterMeter.getX() + juce::roundToInt(masterMeter.getWidth() * (42.0f / 48.0f)),
+                                (float) masterMeter.getY(), (float) masterMeter.getBottom());
+        }
+
         if (!sideDivider.isEmpty())
         {
             g.setColour(MiraLookAndFeel::border);
@@ -1315,7 +1415,12 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         // takes that each peak near full scale summing into one bus: two is +6 dB over,
         // four is +12. Nothing normalises that, so the number has to be on screen or the
         // first thing the canvas teaches you is that it distorts.
-        const float p = view.readAndClearPeak();
+        // Only while the TRANSPORT is playing. A BufferingAudioSource fills its read-ahead
+        // buffer whether or not the transport is running, so the source kept producing
+        // peaks with nothing playing and the readout sat at some arbitrary level forever.
+        // Stopped means silence, and the meter has to say so.
+        const float p = view.isPlaying() ? view.readAndClearPeak() : 0.0f;
+        if (!view.isPlaying()) held = 0.0f;
         if (p > held) held = p;
         held *= 0.92f;                                     // a slow fall, so a hit is readable
         const float dB = juce::Decibels::gainToDecibels(juce::jmax(held, 1.0e-6f));
@@ -1342,8 +1447,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::File currentBlockFolder;
     juce::Label blockLabel;
     juce::TextButton playButton, loopButton, fitButton, deleteButton,
-                     addBlockButton, addTrackButton,
-                     newProjectButton, openProjectButton, saveProjectButton;
+                     addBlockButton, addTrackButton, duplicateButton,
+                     newProjectButton, openProjectButton, saveProjectButton, panelToggle;
+    juce::Rectangle<int> masterMeter;
+    bool panelCollapsed = false;
     juce::Label hint, clock, meter;
 };
 

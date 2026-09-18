@@ -2177,12 +2177,21 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         line.removeFromLeft(6);
         place(stopButton, line);
     }
+    // Show in Finder and the worker console are window furniture, not part of making a
+    // block: in the canvas the block's folder is one click away on the block itself, and
+    // the console belongs to the app rather than to this panel.
+    if (!panelOnly)
     {
         auto line = row(26);
         const int half = (line.getWidth() - 6) / 2;
         place(revealButton, line.removeFromLeft(half));
         line.removeFromLeft(6);
         place(consoleButton, line);
+    }
+    else if (applyBounds)
+    {
+        revealButton.setBounds({});
+        consoleButton.setBounds({});
     }
     return r.getY() - startY + 8;
 }
