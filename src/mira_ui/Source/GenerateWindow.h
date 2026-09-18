@@ -17,6 +17,7 @@
 #include "WaveformView.h"
 #include "LogView.h"
 #include "GenerateProgress.h"
+#include "ProjectSidebar.h"
 
 // SA3 generation and pre-encoding, inside mira.
 //
@@ -77,6 +78,7 @@ private:
         juce::File file;
     };
 
+    bool discardOne(const juce::File& wav);
     void startWorker();
     void refreshLoras();
     void addLoraFile();
@@ -192,6 +194,8 @@ private:
     juce::File outputFolder;
     bool trainingBenchVisible = true; // the SA3 Generate window keeps its bench
     juce::File projectFolder;         // invalid = no project, Keep behaves as it always did
+    juce::File scopeFolder;           // sidebar selection; invalid = show everything
+    std::unique_ptr<ProjectSidebar> sidebar;  // project window only
 
     // A second look-and-feel instance, identical to the app's except that its popup menus
     // are compact -- attached ONLY to the three LoRA pickers, which are the one place a
@@ -261,6 +265,19 @@ public:
     void setTrainingBenchVisible(bool shouldBeVisible)
     {
         trainingBenchVisible = shouldBeVisible;
+        // The sidebar belongs to a PROJECT window, which is exactly the window without
+        // the training bench. The SA3 Generate window has no project to list.
+        if (!shouldBeVisible && sidebar == nullptr)
+        {
+            sidebar = std::make_unique<ProjectSidebar>();
+            sidebar->onFolderSelected = [this](juce::File f) {
+                scopeFolder = f;
+                loadExistingTakes();
+                resized();
+            };
+            sidebar->setProject(projectFolder);
+            addAndMakeVisible(*sidebar);
+        }
         triggerLabel.setVisible(shouldBeVisible);
         triggerEditor.setVisible(shouldBeVisible);
         encodeButton.setVisible(shouldBeVisible);
@@ -271,7 +288,11 @@ public:
     // MIRA-GENERATE.md Phase 3. When set, Keep asks for a cue and files the take into
     // <project>/<cue>/ under its working name. Unset (the SA3 Generate window) leaves
     // Keep exactly as it was: register in place, add to the "Generated" collection.
-    void setProject(const juce::File& folder) { projectFolder = folder; }
+    void setProject(const juce::File& folder)
+    {
+        projectFolder = folder;
+        if (sidebar != nullptr) sidebar->setProject(folder);
+    }
 
     // The LoRA Library window calls this after a checkpoint is added or renamed, so the
     // dropdowns update without reopening the generate window.
@@ -298,15 +319,35 @@ public:
         if (takeStack == nullptr) return;
         takeStack->clear();
 
+        // Scoped by the sidebar. An empty scope means "all takes", which is what the
+        // window showed before there was a sidebar at all.
+        const bool scoped = scopeFolder.isDirectory();
+        const auto inScope = [this, scoped](const juce::File& d) {
+            return !scoped || d == scopeFolder;
+        };
+
         if (projectFolder.isDirectory())
+        {
             for (const auto& cue : projectFolder.findChildFiles(juce::File::findDirectories, false))
             {
-                if (cue.getFileName() == "takes") continue;
-                for (const auto& f : cue.findChildFiles(juce::File::findFiles, false, "*.wav"))
-                    takeStack->addTake(f, TakeStack::State::Kept, false);
+                const auto name = cue.getFileName();
+                if (name == "takes") continue;
+                // A folder's NAME is its state: kept cues, or the discard bin. That is
+                // the whole point of the sidebar -- one way to think about where a file
+                // is, rather than a section and a folder that can disagree.
+                const auto state = name == "discarded" ? TakeStack::State::Discarded
+                                                        : TakeStack::State::Kept;
+                if (inScope(cue))
+                    for (const auto& f : cue.findChildFiles(juce::File::findFiles, false, "*.wav"))
+                        takeStack->addTake(f, state, false);
+                for (const auto& sub : cue.findChildFiles(juce::File::findDirectories, false))
+                    if (inScope(sub))
+                        for (const auto& f : sub.findChildFiles(juce::File::findFiles, false, "*.wav"))
+                            takeStack->addTake(f, state, false);
             }
+        }
 
-        if (outputFolder.isDirectory())
+        if (outputFolder.isDirectory() && inScope(outputFolder))
             for (const auto& f : outputFolder.findChildFiles(juce::File::findFiles, false, "*.wav"))
                 takeStack->addTake(f, TakeStack::State::Pending, false);
     }

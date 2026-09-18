@@ -1118,6 +1118,36 @@ void GenerateContent::keepResultIntoCue(const juce::File& wav, const juce::Strin
 
 // Trash, not delete: the result is still audible in the preview when this is pressed,
 // and an accidental click on the wrong one should be recoverable.
+// Where a discarded take goes. In a PROJECT it goes to <project>/discarded/, not to the
+// Trash: the sidebar lists the project's folders, and a discard bin that is a real folder
+// is a place like every other place -- listed, countable, and recoverable by dragging a
+// file back out. In the Trash it is none of those, and the DISCARDED rows only survived
+// until the window closed, so "what did I already try?" had no answer the next morning.
+//
+// Without a project (the SA3 Generate window) there is nowhere to put one, so the Trash
+// remains the answer there.
+bool GenerateContent::discardOne(const juce::File& wav) {
+    const auto sidecar = wav.withFileExtension("json");
+    if (projectFolder.isDirectory()) {
+        auto bin = projectFolder.getChildFile("discarded");
+        bin.createDirectory();
+        auto target = bin.getChildFile(wav.getFileName());
+        for (int i = 2; target.existsAsFile(); ++i)
+            target = bin.getChildFile(wav.getFileNameWithoutExtension() + "-" + juce::String(i) + ".wav");
+        const bool ok = wav.moveFileTo(target);
+        // The recipe follows the audio. A take without its .json cannot be reproduced,
+        // which is most of the reason to keep a discarded one at all.
+        if (ok && sidecar.existsAsFile())
+            sidecar.moveFileTo(target.withFileExtension("json"));
+        if (ok) database.moveFilePath(wav.getFullPathName().toStdString(),
+                                       target.getFullPathName().toStdString());
+        return ok;
+    }
+    const bool ok = wav.moveToTrash();
+    if (sidecar.existsAsFile()) sidecar.moveToTrash();
+    return ok;
+}
+
 void GenerateContent::discardResult() {
     // Bulk discard, when rows have been Cmd-clicked. One confirmation for the set rather
     // than one per file: the whole point of selecting six is not to answer six questions.
@@ -1126,21 +1156,20 @@ void GenerateContent::discardResult() {
         juce::NativeMessageBox::showOkCancelBox(
             juce::MessageBoxIconType::WarningIcon,
             "Discard " + juce::String(static_cast<int>(selected.size())) + " takes?",
-            "They go to the Trash with their .json recipes, and stay listed under "
-            "DISCARDED so the same idea is not generated twice.",
+            "They move to the project's discarded folder with their .json recipes, so "
+            "the same idea is not generated twice -- and can be pulled back out.",
             this,
             juce::ModalCallbackFunction::create([this, selected](int result) {
                 if (result == 0) return;
                 int moved = 0;
                 for (const auto& f : selected) {
                     if (f == resultTile.getFile()) { preview.setFile({}); resultTile.setFile({}); }
-                    const auto sidecar = f.withFileExtension("json");
-                    if (f.moveToTrash()) ++moved;
-                    if (sidecar.existsAsFile()) sidecar.moveToTrash();
+                    if (discardOne(f)) ++moved;
                     takeStack->markDiscarded(f);
                 }
                 takeStack->clearMultiSelection();
-                statusLabel.setText(juce::String(moved) + " takes moved to Trash",
+                if (sidebar != nullptr) sidebar->rebuild();
+                statusLabel.setText(juce::String(moved) + " takes discarded",
                                      juce::dontSendNotification);
                 log("discarded " + juce::String(moved) + " takes");
             }));
@@ -1149,21 +1178,21 @@ void GenerateContent::discardResult() {
 
     const auto wav = resultTile.getFile();
     if (!wav.existsAsFile()) return;
-    const auto sidecar = wav.withFileExtension("json");
 
     preview.setFile({});                 // stop reading the file we are about to move
     resultTile.setFile({});
     const auto name = wav.getFileName();
-    bool ok = wav.moveToTrash();
-    if (sidecar.existsAsFile()) sidecar.moveToTrash();
+    const bool ok = discardOne(wav);
 
     // Gone from the stack either way: if the move to Trash failed the file is still
     // there, but leaving a row whose buttons no longer do anything is worse than a log
     // line saying what happened.
     takeStack->markDiscarded(wav);
     revealButton.setEnabled(false);
-    statusLabel.setText(ok ? name + " - moved to Trash"
-                           : "could not move " + name + " to Trash",
+    if (sidebar != nullptr) sidebar->rebuild();
+    statusLabel.setText(ok ? name + (projectFolder.isDirectory() ? " - moved to discarded/"
+                                                                 : juce::String(" - moved to Trash"))
+                           : "could not discard " + name,
                         juce::dontSendNotification);
     log(ok ? "discarded: " + name : "could not discard " + name);
 }
@@ -1807,6 +1836,15 @@ void GenerateContent::resized() {
         const int needed = layoutRightPane(innerWidth, false);
         rightPane.setSize(innerWidth, juce::jmax(needed, rightArea.getHeight()));
         layoutRightPane(innerWidth, true);
+    }
+
+    // --- far left: the project's own folders, so this window never has to send you to
+    // the library to find out what is in the project.
+    if (sidebar != nullptr)
+    {
+        const int w = juce::jlimit(140, 220, leftArea.getWidth() / 4);
+        sidebar->setBounds(leftArea.removeFromLeft(w));
+        leftArea.removeFromLeft(8);
     }
 
     // --- left: the takes
