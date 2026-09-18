@@ -211,7 +211,10 @@ void CanvasView::paint(juce::Graphics& g)
 
         if (item->thumb != nullptr && item->thumb->getTotalLength() > 0.0)
         {
-            auto wave = r.reduced(4, 16);
+            // The name strip only costs height while there is height to spare; below that
+            // the waveform gets all of it, which is the point of zooming in vertically.
+            const int nameStrip = r.getHeight() >= 46 ? 16 : 0;
+            auto wave = r.reduced(4, 3).withTrimmedTop(nameStrip);
             g.setColour(MiraLookAndFeel::text.withAlpha(laneMuted ? 0.18f
                                                                   : (isSelected ? 0.85f : 0.6f)));
             item->thumb->drawChannels(g, wave, item->block.sourceOffset,
@@ -247,10 +250,13 @@ void CanvasView::paint(juce::Graphics& g)
         g.setColour(isSelected ? MiraLookAndFeel::accent : MiraLookAndFeel::border);
         g.drawRoundedRectangle(r.toFloat().reduced(0.5f), 5.0f, isSelected ? 1.8f : 1.0f);
 
-        g.setColour(isSelected ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
-        g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
-        g.drawText(item->block.name, r.reduced(6, 2).removeFromTop(14),
-                    juce::Justification::centredLeft, true);
+        if (r.getHeight() >= 46)
+        {
+            g.setColour(isSelected ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
+            g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
+            g.drawText(item->block.name, r.reduced(6, 2).removeFromTop(14),
+                        juce::Justification::centredLeft, true);
+        }
     }
 
     if (!marquee.isEmpty())
@@ -497,6 +503,15 @@ void CanvasView::mouseUp(const juce::MouseEvent&)
 
 void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
+    // Shift-wheel zooms VERTICALLY: taller lanes mean a taller waveform, which is the
+    // only way to judge a quiet take against a loud one by eye. Separate from the
+    // horizontal zoom because time and amplitude are separate questions.
+    if (e.mods.isShiftDown())
+    {
+        laneHeight = juce::jlimit(28, 320, laneHeight + (wheel.deltaY > 0 ? 6 : -6));
+        repaint();
+        return;
+    }
     if (e.mods.isCommandDown() || e.mods.isCtrlDown())
     {
         zoomBy(wheel.deltaY > 0 ? 1.15 : 1.0 / 1.15, e.x);
@@ -538,6 +553,10 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
     }
     if (key.getTextCharacter() == 'l')         { setLoopFromSelection(); return true; }
     if (key.getTextCharacter() == 'f')         { fit(); return true; }
+    if (key.getTextCharacter() == '=' || key.getTextCharacter() == '+')
+        { laneHeight = juce::jmin(320, laneHeight + 8); repaint(); return true; }
+    if (key.getTextCharacter() == '-')
+        { laneHeight = juce::jmax(28, laneHeight - 8); repaint(); return true; }
     return false;
 }
 
@@ -663,7 +682,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         fitButton.onClick    = [this] { view.fit(); };
         deleteButton.onClick = [this] { view.removeSelected(); };
 
-        hint.setText("space play  -  L loop selection  -  F fit  -  alt-drag pan  -  cmd-wheel zoom",
+        hint.setText("space play  -  L loop  -  M/S mute solo  -  F fit  -  alt-drag pan  -  cmd-wheel zoom  -  shift-wheel lane height",
                       juce::dontSendNotification);
         hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);

@@ -99,7 +99,11 @@ public:
     void setLaneMasks(juce::uint64 muted, juce::uint64 soloed);
     static constexpr int kMaxLanes = 64;   // one bit each; past this, mute/solo is ignored
 
-    double getSampleRate() const { return deviceRate; }
+    // The canvas timeline's own rate, fixed. Every SA3 take is 44,100 and the transport
+    // resamples to the device, so nothing here has to care what the device opened at.
+    static constexpr double kTimelineRate = 44100.0;
+    static constexpr int kScratchSamples = 16384;
+    double getSampleRate() const { return kTimelineRate; }
     // Highest sample seen since the last read, and cleared by reading it. Summing N takes
     // that each peak near full scale is N times full scale, so a canvas that stacks
     // alternates WILL clip unless it says so.
@@ -115,7 +119,6 @@ private:
     std::atomic<juce::int64> loopStart { 0 }, loopEnd { 0 };
     std::atomic<juce::uint64> muteMask { 0 }, soloMask { 0 };
     std::atomic<float> peak { 0.0f };
-    double deviceRate = 44100.0;
     int blockSize = 512;
 
     void renderRange(const juce::AudioSourceChannelInfo& info, juce::int64 from, int numSamples);

@@ -18,11 +18,18 @@ void CanvasAudioSource::setArrangement(Arrangement::Ptr next)
 
 void CanvasAudioSource::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
-    deviceRate = sampleRate > 0.0 ? sampleRate : 44100.0;
+    juce::ignoreUnused(sampleRate);
     blockSize = juce::jmax(64, samplesPerBlockExpected);
-    // Allocated once, here, because getNextAudioBlock may not allocate. Two channels is
-    // what every SA3 take is; a mono source is read into both.
-    scratch.setSize(2, blockSize + 8, false, true, true);
+    // Sized for the BUFFERING source's appetite, not the device's block. A
+    // BufferingAudioSource fills its read-ahead buffer in chunks FAR larger than one
+    // device block -- it asked for 44,100 samples at a time here -- and the first version
+    // sized this at blockSize + 8 and skipped any voice that did not fit. Every voice was
+    // skipped. That is exactly what "can't hear anything, it's just glitching" was: near
+    // silence, with the occasional small block getting through.
+    //
+    // The skip is gone as well (see renderRange): rendering is chunked to whatever this
+    // holds, so no buffer size can silence a voice again.
+    scratch.setSize(2, juce::jmax(blockSize + 8, kScratchSamples), false, true, true);
 }
 
 void CanvasAudioSource::releaseResources()
@@ -44,8 +51,8 @@ void CanvasAudioSource::setLaneMasks(juce::uint64 muted, juce::uint64 soloed)
 
 void CanvasAudioSource::setLoopRange(double startSeconds, double endSeconds)
 {
-    loopStart.store(static_cast<juce::int64>(startSeconds * deviceRate));
-    loopEnd.store(static_cast<juce::int64>(endSeconds * deviceRate));
+    loopStart.store(static_cast<juce::int64>(startSeconds * kTimelineRate));
+    loopEnd.store(static_cast<juce::int64>(endSeconds * kTimelineRate));
 }
 
 void CanvasAudioSource::getNextAudioBlock(const juce::AudioSourceChannelInfo& info)
@@ -70,7 +77,9 @@ void CanvasAudioSource::getNextAudioBlock(const juce::AudioSourceChannelInfo& in
             while (done < info.numSamples)
             {
                 if (from >= le) from = ls;
-                const int chunk = static_cast<int>(juce::jmin<juce::int64>(info.numSamples - done, le - from));
+                const int chunk = static_cast<int>(juce::jmin<juce::int64>(
+                                      juce::jmin<juce::int64>(info.numSamples - done, le - from),
+                                      scratch.getNumSamples()));
                 if (chunk <= 0) break;
                 juce::AudioSourceChannelInfo part (info.buffer, info.startSample + done, chunk);
                 renderRange(part, from, chunk);
@@ -82,7 +91,16 @@ void CanvasAudioSource::getNextAudioBlock(const juce::AudioSourceChannelInfo& in
         }
     }
 
-    renderRange(info, from, info.numSamples);
+    // Chunked to the scratch buffer, so a caller asking for 44,100 samples at once is
+    // served in pieces rather than dropped.
+    int done = 0;
+    while (done < info.numSamples)
+    {
+        const int chunk = juce::jmin(info.numSamples - done, scratch.getNumSamples());
+        juce::AudioSourceChannelInfo part (info.buffer, info.startSample + done, chunk);
+        renderRange(part, from + done, chunk);
+        done += chunk;
+    }
     position.store(from + info.numSamples);
 }
 
@@ -119,7 +137,10 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
         const juce::int64 readFrom  = v.sourceStartSample
                                     + static_cast<juce::int64>(intoVoice * v.rateRatio);
 
-        if (n > scratch.getNumSamples()) continue;   // never grow the buffer here
+        // Cannot fire: getNextAudioBlock chunks to this size. Kept as an assertion rather
+        // than a `continue`, because silently dropping a voice is what made the first
+        // version inaudible without saying anything was wrong.
+        jassert(n <= scratch.getNumSamples());
         scratch.clear(0, n);
         // Reading on this thread is safe ONLY because a BufferingAudioSource sits in
         // front of this source: this runs on its background thread, not in the device
@@ -191,7 +212,11 @@ void CanvasPlayer::detach()
 
 void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatManager& formats)
 {
-    const double rate = canvasSource.getSampleRate();
+    // The canvas timeline is 44,100 REGARDLESS of the device. SA3 generates at 44.1 and
+    // nothing else, and the transport resamples to the device rate for us. Building the
+    // arrangement against whatever rate the device happened to open at meant the sample
+    // positions and the loop points could disagree the moment the device changed.
+    const double rate = CanvasAudioSource::kTimelineRate;
 
     auto next = new Arrangement();
     for (const auto& b : blocks)
