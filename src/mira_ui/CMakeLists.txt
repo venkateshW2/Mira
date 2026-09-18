@@ -64,6 +64,7 @@ target_sources(mira_ui PRIVATE
   Source/FileDetailsWindow.cpp
   Source/Sa3Worker.cpp
   Source/GenerateWindow.cpp
+  Source/Export.cpp
   Source/PrepareWindow.cpp
     Source/PromptBuilderWindow.cpp
   Source/NativeBlur.mm
@@ -100,4 +101,28 @@ target_link_libraries(mira_ui PRIVATE
 set_target_properties(mira_ui PROPERTIES
   CXX_STANDARD 20
   CXX_STANDARD_REQUIRED ON
+)
+
+# MIRA-GENERATE.md Phase 6 -- a headless check for the renderer. Not part of the app:
+# export is the one place mira writes audio, and "the sample rate on disk" and "what the
+# fade arithmetic actually did" are only observable in the output file, never in a
+# screenshot. Build and run with:
+#   cmake --build build --target mira_export_check && ./build/src/mira_ui/mira_export_check
+juce_add_console_app(mira_export_check VERSION 0.1.0 PRODUCT_NAME "mira_export_check")
+target_sources(mira_export_check PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/Source/Export.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/export_check.cpp
+)
+target_compile_definitions(mira_export_check PRIVATE
+  JUCE_STANDALONE_APPLICATION=1
+  JUCE_USE_CURL=0
+  JUCE_WEB_BROWSER=0
+)
+target_link_libraries(mira_export_check PRIVATE
+  juce::juce_audio_formats
+  juce::juce_audio_basics
+  juce::juce_core
+  juce::juce_events
+  juce::juce_recommended_config_flags
+  juce::juce_recommended_lto_flags
 )

@@ -3,6 +3,7 @@
 #include "mira/scan/Scanner.h"
 
 #include "mira/caption/CaptionFields.h"
+#include "Export.h"
 #include "mira/caption/Sa3Renderer.h"
 
 #include <mach/mach.h>
@@ -184,6 +185,10 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     tip(cleanupButton, "Trash every generation in the output folder you never pressed Keep on.");
     cleanupButton.onClick = [this] { cleanupUnkept(); };
     addAndMakeVisible(cleanupButton);
+
+    tip(exportButton, "Render the kept takes -- trim, fades and gain -- to wav at 44.1 kHz.");
+    exportButton.onClick = [this] { showExportMenu(); };
+    addAndMakeVisible(exportButton);
 
     tip(buildPromptButton, "Build a prompt in the shape the LoRAs were trained on.");
     buildPromptButton.onClick = [this] {
@@ -796,6 +801,290 @@ juce::var GenerateContent::recipeFor(const juce::File& wav) const {
     return lastRecipe;
 }
 
+// ---- MIRA-GENERATE.md Phase 7: share -----------------------------------------------
+
+// Reads the child's stdout off the message thread, same shape as PrepareWindow's reader.
+// rclone reports progress on stderr, so both are wanted -- an upload that prints nothing
+// for four minutes is indistinguishable from one that hung.
+class GenerateContent::Uploader : public juce::Thread
+{
+public:
+    Uploader(GenerateContent& ownerIn, juce::ChildProcess& procIn)
+        : juce::Thread("rclone reader"), owner(&ownerIn), proc(procIn) {}
+
+    void run() override
+    {
+        char chunk[2048];
+        for (;;)
+        {
+            const int n = proc.readProcessOutput(chunk, sizeof(chunk));
+            if (n <= 0) break;
+            auto safe = owner;
+            const auto text = juce::String::fromUTF8(chunk, n).trim();
+            if (text.isNotEmpty())
+                juce::MessageManager::callAsync([safe, text] {
+                    if (safe.getComponent() != nullptr) safe.getComponent()->log(text);
+                });
+            if (threadShouldExit()) return;
+        }
+        if (threadShouldExit()) return;
+
+        proc.waitForProcessToFinish(10000);
+        const int code = proc.getExitCode();
+        auto safe = owner;
+        juce::MessageManager::callAsync([safe, code] {
+            if (safe.getComponent() != nullptr) safe.getComponent()->onUploadFinished(code);
+        });
+    }
+
+private:
+    juce::Component::SafePointer<GenerateContent> owner;
+    juce::ChildProcess& proc;
+};
+
+juce::String GenerateContent::rcloneBinary() const {
+    // A configured path wins, so a version in a pyenv or a non-standard prefix works.
+    if (const auto stored = database.getSetting("rclone_path"))
+        if (juce::File(juce::String(*stored)).existsAsFile()) return juce::String(*stored);
+
+    // A GUI app does not inherit a login shell's PATH, so `which` is no use here -- the
+    // usual install prefixes are. Named, not guessed at runtime.
+    for (const char* candidate : { "/opt/homebrew/bin/rclone", "/usr/local/bin/rclone",
+                                    "/usr/bin/rclone", "/opt/local/bin/rclone" })
+        if (juce::File(candidate).existsAsFile()) return candidate;
+    return {};
+}
+
+juce::String GenerateContent::rcloneRemote() const {
+    if (const auto stored = database.getSetting("rclone_remote"))
+        return juce::String(*stored).trim();
+    return {};
+}
+
+void GenerateContent::promptRcloneRemote() {
+    const auto binary = rcloneBinary();
+    if (binary.isEmpty()) {
+        statusLabel.setText("rclone is not installed - brew install rclone, then set a remote",
+                            juce::dontSendNotification);
+        log("rclone not found in /opt/homebrew/bin, /usr/local/bin, /usr/bin or /opt/local/bin.");
+        log("Install it, run `rclone config` once to add your service, then set the remote here.");
+        return;
+    }
+
+    // What rclone itself says is configured, rather than asking the user to remember. If
+    // the list is empty they have not run `rclone config` yet, and saying that is more
+    // use than an empty text box.
+    juce::String known;
+    {
+        juce::ChildProcess list;
+        if (list.start(juce::StringArray { binary, "listremotes" },
+                        juce::ChildProcess::wantStdOut))
+            known = list.readAllProcessOutput().trim();
+    }
+
+    auto* window = new juce::AlertWindow("Upload destination",
+        known.isEmpty()
+            ? "No remotes are configured. Run `rclone config` in a terminal to add one, then come back."
+            : "Configured remotes:\n" + known
+              + "\n\nA destination is a remote plus an optional path, e.g. "
+              + known.upToFirstOccurrenceOf("\n", false, false) + "deliveries/2026",
+        juce::AlertWindow::NoIcon, this);
+    window->addTextEditor("remote", rcloneRemote(), "Destination");
+    window->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    window->enterModalState(true, juce::ModalCallbackFunction::create(
+        [this, window](int result) {
+            const auto value = window->getTextEditorContents("remote").trim();
+            delete window;
+            if (result != 1) return;
+            database.setSetting("rclone_remote", value.isEmpty() ? std::optional<std::string>()
+                                                                 : std::optional<std::string>(value.toStdString()));
+            statusLabel.setText(value.isEmpty() ? juce::String("upload destination cleared")
+                                                : "upload destination: " + value,
+                                juce::dontSendNotification);
+        }), false);
+}
+
+void GenerateContent::uploadExport(const juce::String& cueOrEmpty) {
+    if (uploadProcess != nullptr && uploadProcess->isRunning()) {
+        statusLabel.setText("an upload is already running", juce::dontSendNotification);
+        return;
+    }
+    const auto binary = rcloneBinary();
+    const auto remote = rcloneRemote();
+    if (binary.isEmpty() || remote.isEmpty()) { promptRcloneRemote(); return; }
+
+    const auto local = cueOrEmpty.isEmpty() ? exportRoot() : exportRoot().getChildFile(cueOrEmpty);
+    if (!local.isDirectory()) {
+        statusLabel.setText("nothing exported yet - export before uploading",
+                            juce::dontSendNotification);
+        return;
+    }
+
+    // <remote>/<project>/<cue>. The project name is part of the destination because a
+    // shared drive holds more than one project, and "cue01" on its own says nothing.
+    juce::String destination = remote;
+    if (!destination.endsWithChar('/') && !destination.endsWithChar(':')) destination += "/";
+    destination += projectFolder.getFileName();
+    if (cueOrEmpty.isNotEmpty()) destination += "/" + cueOrEmpty;
+
+    // copy, never sync: sync DELETES at the destination whatever is not in the source,
+    // and pointing that at the wrong folder once is unrecoverable over a network.
+    const juce::StringArray args { binary, "copy", local.getFullPathName(), destination,
+                                    "--progress", "--stats=5s", "--stats-one-line" };
+
+    uploadProcess = std::make_unique<juce::ChildProcess>();
+    if (!uploadProcess->start(args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr)) {
+        uploadProcess.reset();
+        statusLabel.setText("could not start rclone", juce::dontSendNotification);
+        return;
+    }
+    log("upload: " + args.joinIntoString(" "));
+    statusLabel.setText("uploading to " + destination + "...", juce::dontSendNotification);
+    uploadReader = std::make_unique<Uploader>(*this, *uploadProcess);
+    uploadReader->startThread();
+}
+
+void GenerateContent::onUploadFinished(int exitCode) {
+    if (uploadReader != nullptr) { uploadReader->stopThread(2000); uploadReader.reset(); }
+    uploadProcess.reset();
+    // rclone's own exit code, reported as-is. "Uploaded" over a non-zero exit is the one
+    // thing this must never say (convention 6).
+    statusLabel.setText(exitCode == 0 ? juce::String("upload finished")
+                                      : "upload FAILED - rclone exit " + juce::String(exitCode)
+                                        + " (see the console)",
+                        juce::dontSendNotification);
+    log(exitCode == 0 ? "upload finished" : "rclone exited " + juce::String(exitCode));
+}
+
+// ---- MIRA-GENERATE.md Phase 6: export ----------------------------------------------
+//
+// Renders go to <project>/export/<cue>/, not into the cue folder itself. The cue folder
+// holds WORKING files -- shortfilm_cue01_v3.wav, the thing Keep made -- and the render is
+// a second file of the same audio under a different name. Mixed together, the folder stops
+// answering "which of these do I send?", which is the question the naming scheme exists to
+// answer (§3.7).
+juce::File GenerateContent::exportRoot() const {
+    return projectFolder.getChildFile("export");
+}
+
+void GenerateContent::showExportMenu() {
+    if (!projectFolder.isDirectory()) {
+        statusLabel.setText("no project open -- export renders a project's cues",
+                            juce::dontSendNotification);
+        return;
+    }
+    const auto cues = listExistingCues();
+    if (cues.isEmpty()) {
+        statusLabel.setText("nothing to export -- Keep a take into a cue first",
+                            juce::dontSendNotification);
+        return;
+    }
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader("Export to " + exportRoot().getFileName() + "/");
+    int id = 1;
+    for (const auto& cue : cues) {
+        const int n = projectFolder.getChildFile(cue)
+                          .findChildFiles(juce::File::findFiles, false, "*.wav").size();
+        menu.addItem(id++, cue + "  (" + juce::String(n) + ")", n > 0);
+    }
+    menu.addSeparator();
+    menu.addItem(999, "Whole project  (" + juce::String(cues.size()) + " cues)");
+
+    // Phase 7 lives in the same menu as Phase 6 because they are one errand: you export
+    // in order to send. A separate button for "upload" would be a second thing to find.
+    const auto remote = rcloneRemote();
+    menu.addSeparator();
+    menu.addSectionHeader("Share");
+    menu.addItem(1000, remote.isEmpty() ? "Upload export... (set a destination)"
+                                        : "Upload export to " + remote,
+                  exportRoot().isDirectory() || remote.isEmpty());
+    menu.addItem(1001, remote.isEmpty() ? "Set upload destination..."
+                                        : "Change destination (" + remote + ")...");
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&exportButton),
+                        [this, cues](int chosen) {
+        if (chosen == 0) return;
+        if (chosen == 1000) { uploadExport({}); return; }
+        if (chosen == 1001) { promptRcloneRemote(); return; }
+        if (chosen == 999) { exportProject(); return; }
+        if (chosen >= 1 && chosen <= cues.size()) exportCue(cues[chosen - 1]);
+    });
+}
+
+int GenerateContent::exportOneFolder(const juce::File& cueFolder, const juce::String& cueName,
+                                     juce::StringArray& problems) {
+    int written = 0;
+    const auto destFolder = exportRoot().getChildFile(cueName);
+    const auto projectName = projectFolder.getFileName();
+
+    auto wavs = cueFolder.findChildFiles(juce::File::findFiles, false, "*.wav");
+    wavs.sort();
+    for (const auto& wav : wavs) {
+        mira::ui::TakeEdit edit;
+        std::optional<double> bpm;
+        juce::String keyScale;
+
+        // findByPath, never a string compare -- a project whose name carries an accent is
+        // not hypothetical, and NFC/NFD is exactly how Phase 5b's bug hid (convention 9).
+        const auto record = database.findByPath(wav.getFullPathName().toStdString());
+        if (record.has_value()) {
+            for (const auto& seg : database.findSegmentsForFile(record->id)) {
+                const auto human = juce::JSON::parse(juce::String(seg.human));
+                edit.startSeconds = seg.startSeconds;
+                edit.endSeconds = seg.endSeconds;
+                edit.fadeInSeconds = static_cast<double>(human.getProperty("fade_in", 0.0));
+                edit.fadeOutSeconds = static_cast<double>(human.getProperty("fade_out", 0.0));
+                edit.gainDb = static_cast<double>(human.getProperty("gain_db", 0.0));
+                break;  // one segment per take IS the edit (Phase 5)
+            }
+            // BPM and key come from the caption layer, which already gates them: an
+            // unsupported tempo is absent there and therefore absent from the filename.
+            const auto fields = mira::extractCaptionFields(database, *record);
+            bpm = fields.bpm;
+            if (fields.keyScale.has_value()) keyScale = juce::String(*fields.keyScale);
+        }
+
+        const auto name = mira::ui::deliveryName(projectName, cueName, bpm, keyScale,
+                                                  mira::ui::versionFromWorkingName(wav.getFileName()));
+        const auto result = mira::ui::renderTake(wav, destFolder.getChildFile(name), edit);
+        log((result.ok ? "export  " : "EXPORT FAILED  ") + cueName + "/" + result.message);
+        if (result.ok) ++written;
+        else problems.add(wav.getFileName() + ": " + result.message);
+    }
+    return written;
+}
+
+void GenerateContent::exportCue(const juce::String& cue) {
+    juce::StringArray problems;
+    const int n = exportOneFolder(projectFolder.getChildFile(cue), cue, problems);
+
+    juce::String msg = juce::String(n) + (n == 1 ? " file" : " files") + " exported to export/" + cue;
+    // Says what did not land, and how many, rather than reporting a clean success over a
+    // partial one (convention 6).
+    if (!problems.isEmpty()) msg += "  --  " + juce::String(problems.size()) + " failed: " + problems[0];
+    statusLabel.setText(msg, juce::dontSendNotification);
+    if (n > 0) exportRoot().getChildFile(cue).revealToUser();
+}
+
+void GenerateContent::exportProject() {
+    juce::StringArray problems;
+    int total = 0, cuesWithFiles = 0;
+    for (const auto& cue : listExistingCues()) {
+        const int n = exportOneFolder(projectFolder.getChildFile(cue), cue, problems);
+        total += n;
+        if (n > 0) ++cuesWithFiles;
+    }
+
+    juce::String msg = juce::String(total) + (total == 1 ? " file" : " files")
+                     + " exported across " + juce::String(cuesWithFiles)
+                     + (cuesWithFiles == 1 ? " cue" : " cues");
+    if (!problems.isEmpty()) msg += "  --  " + juce::String(problems.size()) + " failed: " + problems[0];
+    statusLabel.setText(msg, juce::dontSendNotification);
+    if (total > 0) exportRoot().revealToUser();
+}
+
 juce::StringArray GenerateContent::listExistingCues() const {
     juce::StringArray cues;
     if (!projectFolder.isDirectory()) return cues;
@@ -803,6 +1092,10 @@ juce::StringArray GenerateContent::listExistingCues() const {
         // "takes" is the scratch bin, not a cue -- it is where these files are coming
         // FROM (MIRA-GENERATE.md Phase 2a).
         if (d.getFileName() == "takes") continue;
+        // Nor is "discarded" (the bin) or "export" (where Phase 6 puts the renders).
+        // Both are project plumbing that happen to be directories; offering either as a
+        // cue to Keep into is how a take ends up filed in the bin by accident.
+        if (d.getFileName() == "discarded" || d.getFileName() == "export") continue;
         cues.add(d.getFileName());
     }
     cues.sort(true);
@@ -1920,6 +2213,8 @@ void GenerateContent::resized() {
     {
         auto header = leftArea.removeFromTop(26);
         cleanupButton.setBounds(header.removeFromRight(92).withSizeKeepingCentre(92, 22));
+        header.removeFromRight(6);
+        exportButton.setBounds(header.removeFromRight(84).withSizeKeepingCentre(84, 22));
         header.removeFromRight(6);
         takesLabel.setBounds(header);
         leftArea.removeFromTop(4);

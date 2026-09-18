@@ -188,6 +188,10 @@ private:
     // Sweeps the output folder of everything never Kept, so the routine case (generate
     // ten, keep one) does not require ten decisions later.
     juce::TextButton cleanupButton { "Clean up..." };
+    // MIRA-GENERATE.md Phase 6. Beside Clean up... because they are the two things you do
+    // to a project rather than to a take, and neither belongs in the generate pane -- that
+    // pane folds away, and export has to still be reachable when it is folded.
+    juce::TextButton exportButton { "Export..." };
     void cleanupUnkept();
     // Everything that produced the current result, captured at request time so Keep
     // cannot record a recipe that drifted from what was actually rendered.
@@ -243,6 +247,33 @@ private:
 
     void keepResultIntoCue(const juce::File& wav, const juce::String& cueName);
     juce::StringArray listExistingCues() const;
+    // ---- MIRA-GENERATE.md Phase 6: export -------------------------------------------
+    void showExportMenu();
+    void exportCue(const juce::String& cue);
+    void exportProject();
+    // Renders every kept take in one cue folder. Returns how many landed; appends a line
+    // per failure to `problems` rather than stopping, because one unreadable take should
+    // not cost the other eleven.
+    int exportOneFolder(const juce::File& cueFolder, const juce::String& cueName,
+                        juce::StringArray& problems);
+    juce::File exportRoot() const;
+
+    // ---- MIRA-GENERATE.md Phase 7: share ---------------------------------------------
+    //
+    // ONE shell-out to rclone covers Drive, B2, S3, Dropbox and forty others. Per-service
+    // code in mira would be a second, worse rclone -- and every one of those services
+    // changes its auth flow on its own schedule, which is a maintenance burden mira has
+    // no reason to carry. The remote is configured once and named here; mira never sees a
+    // credential.
+    class Uploader;
+    friend class Uploader;
+    juce::String rcloneBinary() const;          // empty when it is not installed
+    juce::String rcloneRemote() const;          // empty when none is configured
+    void promptRcloneRemote();
+    void uploadExport(const juce::String& cueOrEmpty);
+    void onUploadFinished(int exitCode);
+    std::unique_ptr<juce::ChildProcess> uploadProcess;
+    std::unique_ptr<Uploader> uploadReader;
     juce::var recipeFor(const juce::File& wav) const;
     // The LoRA step window is measured in SAMPLER steps and compared against the Steps
     // value (buildLoraSpecs: `hi < nSteps` is what "to the last step" means). A slider

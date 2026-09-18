@@ -422,21 +422,58 @@ folder named after a project with an accent in it is not a hypothetical.
 
 ### Phase 6 — export
 
-- [ ] Render segment + fades -> wav (`AudioFormatReaderSource` -> `AudioFormatWriter`,
+**Built 2026-09-18.** [Export.h](src/mira_ui/Source/Export.h) / `Export.cpp`, reached from
+`Export...` beside `Clean up...` in the project window. 27 headless checks in
+[tools/export_check.cpp](tools/export_check.cpp) (`cmake --build build --target
+mira_export_check`) — the sample rate on disk and what the fade arithmetic actually did
+are only observable in the output file, never in a screenshot.
+
+- Renders go to `<project>/export/<cue>/`, never into the cue folder: that folder holds
+  the working files Keep made, and mixed together it stops answering "which of these do I
+  send?" — the question §3.7 exists to answer.
+- **`discarded` and `export` are excluded from the cue list.** Both are project plumbing
+  that happen to be directories; offering either as a cue to Keep into is how a take gets
+  filed in the bin by accident.
+- Bit depth follows the source, and a float source stays float. One take failing appends a
+  line and the rest still render.
+- Fades are **linear in amplitude**, matching the wedge the waveform draws. A curve that
+  sounds marginally better but does not match the display would make the display a lie
+  about the file — and the display is how the fade gets set.
+- Two fades longer than the take between them are squeezed proportionally rather than
+  multiplied into a dip in the middle.
+- Clipping is **reported with its dBFS figure**, never silently normalised away.
+
+- [x] Render segment + fades -> wav (`AudioFormatReaderSource` -> `AudioFormatWriter`,
       both already linked via `juce_audio_utils`) **at the take's native 44,100 Hz**.
       SA3 generates at 44.1 kHz and nothing else — `sa3_mlx.py`, `pre_encode_mlx.py` and
       `demo_mlx.py` all hardcode it, and the 0.0928 s latent step *is* 4096/44100. Export
       must never route through the playback path: `WaveformView` resamples live to the
       device rate via JUCE's `ResamplingAudioSource` (an interpolator plus a simple IIR
       low-pass), which is fine for auditioning and is not a mastering SRC.
-- [ ] Delivery name from the template, tokens dropped when unsupported (§3.7)
-- [ ] Export cue -> one folder; Export project -> all cues, cue-wise
-- [ ] Show in Finder on the export (button exists)
+- [x] Delivery name from the template, tokens dropped when unsupported (§3.7). BPM and key
+      come from `extractCaptionFields`, so an unsupported tempo is absent from the filename
+      for the same reason it is absent from the caption (convention 1)
+- [x] Export cue -> one folder; Export project -> all cues, cue-wise
+- [x] Show in Finder on the export — `revealToUser()` on the folder that was just written
 
 ### Phase 7 — share
 
-- [ ] `rclone copy` to a configured remote — one shell-out covers Drive, B2, S3, Dropbox
-- [ ] Remote configured once in settings; never per-service code in mira
+**Built 2026-09-18.** In the same `Export...` menu, because exporting and sending are one
+errand and a separate button would be a second thing to find.
+
+- [x] `rclone copy` to a configured remote — one shell-out covers Drive, B2, S3, Dropbox
+- [x] Remote configured once in settings (`ui_settings.rclone_remote`); never per-service
+      code in mira. mira never sees a credential — `rclone config` owns that
+- **`copy`, never `sync`.** sync deletes at the destination whatever is not in the source,
+  and pointing that at the wrong folder once is unrecoverable over a network
+- The destination is `<remote>/<project>/<cue>`: a shared drive holds more than one
+  project, and `cue01` on its own says nothing
+- rclone is looked up in the four usual install prefixes, not via `which` — a GUI app does
+  not inherit a login shell's PATH. Missing rclone says so and names the fix
+- The configured-remotes list comes from `rclone listremotes`, so the dialog shows what is
+  actually available instead of an empty box
+- rclone's exit code is reported as-is; "uploaded" over a non-zero exit is the one thing
+  this must never say
 
 ---
 
