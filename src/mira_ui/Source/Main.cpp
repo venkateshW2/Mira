@@ -3207,7 +3207,8 @@ public:
     {
         if (canvasWindow != nullptr) { canvasWindow->toFront(true); return; }
         canvasFormats.registerBasicFormats();   // idempotent
-        canvasWindow = std::make_unique<mira::canvas::CanvasWindow>(laf, canvasFormats, canvasThumbs);
+        canvasWindow = std::make_unique<mira::canvas::CanvasWindow>(laf, canvasFormats, canvasThumbs,
+                                                                    ensureWorkerHub(), findStudioRoot());
         canvasWindow->getView().attachTo(sharedAudioDevice);
         canvasWindow->getView().setProject(getCurrentProject());
         canvasWindow->onClosed = [this] {

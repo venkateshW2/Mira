@@ -54,6 +54,11 @@ void CanvasAudioSource::setLaneGain(int lane, float gain)
     if (lane >= 0 && lane < kMaxLanes) laneGain[lane].store(juce::jlimit(0.0f, 4.0f, gain));
 }
 
+float CanvasAudioSource::readAndClearLanePeak(int lane)
+{
+    return (lane >= 0 && lane < kMaxLanes) ? lanePeak[lane].exchange(0.0f) : 0.0f;
+}
+
 float CanvasAudioSource::getLaneGain(int lane) const
 {
     return (lane >= 0 && lane < kMaxLanes) ? laneGain[lane].load() : 1.0f;
@@ -161,6 +166,7 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
         // real-time path.
         v.reader->read(&scratch, 0, n, readFrom, true, true);
 
+        float voicePeak = 0.0f;
         for (int ch = 0; ch < outChannels; ++ch)
         {
             const int srcCh = juce::jmin(ch, scratch.getNumChannels() - 1);
@@ -175,8 +181,19 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
                     env *= static_cast<float>(at) / static_cast<float>(v.fadeInSamples);
                 if (v.fadeOutSamples > 0 && at >= v.lengthSamples - v.fadeOutSamples)
                     env *= static_cast<float>(v.lengthSamples - at) / static_cast<float>(v.fadeOutSamples);
-                dst[i] += src[i] * env;
+                const float sample = src[i] * env;
+                voicePeak = juce::jmax(voicePeak, std::abs(sample));
+                dst[i] += sample;
             }
+        }
+
+        // Post-fader, so the meter shows what the lane is CONTRIBUTING rather than what
+        // the file contains -- pulling a fader down has to move its meter or the meter is
+        // answering a question nobody asked.
+        if (v.lane < kMaxLanes)
+        {
+            float seen = lanePeak[v.lane].load();
+            while (voicePeak > seen && !lanePeak[v.lane].compare_exchange_weak(seen, voicePeak)) {}
         }
     }
 

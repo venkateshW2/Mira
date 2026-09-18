@@ -4,6 +4,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "MiraLookAndFeel.h"
 #include "CanvasEngine.h"
+#include "CanvasInspector.h"
 
 // ---- the canvas experiment: the picture --------------------------------------------
 //
@@ -39,6 +40,7 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseDoubleClick(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
     void mouseMove(const juce::MouseEvent&) override;
@@ -62,6 +64,14 @@ public:
     void zoomBy(double factor, int aroundX);
     void fit();
     void clearAll();
+    void addEmptyBlock();
+    void save() const;
+    void load();
+    void applySettingsToSelection(const juce::var& settings);
+    void chooseTakeForSelection(const juce::File& take);
+    // name, block folder, generator settings, chosen take -- everything the inspector
+    // needs, pushed rather than pulled so it cannot show a stale block.
+    std::function<void(const juce::String&, const juce::File&, const juce::var&, const juce::File&)> onSelectionChanged;
     float readAndClearPeak() { return player.readAndClearPeak(); }
     std::function<void()> onStateChanged;
 
@@ -70,6 +80,9 @@ private:
     {
         Block block;
         std::unique_ptr<juce::AudioThumbnail> thumb;
+        // The generator that belongs to this block. Settings only -- takes live on disk,
+        // in the block's folder, and are read back from there.
+        juce::var settings;
     };
 
     enum class Drag { None, Move, TrimLeft, TrimRight, Playhead, Marquee, Pan };
@@ -98,7 +111,10 @@ private:
     // A fader per lane, in dB, -60 (off) to +6. Stacking drums against guitars is the
     // point of the canvas, and stacking without levels is just addition.
     std::vector<double> laneDb;
+    std::vector<float> laneMeter;  // decayed peak per lane, for the header meters
     int faderLane = -1;            // which lane's fader is being dragged, or -1
+    std::unique_ptr<juce::TextEditor> renameEditor;
+    int renamingLane = -1;
     double loopStart = 0.0, loopEnd = 0.0;
 
     Drag drag = Drag::None;
@@ -120,10 +136,19 @@ private:
     juce::Rectangle<int> muteBoxFor(int lane) const;
     juce::Rectangle<int> soloBoxFor(int lane) const;
     juce::Rectangle<int> faderBoxFor(int lane) const;
+    juce::Rectangle<int> meterBoxFor(int lane) const;
+    juce::Rectangle<int> nameBoxFor(int lane) const;
+    void beginRename(int lane);
+    void commitRename();
     double laneDbAt(int lane) const { return lane < (int) laneDb.size() ? laneDb[(size_t) lane] : 0.0; }
     void setLaneDb(int lane, double db);
     int laneToY(int lane) const { return topRuler + lane * laneHeight; }
     int yToLane(int y) const { return juce::jmax(0, (y - topRuler) / laneHeight); }
+    // Declared after Visual, which they take by reference.
+    juce::File blockFolderFor(const Visual&) const;
+    Visual* singleSelection();
+    void setFileOn(Visual&, const juce::File&);
+    void announceSelection();
     juce::Rectangle<int> boundsOf(const Visual&) const;
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();
@@ -146,7 +171,7 @@ class CanvasWindow : public juce::DocumentWindow
 {
 public:
     CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
-                 juce::AudioThumbnailCache& cache);
+                 juce::AudioThumbnailCache& cache, Sa3WorkerHub& hub, juce::File studioRoot);
     // Defined in the .cpp, where Content is a complete type -- a unique_ptr to a forward
     // declared struct cannot be destroyed anywhere the definition is not visible.
     ~CanvasWindow() override;

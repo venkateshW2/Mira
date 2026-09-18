@@ -41,8 +41,11 @@ struct Block
     double gainDb = 0.0;
     double fadeIn = 0.0;
     double fadeOut = 0.0;
-    juce::String name;
+    juce::String name;      // the BLOCK's name -- its folder, and what the track shows
     juce::int64 id = 0;
+    // An empty block has no file yet: a frame you placed before you generated into it.
+    // That is the point of it -- lay out the shape of the piece first, fill it after.
+    bool hasAudio() const { return file != juce::File(); }
 
     double end() const { return start + length; }
 };
@@ -81,7 +84,11 @@ public:
 class CanvasAudioSource : public juce::PositionableAudioSource
 {
 public:
-    CanvasAudioSource() { for (auto& g : laneGain) g.store(1.0f); }
+    CanvasAudioSource()
+    {
+        for (auto& g : laneGain) g.store(1.0f);
+        for (auto& p : lanePeak) p.store(0.0f);
+    }
 
     // Called on the MESSAGE thread. Builds readers, then publishes.
     void setArrangement(Arrangement::Ptr next);
@@ -109,6 +116,10 @@ public:
     void setLaneGain(int lane, float gain);
     float getLaneGain(int lane) const;
 
+    // Per-lane peak since the last read, cleared by reading. This is what answers "which
+    // lane is making that noise" -- the one question a stack of twelve waveforms cannot.
+    float readAndClearLanePeak(int lane);
+
     // The canvas timeline's own rate, fixed. Every SA3 take is 44,100 and the transport
     // resamples to the device, so nothing here has to care what the device opened at.
     static constexpr double kTimelineRate = 44100.0;
@@ -132,6 +143,7 @@ private:
     std::atomic<juce::int64> loopStart { 0 }, loopEnd { 0 };
     std::atomic<juce::uint64> muteMask { 0 }, soloMask { 0 };
     std::atomic<float> laneGain[kMaxLanes];
+    std::atomic<float> lanePeak[kMaxLanes];
     std::atomic<float> peak { 0.0f };
     int blockSize = 512;
 
@@ -165,6 +177,7 @@ public:
     bool isLooping() const { return loopOn; }
     void setLaneMasks(juce::uint64 muted, juce::uint64 soloed) { canvasSource.setLaneMasks(muted, soloed); }
     void setLaneGain(int lane, float gain) { canvasSource.setLaneGain(lane, gain); }
+    float readAndClearLanePeak(int lane) { return canvasSource.readAndClearLanePeak(lane); }
     float readAndClearPeak() { return canvasSource.readAndClearPeak(); }
 
 private:
