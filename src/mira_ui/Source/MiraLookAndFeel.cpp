@@ -84,6 +84,23 @@ MiraLookAndFeel::MiraLookAndFeel()
     setColour(juce::ComboBox::focusedOutlineColourId, accent);
 }
 
+// Every font that does NOT name a typeface. About sixty call sites across the UI build
+// their font as a bare juce::FontOptions(height) -- which is JUCE's default sans, not the
+// embedded IBM Plex the rest of the app uses. So mira has been drawing in two typefaces
+// at once, and the one it fell back to is the one used for the smallest text in the
+// window: ruler ticks, lane chips, take metadata, blend labels.
+//
+// Fixed here rather than at sixty call sites: a default is a default, and a rule that has
+// to be remembered every time a font is constructed is a rule that will be missed.
+juce::Typeface::Ptr MiraLookAndFeel::getTypefaceForFont(const juce::Font& font)
+{
+    if (font.getTypefacePtr() != nullptr && font.getTypefaceName() != juce::Font::getDefaultSansSerifFontName())
+        return LookAndFeel_V4::getTypefaceForFont(font);
+
+    if (font.isBold())   return sansSemiBoldTypeface;
+    return sansRegularTypeface;
+}
+
 juce::Font MiraLookAndFeel::sansRegular(float height) const
 {
     return juce::Font(juce::FontOptions(height).withTypeface(sansRegularTypeface));

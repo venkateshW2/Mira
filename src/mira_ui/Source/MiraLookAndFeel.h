@@ -49,6 +49,7 @@ public:
     juce::Font monoRegular(float height) const;
     juce::Font monoMedium(float height) const;
 
+    juce::Typeface::Ptr getTypefaceForFont(const juce::Font&) override;
     juce::Font getLabelFont(juce::Label&) override;
 
     // Replaces the native macOS title bar's OS-gray chrome — it doesn't take

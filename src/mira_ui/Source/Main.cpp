@@ -1581,6 +1581,38 @@ public:
     // row it names (see the ui_settings schema comment). A project whose folder has been
     // deleted or unmounted since last launch is silently forgotten rather than reported
     // as an error -- nothing is lost, and the first New/Open Project sets it again.
+    // --- interface size -------------------------------------------------------------
+    // One number, not a font pass. The UI is not mis-proportioned -- it is small on a
+    // large display, and every row height, icon size, inset and font in this app was
+    // chosen against the others. Scaling the whole surface keeps those relationships and
+    // scales the glyphs too, which are vector paths and so stay sharp; bumping font
+    // heights alone would clip baselines in every fixed-height row.
+    static constexpr const char* kUiScaleKey = "ui_scale";
+
+    double storedUiScale() const
+    {
+        if (database == nullptr) return 1.0;
+        if (auto stored = database->getSetting(kUiScaleKey))
+        {
+            const double v = juce::String(*stored).getDoubleValue();
+            if (v >= 0.75 && v <= 2.0) return v;
+        }
+        return 1.0;
+    }
+
+    void applyStoredUiScale() const
+    {
+        juce::Desktop::getInstance().setGlobalScaleFactor(static_cast<float>(storedUiScale()));
+    }
+
+    void setUiScale(double scale)
+    {
+        scale = juce::jlimit(0.75, 2.0, scale);
+        if (database != nullptr)
+            database->setSetting(kUiScaleKey, juce::String(scale, 2).toStdString());
+        juce::Desktop::getInstance().setGlobalScaleFactor(static_cast<float>(scale));
+    }
+
     static constexpr const char* kCurrentProjectKey = "current_project";
     // The recent list, newest first, newline-separated. In ui_settings for the same
     // reason the current project is: a preferences file could disagree with the
@@ -2660,6 +2692,12 @@ public:
         kClearCues,
         kOpenCueEditor,
         kCueList, // the cue counterpart of kSegmentsList -- group-scoped rows only
+        // Interface size. One id per step rather than a dialog: four choices do not need
+        // a window, and the checkmark beside the live one is the whole UI.
+        kUiScale100,
+        kUiScale110,
+        kUiScale125,
+        kUiScale150,
     };
 
     void buildTagsMenu(juce::PopupMenu& menu)
@@ -2802,6 +2840,10 @@ public:
                     fileList->refresh();
                 }
                 return;
+            case kUiScale100: setUiScale(1.00); return;
+            case kUiScale110: setUiScale(1.10); return;
+            case kUiScale125: setUiScale(1.25); return;
+            case kUiScale150: setUiScale(1.50); return;
             case kShowLog: showLogWindow(); return;
             case kShowGenerate: showGenerateWindow(); return;
             case kShowProject: showProjectWindow(); return;
@@ -2836,6 +2878,18 @@ public:
     void buildViewMenu(juce::PopupMenu& menu) const
     {
         if (bottomPanel != nullptr) bottomPanel->buildViewMenu(menu);
+
+        const double now = storedUiScale();
+        auto step = [&](juce::PopupMenu& m, int id, const char* label, double value) {
+            m.addItem(id, label, true, std::abs(now - value) < 0.005);
+        };
+        juce::PopupMenu sizes;
+        step(sizes, kUiScale100, "100%  (default)", 1.00);
+        step(sizes, kUiScale110, "110%",            1.10);
+        step(sizes, kUiScale125, "125%",            1.25);
+        step(sizes, kUiScale150, "150%",            1.50);
+        menu.addSeparator();
+        menu.addSubMenu("Interface Size", sizes);
     }
 
     // One cue's own actions. Tagging is the point of a cue (the user's framing: a cue is a
@@ -4788,6 +4842,10 @@ public:
         // unconditionally is what hid the other one. It still has to EXIST first --
         // everything, the database included, hangs off MainComponent.
         mainWindow->setVisible(false);
+        // After MainWindow, because the setting lives in the database and the database
+        // lives in MainComponent -- and before anything is shown, so nothing is ever drawn
+        // at the wrong size and snapped.
+        mainWindow->getMainComponent().applyStoredUiScale();
 
         menuModel.onAddFolder = [this] { mainWindow->getMainComponent().getFolderTree().promptAddFolder(); };
         menuModel.onAddFiles = [this] { mainWindow->getMainComponent().getFolderTree().promptAddFiles(); };
