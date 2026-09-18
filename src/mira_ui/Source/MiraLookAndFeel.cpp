@@ -92,13 +92,23 @@ MiraLookAndFeel::MiraLookAndFeel()
 //
 // Fixed here rather than at sixty call sites: a default is a default, and a rule that has
 // to be remembered every time a font is constructed is a rule that will be missed.
+//
+// Do NOT ask the font for its typeface here. Font::getTypefacePtr() resolves through
+// TypefaceCache, which calls back into this very function -- under the font's own mutex.
+// That is not a slow path, it is a crash: mira would not open at all. JUCE's own
+// implementation tests the NAME for exactly this reason, so this one does too.
+//
+// A font built with .withTypeface(ptr) never reaches here: Font resolves an explicit
+// typeface before it consults the cache. So this only ever answers for the name-based
+// fonts -- which is precisely the set we want to redirect.
 juce::Typeface::Ptr MiraLookAndFeel::getTypefaceForFont(const juce::Font& font)
 {
-    if (font.getTypefacePtr() != nullptr && font.getTypefaceName() != juce::Font::getDefaultSansSerifFontName())
-        return LookAndFeel_V4::getTypefaceForFont(font);
-
-    if (font.isBold())   return sansSemiBoldTypeface;
-    return sansRegularTypeface;
+    if (font.getTypefaceName() == juce::Font::getDefaultSansSerifFontName())
+    {
+        if (auto face = font.isBold() ? sansSemiBoldTypeface : sansRegularTypeface)
+            return face;  // null only if the embedded font failed to load; fall through
+    }
+    return LookAndFeel_V4::getTypefaceForFont(font);
 }
 
 juce::Font MiraLookAndFeel::sansRegular(float height) const
