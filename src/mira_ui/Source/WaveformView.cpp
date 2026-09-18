@@ -127,13 +127,13 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
     };
     addAndMakeVisible(volumeSlider);
 
-    volumePercentLabel.setFont(juce::Font(juce::FontOptions(11.5f)));
+    volumePercentLabel.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.5f))));
     volumePercentLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
     volumePercentLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(volumePercentLabel);
     updateVolumeLabel();
 
-    timeLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+    timeLabel.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.0f))));
     timeLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
     timeLabel.setJustificationType(juce::Justification::centredRight);
     timeLabel.setText("0:00 / 0:00", juce::dontSendNotification);
@@ -219,7 +219,7 @@ void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
     {
         g.setColour(on ? (hasTint ? tint.withAlpha(0.22f) : MiraLookAndFeel::accent.withAlpha(0.25f))
                        : MiraLookAndFeel::surface2.brighter(down ? 0.22f : 0.10f));
-        g.fillRoundedRectangle(r, 4.0f);
+        g.fillRoundedRectangle(r, 5.0f);
     }
 
     juce::Colour ink = hasTint ? tint
@@ -228,10 +228,27 @@ void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
     else if (over && !hasTint) ink = MiraLookAndFeel::text;
     g.setColour(ink);
 
-    const auto c = r.getCentre();
-    // One stroke weight for every icon in the set. Mixed weights are the other half of
-    // why a hand-drawn icon row looks wrong next to a designed one.
-    const float w = 1.6f;
+    // Every glyph below is drawn in ONE design space: a 20x20 box centred on the origin.
+    // Before this, each was drawn in absolute pixels around the button's centre, so the
+    // art stayed ~13px wide however big the button got -- which is the real reason the
+    // icons read as small and thin next to everything around them. They are art in a box
+    // now, and the box is scaled to the button: bigger button, bigger icon, same shapes.
+    const float box = 20.0f;
+    const float fill = 0.86f;   // share of the button the art spans
+    const float s = juce::jmax(0.5f, juce::jmin(r.getWidth(), r.getHeight()) * fill / box);
+
+    juce::Graphics::ScopedSaveState save (g);
+    g.addTransform(juce::AffineTransform::scale(s).translated(r.getCentreX(), r.getCentreY()));
+
+    // One stroke weight for the whole set, with ROUND caps and joins. Mixed weights and
+    // square-cut ends are the other half of why a hand-drawn row looks wrong beside a
+    // designed one: at these sizes the cap shape is a third of what you actually see.
+    const float w = 1.7f;
+    const juce::PathStrokeType stroke (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+    auto strokePath = [&](const juce::Path& p) { g.strokePath(p, stroke); };
+    auto line = [&](float x1, float y1, float x2, float y2) {
+        juce::Path p; p.startNewSubPath(x1, y1); p.lineTo(x2, y2); strokePath(p);
+    };
 
     switch (glyph)
     {
@@ -251,7 +268,7 @@ void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
             p.quadraticTo(5.0f, 6.2f, 3.6f, 6.2f);
             p.closeSubPath();
             if (glyph == Glyph::ThumbDown) p.applyTransform(juce::AffineTransform::verticalFlip(0.0f));
-            g.fillPath(p, juce::AffineTransform::translation(c.x, c.y));
+            g.fillPath(p);
             break;
         }
 
@@ -259,23 +276,25 @@ void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
         {
             // Two blades crossing above two finger rings. Reads as scissors at 16px
             // because the crossing and the two circles are the only parts that matter.
-            g.drawLine(c.x - 4.2f, c.y + 3.4f, c.x + 3.4f, c.y - 6.4f, w);
-            g.drawLine(c.x + 4.2f, c.y + 3.4f, c.x - 3.4f, c.y - 6.4f, w);
-            g.drawEllipse(c.x - 5.9f, c.y + 2.9f, 3.6f, 3.6f, w);
-            g.drawEllipse(c.x + 2.3f, c.y + 2.9f, 3.6f, 3.6f, w);
+            line(-4.2f, 3.4f,  3.4f, -6.4f);
+            line( 4.2f, 3.4f, -3.4f, -6.4f);
+            juce::Path rings;
+            rings.addEllipse(-6.1f, 2.9f, 3.8f, 3.8f);
+            rings.addEllipse( 2.3f, 2.9f, 3.8f, 3.8f);
+            strokePath(rings);
             break;
         }
 
         case Glyph::FullLength:
         {
             // |<-------->| : the whole take, edge to edge. The inverse of the scissors.
-            g.fillRect(c.x - 6.6f, c.y - 5.0f, w, 10.0f);
-            g.fillRect(c.x + 6.6f - w, c.y - 5.0f, w, 10.0f);
-            g.fillRect(c.x - 4.4f, c.y - w * 0.5f, 8.8f, w);
-            juce::Path l, rt;
-            l.addTriangle(c.x - 5.0f, c.y, c.x - 1.8f, c.y - 2.8f, c.x - 1.8f, c.y + 2.8f);
-            rt.addTriangle(c.x + 5.0f, c.y, c.x + 1.8f, c.y - 2.8f, c.x + 1.8f, c.y + 2.8f);
-            g.fillPath(l); g.fillPath(rt);
+            line(-7.0f, -5.2f, -7.0f, 5.2f);
+            line( 7.0f, -5.2f,  7.0f, 5.2f);
+            line(-4.2f, 0.0f,   4.2f, 0.0f);
+            juce::Path heads;
+            heads.addTriangle(-5.4f, 0.0f, -1.9f, -2.9f, -1.9f, 2.9f);
+            heads.addTriangle( 5.4f, 0.0f,  1.9f, -2.9f,  1.9f, 2.9f);
+            g.fillPath(heads);
             break;
         }
 
@@ -300,20 +319,20 @@ void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
             p.quadraticTo(4.8f, 6.6f, 0.0f, 6.6f);                // heel of the palm
             p.quadraticTo(-3.4f, 6.6f, -4.4f, 3.0f);
             p.closeSubPath();
-            g.fillPath(p, juce::AffineTransform::translation(c.x, c.y + 0.5f));
+            g.fillPath(p, juce::AffineTransform::translation(0.0f, 0.5f));
             break;
         }
 
         case Glyph::Fit:
         {
             // Arrows pushing OUT to two walls: fit the whole file into the window.
-            g.fillRect(c.x - 6.8f, c.y - 5.0f, w, 10.0f);
-            g.fillRect(c.x + 6.8f - w, c.y - 5.0f, w, 10.0f);
-            g.fillRect(c.x - 1.0f, c.y - w * 0.5f, 2.0f, w);
-            juce::Path l, rt;
-            l.addTriangle(c.x - 5.4f, c.y, c.x - 1.6f, c.y - 3.0f, c.x - 1.6f, c.y + 3.0f);
-            rt.addTriangle(c.x + 5.4f, c.y, c.x + 1.6f, c.y - 3.0f, c.x + 1.6f, c.y + 3.0f);
-            g.fillPath(l); g.fillPath(rt);
+            line(-7.2f, -5.2f, -7.2f, 5.2f);
+            line( 7.2f, -5.2f,  7.2f, 5.2f);
+            line(-1.1f, 0.0f,   1.1f, 0.0f);
+            juce::Path heads;
+            heads.addTriangle(-5.6f, 0.0f, -1.7f, -3.1f, -1.7f, 3.1f);
+            heads.addTriangle( 5.6f, 0.0f,  1.7f, -3.1f,  1.7f, 3.1f);
+            g.fillPath(heads);
             break;
         }
 
@@ -321,13 +340,15 @@ void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
         {
             // Magnifier. Lens sits up-left so the handle has room without the whole
             // icon drifting off centre.
-            const float rad = 4.9f;
-            const juce::Point<float> lens (c.x - 1.4f, c.y - 1.4f);
-            g.drawEllipse(lens.x - rad, lens.y - rad, rad * 2.0f, rad * 2.0f, w);
-            g.drawLine(lens.x + rad * 0.70f, lens.y + rad * 0.70f,
-                        lens.x + rad * 0.70f + 4.2f, lens.y + rad * 0.70f + 4.2f, w + 0.3f);
-            g.fillRect(lens.x - 2.7f, lens.y - w * 0.5f, 5.4f, w);
-            if (glyph == Glyph::ZoomIn) g.fillRect(lens.x - w * 0.5f, lens.y - 2.7f, w, 5.4f);
+            const float rad = 5.2f;
+            const juce::Point<float> lens (-1.3f, -1.3f);
+            juce::Path p;
+            p.addEllipse(lens.x - rad, lens.y - rad, rad * 2.0f, rad * 2.0f);
+            strokePath(p);
+            line(lens.x + rad * 0.70f, lens.y + rad * 0.70f,
+                 lens.x + rad * 0.70f + 4.4f, lens.y + rad * 0.70f + 4.4f);
+            line(lens.x - 2.9f, lens.y, lens.x + 2.9f, lens.y);
+            if (glyph == Glyph::ZoomIn) line(lens.x, lens.y - 2.9f, lens.x, lens.y + 2.9f);
             break;
         }
     }
@@ -1243,7 +1264,7 @@ void WaveformView::paintGrooveHistogram(juce::Graphics& g, juce::Rectangle<int> 
 
     auto inner = panel.reduced(6, 4);
     auto header = inner.removeFromTop(12);
-    g.setFont(juce::Font(juce::FontOptions(9.5f)));
+    g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
     g.setColour(MiraLookAndFeel::textDim);
     g.drawText(juce::String(groove.bpm, 1) + " BPM  " + groove.octaveSource, header,
                juce::Justification::centredLeft, false);
@@ -1254,7 +1275,7 @@ void WaveformView::paintGrooveHistogram(juce::Graphics& g, juce::Rectangle<int> 
                juce::Justification::centredRight, false);
 
     auto footer = inner.removeFromBottom(11);
-    g.setFont(juce::Font(juce::FontOptions(9.0f)));
+    g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.0f))));
     g.setColour(MiraLookAndFeel::textFaint);
     g.drawText(groove.summary, footer, juce::Justification::centredLeft, false);
 
@@ -1282,7 +1303,7 @@ void WaveformView::paintGrooveHistogram(juce::Graphics& g, juce::Rectangle<int> 
         && std::abs(groove.beatGridBpm - groove.bpm) / groove.bpm > 0.02)
     {
         auto note = inner.removeFromBottom(10);
-        g.setFont(juce::Font(juce::FontOptions(8.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(8.5f))));
         g.setColour(MiraLookAndFeel::good.withAlpha(0.85f));
         g.drawText("bars on beat_this " + juce::String(groove.beatGridBpm, 1), note,
                    juce::Justification::centredLeft, false);
@@ -1331,7 +1352,7 @@ void WaveformView::paint(juce::Graphics& g)
     if (currentFile == juce::File())
     {
         g.setColour(MiraLookAndFeel::textFaint);
-        g.setFont(juce::Font(juce::FontOptions(12.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.5f))));
         g.drawText("No file selected", waveformBounds, juce::Justification::centred, true);
         return;
     }
@@ -1339,7 +1360,7 @@ void WaveformView::paint(juce::Graphics& g)
     if (loadFailed)
     {
         g.setColour(MiraLookAndFeel::warn);
-        g.setFont(juce::Font(juce::FontOptions(12.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.5f))));
         g.drawText("Couldn't read audio from this file", waveformBounds, juce::Justification::centred, true);
         return;
     }
@@ -1352,7 +1373,7 @@ void WaveformView::paint(juce::Graphics& g)
         // sit here for a few seconds; pre-generating previews during Scan so this is
         // instant by the time a file's clicked is a real next step, not done here.
         g.setColour(MiraLookAndFeel::textFaint);
-        g.setFont(juce::Font(juce::FontOptions(12.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.5f))));
         g.drawText(juce::String(juce::CharPointer_UTF8("Loading waveform\xe2\x80\xa6")), waveformBounds,
                    juce::Justification::centred, true);
         return;
@@ -1393,7 +1414,7 @@ void WaveformView::paint(juce::Graphics& g)
             if (total > 0.0 && selBounds.getWidth() > 54)
             {
                 g.setColour(MiraLookAndFeel::text);
-                g.setFont(juce::Font(juce::FontOptions(10.0f)));
+                g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.0f))));
                 g.drawText(juce::String((e0 - s0) * total, 2) + "s",
                             selBounds.removeFromTop(14), juce::Justification::centred);
             }
@@ -1491,7 +1512,7 @@ void WaveformView::paint(juce::Graphics& g)
         g.drawHorizontalLine(ruler.getBottom() - 1, static_cast<float>(ruler.getX()),
                               static_cast<float>(ruler.getRight()));
 
-        g.setFont(juce::Font(juce::FontOptions(9.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
 
         // One readout, always on, at the ruler's right edge: the tempo every line on
         // screen is drawn from, the meter, and how much the grid can be trusted. It
@@ -1564,11 +1585,11 @@ void WaveformView::paint(juce::Graphics& g)
                         // hierarchy Cubase uses, and the reason "8" reads as a bar
                         // while "8.2" reads as a subdivision of it without being
                         // labelled as one.
-                        g.setFont(juce::Font(juce::FontOptions(9.5f).withStyle("Bold")));
+                        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f)).withStyle("Bold")));
                         g.setColour(MiraLookAndFeel::text);
                         g.drawText(juce::String(barNumber), x + 3, ruler.getY(), 40,
                                     ruler.getHeight() - 4, juce::Justification::centredLeft, false);
-                        g.setFont(juce::Font(juce::FontOptions(9.5f)));
+                        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
                     }
                 }
 
@@ -1868,7 +1889,7 @@ void WaveformView::paint(juce::Graphics& g)
     {
         g.setColour(MiraLookAndFeel::surface2);
         g.fillRect(layout.chordLane);
-        g.setFont(juce::Font(juce::FontOptions(9.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
         for (const auto& chord : chords)
         {
             if (chord.endSeconds < viewStart || chord.startSeconds > viewEnd) continue;
@@ -1933,7 +1954,7 @@ void WaveformView::paint(juce::Graphics& g)
             if (seg.label.isNotEmpty() && segBand.getWidth() > 40)
             {
                 g.setColour(MiraLookAndFeel::text);
-                g.setFont(juce::Font(juce::FontOptions(10.0f)));
+                g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.0f))));
                 g.drawText(seg.label, segBand.reduced(4, 0), juce::Justification::centredLeft, true);
             }
         }

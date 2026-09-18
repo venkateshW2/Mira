@@ -83,7 +83,7 @@ void GenerateContent::ResultTile::paint(juce::Graphics& g) {
     g.setColour(juce::Colours::white.withAlpha(0.18f));
     g.drawRoundedRectangle(r, 6.0f, 1.0f);
     g.setColour(juce::Colours::white.withAlpha(file.existsAsFile() ? 0.85f : 0.35f));
-    g.setFont(juce::FontOptions(13.0f));
+    g.setFont(juce::FontOptions(MiraLookAndFeel::textSize(13.0f)));
     g.drawFittedText(file.existsAsFile()
                          ? "  " + file.getFileName() + "\n  drag me into your DAW"
                          : "  generated audio appears here",
@@ -161,7 +161,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         // Step gating: apply the LoRA only during part of the diffusion run. Early steps
         // shape structure and arrangement, late steps shape timbre and texture -- so this
         // separates "did it change the music?" from "did it just recolour the surface?".
-        sl.blendLabel.setFont(juce::Font(juce::FontOptions(10.0f)));
+        sl.blendLabel.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.0f))));
         sl.blendLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
         sl.blendLabel.setJustificationType(juce::Justification::centredRight);
         sl.blendLabel.setText("blend", juce::dontSendNotification);
@@ -319,7 +319,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
         for (auto n : { Named{ &secondsLabel, "duration" }, Named{ &stepsLabel, "steps" },
                          Named{ &seedLabel, "seed" }, Named{ &cfgLabel, "cfg" } }) {
             n.label->setText(n.text, juce::dontSendNotification);
-            n.label->setFont(juce::Font(juce::FontOptions(11.5f, juce::Font::bold)));
+            n.label->setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.5f), juce::Font::bold)));
             n.label->setColour(juce::Label::textColourId, MiraLookAndFeel::text);
             n.label->setJustificationType(juce::Justification::centredRight);
             rightPane.addAndMakeVisible(*n.label);
@@ -335,7 +335,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
                          "Drag the range past the end of the audio to EXTEND it. The prompt above "
                          "describes the whole piece, not just the gap.",
                          juce::dontSendNotification);
-    inpaintHelp.setFont(juce::Font(juce::FontOptions(11.0f)));
+    inpaintHelp.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.0f))));
     inpaintHelp.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
     inpaintHelp.setJustificationType(juce::Justification::topLeft);
     rightPane.addAndMakeVisible(inpaintHelp);
@@ -377,7 +377,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     rightView.setScrollBarsShown(true, false);
     addAndMakeVisible(rightView);
 
-    takesLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+    takesLabel.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.0f))));
     takesLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
     addAndMakeVisible(takesLabel);
     takesView.setViewedComponent(takeStack.get(), false);
@@ -450,7 +450,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // No "Play edit" button: the waveform's own Play applies the trim, fades and gain
     // (see timerCallback). auditionEdit() stays as the code path that drives it.
 
-    editLabel.setFont(juce::Font(juce::FontOptions(11.0f)));
+    editLabel.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.0f))));
     editLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
 
     {
@@ -472,7 +472,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
             f.slider->onValueChange = [this] { writeEditFields(); };
             tip(*f.slider, f.help);
             f.label->setText(f.name, juce::dontSendNotification);
-            f.label->setFont(juce::Font(juce::FontOptions(11.0f)));
+            f.label->setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.0f))));
             f.label->setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
             f.label->setJustificationType(juce::Justification::centredRight);
         }
@@ -558,7 +558,7 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     addAndMakeVisible(generatePaneToggle);
 
     datasetsLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.45f));
-    datasetsLabel.setFont(juce::FontOptions(11.0f));
+    datasetsLabel.setFont(juce::FontOptions(MiraLookAndFeel::textSize(11.0f)));
     tip(datasetsLabel, "Prepared datasets: folder -> trigger (latent count).");
     rightPane.addAndMakeVisible(datasetsLabel);
     refreshDatasets();
@@ -1713,7 +1713,7 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
             juce::String spaced;
             for (auto c : juce::String(text)) { spaced += juce::String::charToString(c); spaced += " "; }
             l.setText(spaced.trim(), juce::dontSendNotification);
-            l.setFont(juce::Font(juce::FontOptions(10.5f, juce::Font::bold)));
+            l.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.5f), juce::Font::bold)));
             l.setColour(juce::Label::textColourId, MiraLookAndFeel::accent.withAlpha(0.85f));
             l.setBounds(line);
         }
@@ -1835,7 +1835,7 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         place(triggerEditor, line.removeFromLeft(70));
         line.removeFromLeft(6);
         place(encodeButton, line.removeFromLeft(170));
-        place(datasetsLabel, row(16, 4));
+        place(datasetsLabel, row(19, 4));
     } else if (applyBounds) {
         triggerLabel.setBounds({}); triggerEditor.setBounds({});
         encodeButton.setBounds({}); datasetsLabel.setBounds({});

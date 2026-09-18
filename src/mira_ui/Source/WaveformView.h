@@ -494,7 +494,7 @@ private:
     juce::TextButton lanesButton { "Lanes" };
     // 22, not 18: the bar ruler carries bold bar numbers and dimmer bar.beat labels on
     // a tinted band, and 18 px left no room between the digits and the tick marks.
-    static constexpr int kRulerHeight = 22;
+    static constexpr int kRulerHeight = 24;  // the tick labels grew with the type scale
     static constexpr int kSpanLaneHeight = 8;
     static constexpr int kOnsetLaneHeight = 12;
     static constexpr int kChordLaneHeight = 14;

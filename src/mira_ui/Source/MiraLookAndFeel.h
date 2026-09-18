@@ -43,6 +43,20 @@ public:
     // (BPM, LUFS, timestamps, token counts — the mockup's own convention throughout its
     // .measure/.num/.mono rules, tabular-nums). Embedded via BinaryData
     // (CMakeLists.txt's juce_add_binary_data), not a system-font dependency.
+    // --- the type scale -----------------------------------------------------------
+    // Every UI text size in mira goes through here. It is NOT a global scale factor:
+    // scaling the whole surface made the window bigger without making anything easier
+    // to read, because the text kept the same relationship to the boxes around it. This
+    // grows the TEXT inside layouts that stay where they are.
+    //
+    // Weighted, not multiplied flat: small text needs proportionally more help than large
+    // text, and 13.5px heading multiplied by 1.2 is a 16px heading that no longer fits its
+    // row. So growth is capped at +2px -- 9.5 -> 11.4 (+20%), 13.5 -> 15.5 (+15%).
+    static float textSize(float height)
+    {
+        return juce::jmin(height * 1.20f, height + 2.0f);
+    }
+
     juce::Font sansRegular(float height) const;
     juce::Font sansMedium(float height) const;
     juce::Font sansSemiBold(float height) const;

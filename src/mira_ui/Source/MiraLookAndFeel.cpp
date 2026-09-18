@@ -113,27 +113,27 @@ juce::Typeface::Ptr MiraLookAndFeel::getTypefaceForFont(const juce::Font& font)
 
 juce::Font MiraLookAndFeel::sansRegular(float height) const
 {
-    return juce::Font(juce::FontOptions(height).withTypeface(sansRegularTypeface));
+    return juce::Font(juce::FontOptions(textSize(height)).withTypeface(sansRegularTypeface));
 }
 
 juce::Font MiraLookAndFeel::sansMedium(float height) const
 {
-    return juce::Font(juce::FontOptions(height).withTypeface(sansMediumTypeface));
+    return juce::Font(juce::FontOptions(textSize(height)).withTypeface(sansMediumTypeface));
 }
 
 juce::Font MiraLookAndFeel::sansSemiBold(float height) const
 {
-    return juce::Font(juce::FontOptions(height).withTypeface(sansSemiBoldTypeface));
+    return juce::Font(juce::FontOptions(textSize(height)).withTypeface(sansSemiBoldTypeface));
 }
 
 juce::Font MiraLookAndFeel::monoRegular(float height) const
 {
-    return juce::Font(juce::FontOptions(height).withTypeface(monoRegularTypeface));
+    return juce::Font(juce::FontOptions(textSize(height)).withTypeface(monoRegularTypeface));
 }
 
 juce::Font MiraLookAndFeel::monoMedium(float height) const
 {
-    return juce::Font(juce::FontOptions(height).withTypeface(monoMediumTypeface));
+    return juce::Font(juce::FontOptions(textSize(height)).withTypeface(monoMediumTypeface));
 }
 
 void MiraLookAndFeel::paintGlassPanel(juce::Graphics& g, juce::Rectangle<int> bounds, float cornerRadius,

@@ -75,7 +75,7 @@ public:
         messageLabel.setText(message, juce::dontSendNotification);
         messageLabel.setJustificationType(juce::Justification::centredTop);
         messageLabel.setMinimumHorizontalScale(1.0f);
-        messageLabel.setFont(juce::Font(juce::FontOptions(15.0f)));
+        messageLabel.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(15.0f))));
         messageLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::text);
         addAndMakeVisible(messageLabel);
 

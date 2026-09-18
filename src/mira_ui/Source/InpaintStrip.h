@@ -159,7 +159,7 @@ public:
         if (file == juce::File() || thumbnail == nullptr || thumbnail->getTotalLength() <= 0.0)
         {
             g.setColour(dragging ? MiraLookAndFeel::accent : MiraLookAndFeel::textDim);
-            g.setFont(juce::Font(juce::FontOptions(11.5f)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.5f))));
             g.drawText("drop a take or an audio file here", r, juce::Justification::centred);
             if (dragging)
             {
@@ -187,7 +187,7 @@ public:
             for (int x = empty.getX(); x < empty.getRight(); x += 5)
                 g.fillRect(x, empty.getCentreY(), 2, 1);
             g.setColour(MiraLookAndFeel::textDim.withAlpha(0.5f));
-            g.setFont(juce::Font(juce::FontOptions(10.0f)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.0f))));
             if (empty.getWidth() > 60)
                 g.drawText("new", empty, juce::Justification::centred);
             g.setColour(MiraLookAndFeel::textDim.withAlpha(0.4f));
@@ -205,7 +205,7 @@ public:
         g.fillRect(x0 - 1, wave.getY(), 2, wave.getHeight());
         g.fillRect(x1 - 1, wave.getY(), 2, wave.getHeight());
 
-        g.setFont(juce::Font(juce::FontOptions(10.0f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.0f))));
         g.setColour(MiraLookAndFeel::text);
         g.drawText(juce::String(rangeStart, 1) + "s - " + juce::String(rangeEnd, 1) + "s",
                     sel.expanded(40, 0), juce::Justification::centredTop);

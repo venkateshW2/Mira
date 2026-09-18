@@ -239,7 +239,7 @@ public:
         if (takes.empty())
         {
             g.setColour(MiraLookAndFeel::textDim);
-            g.setFont(juce::Font(juce::FontOptions(12.0f)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.0f))));
             g.drawText("no takes yet", getLocalBounds().reduced(10, 0), juce::Justification::centredLeft);
             return;
         }
@@ -499,13 +499,13 @@ private:
         r.removeFromLeft(5);
 
         g.setColour(MiraLookAndFeel::accent.withAlpha(nowSection ? 1.0f : 0.85f));
-        g.setFont(juce::Font(juce::FontOptions(10.0f, juce::Font::bold)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.0f), juce::Font::bold)));
         g.drawText(nowSection ? juce::String("NOW") : text + "  (" + juce::String(count) + ")",
                     r, juce::Justification::centredLeft);
         if (nowSection)
         {
             g.setColour(MiraLookAndFeel::textDim);
-            g.setFont(juce::Font(juce::FontOptions(9.5f)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
             g.drawText("latest take - stays here until the next one finishes",
                         r, juce::Justification::centredRight);
         }
@@ -556,7 +556,7 @@ private:
 
         g.setColour(dimmed ? MiraLookAndFeel::textDim.withAlpha(0.5f)
                            : (isFocused ? MiraLookAndFeel::text : MiraLookAndFeel::textDim));
-        g.setFont(juce::Font(juce::FontOptions(12.0f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.0f))));
         g.drawText(take.file.getFileNameWithoutExtension(), text, juce::Justification::centredLeft, true);
 
         // The mini waveform is the COLLAPSED row's only picture of the take. An expanded
@@ -580,7 +580,7 @@ private:
             g.setColour(MiraLookAndFeel::textDim.withAlpha(0.55f));
             take.thumbnail->drawChannels(g, body.reduced(2), 0.0, take.thumbnail->getTotalLength(), 1.0f);
             g.setColour(MiraLookAndFeel::textDim);
-            g.setFont(juce::Font(juce::FontOptions(11.0f)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.0f))));
             g.drawText("click to play this take", body.withY(body.getBottom() + 6).withHeight(20),
                         juce::Justification::centred);
         }

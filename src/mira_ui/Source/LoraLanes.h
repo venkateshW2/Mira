@@ -77,7 +77,7 @@ public:
         auto header = r.removeFromTop(kHeaderHeight);
         auto grid = header.withTrimmedLeft(kNameWidth).withTrimmedRight(kRoleWidth);
         g.setColour(MiraLookAndFeel::textDim);
-        g.setFont(juce::Font(juce::FontOptions(9.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
         g.drawText("steps", header.removeFromLeft(kNameWidth).withTrimmedLeft(2),
                     juce::Justification::centredLeft);
         g.drawText("1", grid, juce::Justification::centredLeft);
@@ -197,7 +197,7 @@ private:
         const bool active = L.name.isNotEmpty();
 
         g.setColour(active ? MiraLookAndFeel::text : MiraLookAndFeel::textDim.withAlpha(0.5f));
-        g.setFont(juce::Font(juce::FontOptions(10.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.5f))));
         g.drawText(active ? L.name : "(empty)", row.removeFromLeft(kNameWidth).withTrimmedRight(6),
                     juce::Justification::centredLeft, true);
 
@@ -224,7 +224,7 @@ private:
             g.fillRect(bar.getRight() - 2, bar.getY(), 2, bar.getHeight());
 
             g.setColour(MiraLookAndFeel::text);
-            g.setFont(juce::Font(juce::FontOptions(9.5f)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
             if (bar.getWidth() > 70)
                 g.drawText(juce::String(L.lo) + "-" + juce::String(L.hi) + "  " + roleOf(L),
                             bar, juce::Justification::centred);
@@ -245,7 +245,7 @@ private:
             g.fillRoundedRectangle(cell.toFloat(), 2.0f);
             g.setColour(active ? (on ? MiraLookAndFeel::text : MiraLookAndFeel::textDim)
                                 : MiraLookAndFeel::textDim.withAlpha(0.4f));
-            g.setFont(juce::Font(juce::FontOptions(9.5f, juce::Font::bold)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f), juce::Font::bold)));
             g.drawText(names[k], cell, juce::Justification::centred);
         }
     }

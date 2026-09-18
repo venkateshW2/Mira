@@ -29,13 +29,13 @@ public:
         : laf(lafIn), recent(std::move(recentPaths))
     {
         title.setText("MIRA", juce::dontSendNotification);
-        title.setFont(juce::Font(juce::FontOptions(26.0f, juce::Font::bold)));
+        title.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(26.0f), juce::Font::bold)));
         title.setColour(juce::Label::textColourId, MiraLookAndFeel::text);
         addAndMakeVisible(title);
 
         subtitle.setText("Open a project to generate, or the library to organise and analyse.",
                           juce::dontSendNotification);
-        subtitle.setFont(juce::Font(juce::FontOptions(12.0f)));
+        subtitle.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.0f))));
         subtitle.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
         addAndMakeVisible(subtitle);
 
@@ -49,7 +49,7 @@ public:
         button(libraryButton, "Open Library", &onOpenLibrary);
 
         recentLabel.setText(recent.isEmpty() ? "No recent projects" : "Recent", juce::dontSendNotification);
-        recentLabel.setFont(juce::Font(juce::FontOptions(10.5f, juce::Font::bold)));
+        recentLabel.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.5f), juce::Font::bold)));
         recentLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::accent.withAlpha(0.85f));
         addAndMakeVisible(recentLabel);
 
@@ -94,12 +94,12 @@ private:
             if (selected) { g.setColour(MiraLookAndFeel::accent.withAlpha(0.20f)); g.fillRect(0, 0, w, h); }
             juce::File f (owner->recent[row]);
             g.setColour(MiraLookAndFeel::text);
-            g.setFont(juce::Font(juce::FontOptions(12.0f)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.0f))));
             g.drawText(f.getFileName(), 10, 0, w - 20, h, juce::Justification::centredLeft, true);
             // The parent folder, dimmed: two projects can share a name and the path is
             // the only thing that tells them apart.
             g.setColour(MiraLookAndFeel::textFaint);
-            g.setFont(juce::Font(juce::FontOptions(10.0f)));
+            g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.0f))));
             g.drawText(f.getParentDirectory().getFullPathName(), 10, 0, w - 20, h,
                         juce::Justification::centredRight, true);
         }

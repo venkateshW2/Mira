@@ -516,7 +516,7 @@ public:
         auto textBounds = getLocalBounds().reduced(10, 0);
         if (closable) textBounds.removeFromRight(18);
         g.setColour(active ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
-        g.setFont(juce::Font(juce::FontOptions(12.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.5f))));
         g.drawText(label, textBounds, juce::Justification::centredLeft, true);
 
         if (closable)
@@ -562,7 +562,7 @@ public:
         // the tabs -- that row was almost always empty (only populated during an active
         // scan) and just read as unexplained dead space between the tabs and the table
         // ("why is there a padding between tabs and the list").
-        statusLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+        statusLabel.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.0f))));
         statusLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
         statusLabel.setJustificationType(juce::Justification::centredRight);
         addAndMakeVisible(statusLabel);

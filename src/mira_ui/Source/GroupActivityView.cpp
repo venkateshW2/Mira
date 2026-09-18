@@ -132,7 +132,7 @@ void GroupActivityView::paint(juce::Graphics& g)
     if (stems.empty() || reelSeconds <= 0.0)
     {
         g.setColour(MiraLookAndFeel::textFaint);
-        g.setFont(juce::Font(juce::FontOptions(11.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.5f))));
         g.drawText("No synced stem set for this file", bounds, juce::Justification::centred, true);
         return;
     }
@@ -153,7 +153,7 @@ void GroupActivityView::paint(juce::Graphics& g)
         double tick = ladder[std::size(ladder) - 1];
         for (double candidate : ladder)
             if (candidate / visible * ruler.getWidth() >= 64.0) { tick = candidate; break; }
-        g.setFont(juce::Font(juce::FontOptions(9.5f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
         double from = viewStartFrac * reelSeconds;
         double to = juce::jmin(reelSeconds, from + visible);
         for (double t = std::ceil(from / tick) * tick; t <= to; t += tick)
@@ -209,12 +209,12 @@ void GroupActivityView::paint(juce::Graphics& g)
             if (width > 14)
             {
                 g.setColour(MiraLookAndFeel::text);
-                g.setFont(juce::Font(juce::FontOptions(9.5f)));
+                g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
                 g.drawText(text, bar.reduced(3, 0), juce::Justification::centredLeft, false);
             }
         }
         g.setColour(MiraLookAndFeel::textFaint);
-        g.setFont(juce::Font(juce::FontOptions(9.0f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.0f))));
         g.drawText("CUES", 6, lane.getY(), kGutterWidth - 10, lane.getHeight(),
                     juce::Justification::centredLeft, false);
     }
@@ -236,7 +236,7 @@ void GroupActivityView::paint(juce::Graphics& g)
     }
 
     // --- One row per stem ---------------------------------------------------------------
-    g.setFont(juce::Font(juce::FontOptions(9.5f)));
+    g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
     for (size_t i = 0; i < stems.size(); ++i)
     {
         const auto& stem = stems[i];
@@ -338,7 +338,7 @@ void GroupActivityView::paint(juce::Graphics& g)
             if (x1 - x > 40)
             {
                 g.setColour(MiraLookAndFeel::text);
-                g.setFont(juce::Font(juce::FontOptions(9.5f)));
+                g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(9.5f))));
                 g.drawText(cue.label, x + 3, area.getY(), juce::jmin(120, x1 - x - 4), 11,
                             juce::Justification::centredLeft, false);
             }

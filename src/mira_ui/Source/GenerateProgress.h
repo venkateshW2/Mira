@@ -120,7 +120,7 @@ public:
         }
 
         g.setColour(MiraLookAndFeel::text);
-        g.setFont(juce::Font(juce::FontOptions(10.0f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(10.0f))));
         g.drawText(caption(elapsed), getLocalBounds().withTrimmedLeft(8),
                     juce::Justification::centredLeft, true);
     }

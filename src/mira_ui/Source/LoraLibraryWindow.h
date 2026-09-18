@@ -51,7 +51,7 @@ public:
                       "the library. Names show in the generate window's LoRA menus; files on "
                       "disk are never renamed.",
                       juce::dontSendNotification);
-        hint.setFont(juce::Font(juce::FontOptions(11.0f)));
+        hint.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(11.0f))));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
         addAndMakeVisible(hint);
 
@@ -124,7 +124,7 @@ public:
     {
         if (row < 0 || row >= files.size()) return;
         const auto& file = files[row];
-        g.setFont(juce::Font(juce::FontOptions(12.0f)));
+        g.setFont(juce::Font(juce::FontOptions(MiraLookAndFeel::textSize(12.0f))));
 
         if (columnId == 1)
         {
