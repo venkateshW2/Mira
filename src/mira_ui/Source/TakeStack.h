@@ -136,6 +136,15 @@ public:
 
     void clear() { takes.clear(); focusedFile = juce::File(); latestFile = juce::File(); rebuild(); }
 
+    // Used when the sidebar scopes to one folder. In that view a section header is
+    // noise -- every row in the list is in the folder you just clicked -- and a
+    // COLLAPSED one actively hides the thing you asked to see.
+    void expandAllSections()
+    {
+        for (auto& c : collapsed) c = false;
+        rebuild();
+    }
+
     juce::File getFocusedFile() const { return focusedFile; }
     juce::File getLatestFile() const { return latestFile; }
 

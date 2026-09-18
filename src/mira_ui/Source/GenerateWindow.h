@@ -277,10 +277,13 @@ public:
         // the training bench. The SA3 Generate window has no project to list.
         if (!shouldBeVisible && sidebar == nullptr)
         {
-            sidebar = std::make_unique<ProjectSidebar>();
+            sidebar = std::make_unique<ProjectSidebar>(laf);
             sidebar->onFolderSelected = [this](juce::File f) {
                 scopeFolder = f;
                 loadExistingTakes();
+                // Clicking a cue means "show me what is in it". A collapsed section
+                // header would answer that with a closed triangle.
+                if (takeStack != nullptr) takeStack->expandAllSections();
                 resized();
             };
             sidebar->setProject(projectFolder);

@@ -1856,7 +1856,10 @@ void GenerateContent::resized() {
     juce::Rectangle<int> rightArea;
     if (!generatePaneCollapsed)
     {
-        const int rightWidth = juce::jlimit(320, 520, r.getWidth() / 2);
+        // Slimmer than half. The right pane is a column of labelled controls with a
+        // fixed comfortable width; past that it is just a wide pane, while the waveform
+        // is the one thing in this window that always wants more room.
+        const int rightWidth = juce::jlimit(300, 390, r.getWidth() / 3);
         rightArea = r.removeFromRight(rightWidth);
         r.removeFromRight(8);
     }

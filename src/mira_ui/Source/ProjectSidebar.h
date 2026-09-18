@@ -21,16 +21,16 @@ public:
     // Empty File = "All", which is the only entry that is not a real folder.
     std::function<void(juce::File)> onFolderSelected;
 
-    ProjectSidebar()
+    explicit ProjectSidebar(const MiraLookAndFeel& lafIn) : laf(lafIn)
     {
         list.setModel(this);
-        list.setRowHeight(24);
+        list.setRowHeight(26);   // matches the browser tree's row rhythm
         list.setColour(juce::ListBox::backgroundColourId, MiraLookAndFeel::surface2);
         list.setColour(juce::ListBox::outlineColourId, MiraLookAndFeel::border);
         addAndMakeVisible(list);
 
         heading.setText("PROJECT", juce::dontSendNotification);
-        heading.setFont(juce::Font(juce::FontOptions(10.0f, juce::Font::bold)));
+        heading.setFont(laf.sansSemiBold(10.5f));
         heading.setColour(juce::Label::textColourId, MiraLookAndFeel::accent.withAlpha(0.85f));
         addAndMakeVisible(heading);
     }
@@ -117,29 +117,59 @@ private:
     {
         if (!juce::isPositiveAndBelow(row, static_cast<int>(entries.size()))) return;
         const auto& e = entries[static_cast<size_t>(row)];
+        auto bounds = juce::Rectangle<int>(0, 0, w, h);
+
+        // The browser's selection pill, not a full-bleed bar: this is the same kind of
+        // list as the folder tree and it should not look like a different application.
         if (selected)
         {
-            g.setColour(MiraLookAndFeel::accent.withAlpha(0.22f));
-            g.fillRect(0, 0, w, h);
-            g.setColour(MiraLookAndFeel::accent);
-            g.fillRect(0, 0, 2, h);
+            g.setColour(MiraLookAndFeel::accentSoft);
+            g.fillRoundedRectangle(bounds.reduced(3, 1).toFloat(), 5.0f);
         }
-        const int indent = 10 + e.depth * 12;
-        g.setColour(selected ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
-        g.setFont(juce::Font(juce::FontOptions(11.5f)));
-        g.drawText(e.name, indent, 0, w - indent - 34, h, juce::Justification::centredLeft, true);
+
+        const float x = 8.0f + e.depth * 12.0f;
+        const auto ink = selected ? MiraLookAndFeel::text : MiraLookAndFeel::text.withAlpha(0.85f);
+
+        // Same flat folder glyph the browser draws, for the same reason: shape carries
+        // the meaning, one neutral colour throughout. "All takes" is not a folder, so it
+        // gets a stack of lines instead -- it is a view, not a place.
+        const float iconH = h * 0.42f;
+        const float iconY = (h - iconH) * 0.5f;
+        g.setColour(MiraLookAndFeel::textDim.withAlpha(0.85f));
+        if (e.folder.getFullPathName().isEmpty())
+        {
+            for (int i = 0; i < 3; ++i)
+                g.fillRoundedRectangle(x, iconY + i * (iconH * 0.42f), 14.0f, 2.0f, 1.0f);
+        }
+        else
+        {
+            juce::Rectangle<float> body (x, iconY, 15.0f, iconH);
+            const float tabW = body.getWidth() * 0.5f, tabH = iconH * 0.28f;
+            juce::Path folder;
+            folder.addRoundedRectangle(body.getX(), body.getY() - tabH + 1.0f, tabW, tabH,
+                                        1.0f, 1.0f, true, true, false, false);
+            folder.addRoundedRectangle(body, 2.0f);
+            g.fillPath(folder);
+        }
+
+        const int textX = static_cast<int>(x) + 23;
+        g.setColour(ink);
+        g.setFont(laf.sansRegular(13.0f));
+        g.drawText(e.name, textX, 0, w - textX - 34, h, juce::Justification::centredLeft, true);
+
         // The count is the reason to look at this list at all: which cue has versions in
         // it, and how many, without opening anything.
         if (!e.folder.getFullPathName().isEmpty() && e.count > 0)
         {
             g.setColour(MiraLookAndFeel::textFaint);
-            g.setFont(juce::Font(juce::FontOptions(10.0f)));
-            g.drawText(juce::String(e.count), w - 30, 0, 22, h, juce::Justification::centredRight);
+            g.setFont(laf.monoRegular(11.0f));
+            g.drawText(juce::String(e.count), w - 32, 0, 24, h, juce::Justification::centredRight);
         }
     }
 
     void selectedRowsChanged(int) override { if (onFolderSelected) onFolderSelected(selectedFolder()); }
 
+    const MiraLookAndFeel& laf;
     juce::File project;
     std::vector<Entry> entries;
     juce::ListBox list;
