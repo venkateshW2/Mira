@@ -49,6 +49,16 @@ void CanvasAudioSource::setLaneMasks(juce::uint64 muted, juce::uint64 soloed)
     soloMask.store(soloed);
 }
 
+void CanvasAudioSource::setLaneGain(int lane, float gain)
+{
+    if (lane >= 0 && lane < kMaxLanes) laneGain[lane].store(juce::jlimit(0.0f, 4.0f, gain));
+}
+
+float CanvasAudioSource::getLaneGain(int lane) const
+{
+    return (lane >= 0 && lane < kMaxLanes) ? laneGain[lane].load() : 1.0f;
+}
+
 void CanvasAudioSource::setLoopRange(double startSeconds, double endSeconds)
 {
     loopStart.store(static_cast<juce::int64>(startSeconds * kTimelineRate));
@@ -121,11 +131,14 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
         if (voiceEnd <= from || v.startSample >= to) continue;   // not sounding in this block
         if (v.reader == nullptr) continue;
 
+        float laneLevel = 1.0f;
         if (v.lane < kMaxLanes)
         {
             const juce::uint64 bit = juce::uint64 (1) << v.lane;
             if (mutes & bit) continue;
             if (solos != 0 && !(solos & bit)) continue;   // any solo silences everything else
+            laneLevel = laneGain[v.lane].load();
+            if (laneLevel <= 0.0f) continue;
         }
 
         const juce::int64 overlapStart = juce::jmax(from, v.startSample);
@@ -156,7 +169,7 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
 
             for (int i = 0; i < n; ++i)
             {
-                float env = v.gain;
+                float env = v.gain * laneLevel;
                 const juce::int64 at = intoVoice + i;
                 if (v.fadeInSamples > 0 && at < v.fadeInSamples)
                     env *= static_cast<float>(at) / static_cast<float>(v.fadeInSamples);
@@ -218,12 +231,19 @@ void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatMa
     // positions and the loop points could disagree the moment the device changed.
     const double rate = CanvasAudioSource::kTimelineRate;
 
+    std::map<juce::String, std::shared_ptr<juce::AudioFormatReader>> stillUsed;
+
     auto next = new Arrangement();
     for (const auto& b : blocks)
     {
         if (!b.file.existsAsFile() || b.length <= 0.0) continue;
-        std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor(b.file));
+
+        const auto key = b.file.getFullPathName();
+        std::shared_ptr<juce::AudioFormatReader> reader;
+        if (auto hit = readerCache.find(key); hit != readerCache.end()) reader = hit->second;
+        else if (auto* made = formats.createReaderFor(b.file)) reader.reset(made);
         if (reader == nullptr) continue;
+        stillUsed[key] = reader;
 
         Arrangement::Voice v;
         v.rateRatio      = reader->sampleRate > 0.0 ? reader->sampleRate / rate : 1.0;
@@ -238,23 +258,35 @@ void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatMa
         next->totalSamples = juce::jmax(next->totalSamples, v.startSample + v.lengthSamples);
         next->voices.push_back(std::move(v));
     }
+    // Anything the new arrangement did not claim is dropped here, so deleting a block
+    // still closes its file -- but the shared_ptr keeps it alive while a retired
+    // arrangement is still being read.
+    readerCache.swap(stillUsed);
 
-    const double wasAt = transport.getCurrentPosition();
-    const bool wasPlaying = transport.isPlaying();
-
-    // The transport is detached across the swap. Changing the source's length under a
-    // live AudioTransportSource is how a transport ends up reporting a position past the
-    // end of what it is playing.
-    transport.stop();
-    transport.setSource(nullptr);
     canvasSource.setArrangement(Arrangement::Ptr (next));
 
-    buffered = std::make_unique<juce::BufferingAudioSource>(&canvasSource, readThread, false,
-                                                             static_cast<int>(rate), 2, true);
-    transport.setSource(buffered.get(), 0, nullptr, rate, 2);
-    transport.setPosition(wasAt);
-    if (wasPlaying) transport.start();
+    // The buffering source and the transport wiring are built ONCE. The first version
+    // tore both down and rebuilt them on every edit, which meant re-running
+    // prepareToPlay -- and with prefill on, that BLOCKS the message thread while a full
+    // read-ahead buffer is filled from disk. Dragging a block therefore stalled the UI
+    // and gapped the audio, which is the lag you could feel. Swapping the arrangement is
+    // all an edit actually needs; the transport reads the new length straight through
+    // getTotalLength().
+    if (buffered == nullptr)
+    {
+        buffered = std::make_unique<juce::BufferingAudioSource>(&canvasSource, readThread, false,
+                                                                 CanvasAudioSource::kReadAheadSamples, 2, true);
+        transport.setSource(buffered.get(), 0, nullptr, rate, 2);
+    }
+    else
+    {
+        // Nudge the read position so the buffering source drops what it already holds --
+        // otherwise up to a third of a second of the PREVIOUS arrangement keeps playing
+        // after the edit.
+        transport.setPosition(transport.getCurrentPosition());
+    }
 }
+
 
 void CanvasPlayer::play()
 {

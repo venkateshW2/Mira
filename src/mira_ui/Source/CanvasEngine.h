@@ -56,7 +56,12 @@ public:
 
     struct Voice
     {
-        std::unique_ptr<juce::AudioFormatReader> reader;
+        // SHARED, and cached across rebuilds by CanvasPlayer. Reopening twelve files on
+        // every mouse-up -- from an external USB drive -- is where the lag on dragging a
+        // block came from. Safe to share because reads happen only on the buffering
+        // source's single background thread, and AudioFormatReader::read takes an explicit
+        // start sample rather than carrying a position.
+        std::shared_ptr<juce::AudioFormatReader> reader;
         int lane = 0;                    // so mute and solo can be atomic bitmasks
         juce::int64 startSample = 0;     // on the canvas timeline, at the DEVICE rate
         juce::int64 lengthSamples = 0;
@@ -76,7 +81,7 @@ public:
 class CanvasAudioSource : public juce::PositionableAudioSource
 {
 public:
-    CanvasAudioSource() = default;
+    CanvasAudioSource() { for (auto& g : laneGain) g.store(1.0f); }
 
     // Called on the MESSAGE thread. Builds readers, then publishes.
     void setArrangement(Arrangement::Ptr next);
@@ -99,10 +104,18 @@ public:
     void setLaneMasks(juce::uint64 muted, juce::uint64 soloed);
     static constexpr int kMaxLanes = 64;   // one bit each; past this, mute/solo is ignored
 
+    // A fader per lane, atomic for the same reason the masks are: moving one must take
+    // effect on the next block, not after a rebuild.
+    void setLaneGain(int lane, float gain);
+    float getLaneGain(int lane) const;
+
     // The canvas timeline's own rate, fixed. Every SA3 take is 44,100 and the transport
     // resamples to the device, so nothing here has to care what the device opened at.
     static constexpr double kTimelineRate = 44100.0;
     static constexpr int kScratchSamples = 16384;
+    // Read-ahead. Was a full second, which is a second of prefill to sit through on every
+    // edit; a third of that is still ample for a dozen files off an external drive.
+    static constexpr int kReadAheadSamples = 16384;
     double getSampleRate() const { return kTimelineRate; }
     // Highest sample seen since the last read, and cleared by reading it. Summing N takes
     // that each peak near full scale is N times full scale, so a canvas that stacks
@@ -118,6 +131,7 @@ private:
     std::atomic<bool> looping { false };
     std::atomic<juce::int64> loopStart { 0 }, loopEnd { 0 };
     std::atomic<juce::uint64> muteMask { 0 }, soloMask { 0 };
+    std::atomic<float> laneGain[kMaxLanes];
     std::atomic<float> peak { 0.0f };
     int blockSize = 512;
 
@@ -150,6 +164,7 @@ public:
     void setLoop(bool on, double startSeconds, double endSeconds);
     bool isLooping() const { return loopOn; }
     void setLaneMasks(juce::uint64 muted, juce::uint64 soloed) { canvasSource.setLaneMasks(muted, soloed); }
+    void setLaneGain(int lane, float gain) { canvasSource.setLaneGain(lane, gain); }
     float readAndClearPeak() { return canvasSource.readAndClearPeak(); }
 
 private:
@@ -160,6 +175,9 @@ private:
     juce::AudioSourcePlayer player;
     juce::AudioDeviceManager* deviceManager = nullptr;
     bool loopOn = false;
+    // Readers kept between rebuilds, keyed by path. Cleared of anything the new
+    // arrangement did not claim, so deleting a block still closes its file.
+    std::map<juce::String, std::shared_ptr<juce::AudioFormatReader>> readerCache;
 };
 
 } // namespace mira::canvas

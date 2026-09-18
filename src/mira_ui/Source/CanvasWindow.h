@@ -95,6 +95,10 @@ private:
     // thread reads.
     juce::uint64 muteMask = 0, soloMask = 0;
     juce::StringArray laneNames;
+    // A fader per lane, in dB, -60 (off) to +6. Stacking drums against guitars is the
+    // point of the canvas, and stacking without levels is just addition.
+    std::vector<double> laneDb;
+    int faderLane = -1;            // which lane's fader is being dragged, or -1
     double loopStart = 0.0, loopEnd = 0.0;
 
     Drag drag = Drag::None;
@@ -115,6 +119,9 @@ private:
     void applyMasks() { player.setLaneMasks(muteMask, soloMask); }
     juce::Rectangle<int> muteBoxFor(int lane) const;
     juce::Rectangle<int> soloBoxFor(int lane) const;
+    juce::Rectangle<int> faderBoxFor(int lane) const;
+    double laneDbAt(int lane) const { return lane < (int) laneDb.size() ? laneDb[(size_t) lane] : 0.0; }
+    void setLaneDb(int lane, double db);
     int laneToY(int lane) const { return topRuler + lane * laneHeight; }
     int yToLane(int y) const { return juce::jmax(0, (y - topRuler) / laneHeight); }
     juce::Rectangle<int> boundsOf(const Visual&) const;
@@ -126,7 +133,7 @@ private:
     // The lane headers on the left. Fixed, and the time axis starts after them -- a
     // header that scrolled with the canvas would stop saying which lane you were looking
     // at exactly when you needed it to.
-    static constexpr int kHeaderWidth = 116;
+    static constexpr int kHeaderWidth = 148;
     static constexpr int kEdgeGrab = 7;   // px either side of a block edge that trims
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CanvasView)

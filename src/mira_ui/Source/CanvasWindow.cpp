@@ -124,6 +124,24 @@ juce::Rectangle<int> CanvasView::soloBoxFor(int lane) const
     return { 34, laneToY(lane) + laneHeight / 2 - 9, 22, 18 };
 }
 
+juce::Rectangle<int> CanvasView::faderBoxFor(int lane) const
+{
+    // Only while the lane is tall enough to hold one. A fader squeezed into 28px would be
+    // a control you cannot aim at, which is worse than a control that is not there.
+    if (laneHeight < 44) return {};
+    return { 8, laneToY(lane) + laneHeight - 16, kHeaderWidth - 18, 8 };
+}
+
+void CanvasView::setLaneDb(int lane, double db)
+{
+    if (lane < 0 || lane >= CanvasAudioSource::kMaxLanes) return;
+    if ((int) laneDb.size() <= lane) laneDb.resize((size_t) lane + 1, 0.0);
+    laneDb[(size_t) lane] = juce::jlimit(-60.0, 6.0, db);
+    player.setLaneGain(lane, laneDb[(size_t) lane] <= -60.0
+                                 ? 0.0f
+                                 : juce::Decibels::decibelsToGain((float) laneDb[(size_t) lane]));
+}
+
 void CanvasView::clearAll()
 {
     items.clear();
@@ -295,9 +313,26 @@ void CanvasView::paint(juce::Graphics& g)
 
             g.setColour(muted ? MiraLookAndFeel::textFaint : MiraLookAndFeel::textDim);
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.0f)));
+            const bool tall = laneHeight >= 44;
             g.drawText(laneNames[lane].isNotEmpty() ? laneNames[lane] : juce::String(lane + 1),
-                        juce::Rectangle<int>(60, laneToY(lane), kHeaderWidth - 66, laneHeight),
+                        tall ? juce::Rectangle<int>(60, laneToY(lane) + 4, kHeaderWidth - 66, laneHeight / 2)
+                             : juce::Rectangle<int>(60, laneToY(lane), kHeaderWidth - 66, laneHeight),
                         juce::Justification::centredLeft, true);
+
+            if (auto fader = faderBoxFor(lane); !fader.isEmpty())
+            {
+                const double db = laneDbAt(lane);
+                const float frac = (float) ((db + 60.0) / 66.0);
+                g.setColour(MiraLookAndFeel::surface3);
+                g.fillRoundedRectangle(fader.toFloat(), 3.0f);
+                g.setColour(muted ? MiraLookAndFeel::textFaint : MiraLookAndFeel::accent.withAlpha(0.8f));
+                g.fillRoundedRectangle(fader.toFloat().withWidth(juce::jmax(3.0f, fader.getWidth() * frac)), 3.0f);
+                // Unity marked, because "where was 0 dB again" is the one question a
+                // fader with no numbers has to answer at a glance.
+                const int unity = fader.getX() + juce::roundToInt(fader.getWidth() * (60.0f / 66.0f));
+                g.setColour(MiraLookAndFeel::text.withAlpha(0.35f));
+                g.drawVerticalLine(unity, (float) fader.getY() - 1.0f, (float) fader.getBottom() + 1.0f);
+            }
         }
         // The ruler's own corner, so the seconds do not run under the headers.
         g.setColour(MiraLookAndFeel::surface2);
@@ -372,6 +407,15 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
             const juce::uint64 bit = juce::uint64 (1) << lane;
             if (muteBoxFor(lane).contains(e.getPosition())) muteMask ^= bit;
             else if (soloBoxFor(lane).contains(e.getPosition())) soloMask ^= bit;
+            else if (auto fader = faderBoxFor(lane);
+                     !fader.isEmpty() && fader.expanded(0, 5).contains(e.getPosition()))
+            {
+                faderLane = lane;
+                if (e.mods.isCommandDown()) setLaneDb(lane, 0.0);   // cmd-click = unity
+                else setLaneDb(lane, -60.0 + 66.0 * (e.x - fader.getX()) / (double) fader.getWidth());
+                repaint();
+                return;
+            }
             else return;
             applyMasks();
             repaint();
@@ -430,6 +474,13 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
 
 void CanvasView::mouseDrag(const juce::MouseEvent& e)
 {
+    if (faderLane >= 0)
+    {
+        if (auto fader = faderBoxFor(faderLane); !fader.isEmpty())
+            setLaneDb(faderLane, -60.0 + 66.0 * (e.x - fader.getX()) / (double) fader.getWidth());
+        repaint();
+        return;
+    }
     if (drag == Drag::Playhead)
     {
         player.setPositionSeconds(juce::jmax(0.0, xToSeconds(e.x)));
@@ -494,6 +545,7 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
 
 void CanvasView::mouseUp(const juce::MouseEvent&)
 {
+    faderLane = -1;
     const bool changed = drag == Drag::Move || drag == Drag::TrimLeft || drag == Drag::TrimRight;
     drag = Drag::None;
     marquee = {};
@@ -682,7 +734,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         fitButton.onClick    = [this] { view.fit(); };
         deleteButton.onClick = [this] { view.removeSelected(); };
 
-        hint.setText("space play  -  L loop  -  M/S mute solo  -  F fit  -  alt-drag pan  -  cmd-wheel zoom  -  shift-wheel lane height",
+        hint.setText("space play - L loop - M/S mute solo - F fit - alt-drag pan - cmd-wheel zoom - shift-wheel lane height",
                       juce::dontSendNotification);
         hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
