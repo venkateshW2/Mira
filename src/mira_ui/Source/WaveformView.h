@@ -371,6 +371,9 @@ private:
     // wheel and pinch); nullopt re-centres on the playhead, which is what the buttons want.
     void setZoom(double newZoomFactor, std::optional<double> anchorFrac = std::nullopt);
     void updateVolumeLabel();
+    float userGain() const;
+    static constexpr double kVolumeMinDb = -60.0;  // bottom of the track = silence
+    static constexpr double kVolumeMaxDb =   6.0;  // a little headroom above unity
 
     juce::AudioFormatManager formatManager;
     juce::AudioThumbnailCache thumbnailCache { 32 }; // 32 thumbnails -- one selected file at a time in practice

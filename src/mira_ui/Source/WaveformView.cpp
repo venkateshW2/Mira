@@ -97,13 +97,19 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
     muteButton.onClick = [this] {
         muted = !muted;
         muteButton.setMuted(muted);
-        transportSource.setGain(static_cast<float>(muted ? 0.0 : volumeSlider.getValue()));
+        transportSource.setGain(muted ? 0.0f : userGain());
     };
     addAndMakeVisible(muteButton);
 
+    // In DECIBELS, not in amplitude. A 0..1.25 linear track spends its top half on the
+    // 6 dB between unity and -6, and squeezes everything from -6 down to silence into the
+    // bottom third -- which is why half-way sounded nearly as loud as full. Loudness is
+    // logarithmic, so the control is too: the middle of the track is now roughly half as
+    // loud, and the bottom is silence rather than a very quiet -40-ish.
     volumeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
-    volumeSlider.setRange(0.0, 1.25, 0.01);
-    volumeSlider.setValue(1.0, juce::dontSendNotification);
+    volumeSlider.setRange(kVolumeMinDb, kVolumeMaxDb, 0.1);
+    volumeSlider.setValue(0.0, juce::dontSendNotification);
+    volumeSlider.setDoubleClickReturnValue(true, 0.0);  // double-click = back to unity
     volumeSlider.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
     volumeSlider.setColour(juce::Slider::trackColourId, MiraLookAndFeel::accent);
     volumeSlider.setColour(juce::Slider::backgroundColourId, MiraLookAndFeel::surface3);
@@ -116,7 +122,7 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
             muted = false;
             muteButton.setMuted(false);
         }
-        transportSource.setGain(static_cast<float>(volumeSlider.getValue()));
+        transportSource.setGain(userGain());
         updateVolumeLabel();
     };
     addAndMakeVisible(volumeSlider);
@@ -182,10 +188,22 @@ WaveformView::~WaveformView()
     audioSourcePlayer.setSource(nullptr);
 }
 
+// The slider's position as a linear amplitude. The bottom of the track is silence, not
+// -60 dB of it: a fader that bottoms out at "almost inaudible" is a fader you cannot use
+// to check whether something is playing at all.
+float WaveformView::userGain() const
+{
+    const double db = volumeSlider.getValue();
+    if (db <= kVolumeMinDb) return 0.0f;
+    return juce::Decibels::decibelsToGain(static_cast<float>(db));
+}
+
 void WaveformView::updateVolumeLabel()
 {
-    volumePercentLabel.setText(juce::String(juce::roundToInt(volumeSlider.getValue() * 100.0)) + "%",
-                                juce::dontSendNotification);
+    const double db = volumeSlider.getValue();
+    volumePercentLabel.setText(db <= kVolumeMinDb ? juce::String("-inf")
+                                                  : juce::String(db, 1) + " dB",
+                               juce::dontSendNotification);
 }
 
 void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
@@ -432,7 +450,7 @@ void WaveformView::setFile(const juce::File& file)
         {
             readerSource = std::make_unique<juce::AudioFormatReaderSource>(reader, true);
             transportSource.setSource(readerSource.get(), 0, nullptr, reader->sampleRate);
-            transportSource.setGain(static_cast<float>(muted ? 0.0 : volumeSlider.getValue()));
+            transportSource.setGain(muted ? 0.0f : userGain());
         }
         else
         {
@@ -2045,7 +2063,7 @@ void WaveformView::setPlaybackGain(float gain)
 {
     // Still respects mute and the volume slider: an audition envelope scales what the
     // user set, it does not override it.
-    const float user = muted ? 0.0f : static_cast<float>(volumeSlider.getValue());
+    const float user = muted ? 0.0f : userGain();
     transportSource.setGain(juce::jlimit(0.0f, 4.0f, gain) * user);
 }
 
