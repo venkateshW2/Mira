@@ -27,6 +27,8 @@
 #include "mira/caption/CaptionFields.h"
 #include "mira/caption/Sa3Renderer.h"
 #include "GenerateWindow.h"
+#include "TrayIcon.h"
+#include "LaunchWindow.h"
 #include "PrepareWindow.h"
 #include "LogView.h"
 
@@ -1216,6 +1218,7 @@ public:
         // knows how to make and file one -- all that is "current" about it lives here.
         folderTree->onProjectOpened = [this](const juce::File& f) {
             setCurrentProject(f);
+            rememberRecentProject(f);
             // Opening a project is how a generating session starts, so it opens the
             // window that session happens in -- File > New Project otherwise leaves you
             // looking at an empty folder with no hint of what comes next.
@@ -1570,6 +1573,36 @@ public:
     // deleted or unmounted since last launch is silently forgotten rather than reported
     // as an error -- nothing is lost, and the first New/Open Project sets it again.
     static constexpr const char* kCurrentProjectKey = "current_project";
+    // The recent list, newest first, newline-separated. In ui_settings for the same
+    // reason the current project is: a preferences file could disagree with the
+    // ui_folder_roots rows these paths name, and then "Recent" offers a project the
+    // library has never heard of.
+    static constexpr const char* kRecentProjectsKey = "recent_projects";
+    static constexpr int kMaxRecentProjects = 10;
+
+    juce::StringArray getRecentProjects() const
+    {
+        juce::StringArray out;
+        if (auto stored = database->getSetting(kRecentProjectsKey))
+            out.addLines(juce::String(*stored));
+        out.removeEmptyStrings();
+        // A project whose folder has been deleted or unmounted is dropped rather than
+        // offered -- the same rule getCurrentProject() follows. An entry that cannot be
+        // opened is worse than a shorter list.
+        for (int i = out.size(); --i >= 0;)
+            if (!juce::File(out[i]).isDirectory()) out.remove(i);
+        return out;
+    }
+
+    void rememberRecentProject(const juce::File& project)
+    {
+        if (!project.isDirectory()) return;
+        auto list = getRecentProjects();
+        list.removeString(project.getFullPathName());      // re-opening promotes, never duplicates
+        list.insert(0, project.getFullPathName());
+        while (list.size() > kMaxRecentProjects) list.remove(list.size() - 1);
+        database->setSetting(kRecentProjectsKey, list.joinIntoString("\n").toStdString());
+    }
 
     juce::File getCurrentProject() const
     {
@@ -3121,6 +3154,17 @@ public:
     // MIRA-GENERATE.md Phase 2. Needs a project: without one there is no output folder
     // to bind and no cue to keep into, so this asks for one rather than opening a window
     // that would quietly write into ~/Music like the training bench does.
+    // One way in, used by the folder tree, the File menu, the menu-bar glyph and the
+    // launch dialog. Anything that opens a project goes through here, so none of them
+    // can disagree about what opening one means.
+    void openProject(const juce::File& folder)
+    {
+        if (!folder.isDirectory()) return;
+        setCurrentProject(folder);
+        rememberRecentProject(folder);
+        showProjectWindow();
+    }
+
     void showProjectWindow()
     {
         auto project = getCurrentProject();
@@ -4444,9 +4488,11 @@ public:
 
         // The other half of closeButtonPressed: once the window that was keeping the app
         // alive has gone, there is nothing left to be in front of.
-        content->onGenerationWindowClosed = [this] {
-            if (!isVisible()) juce::JUCEApplication::getInstance()->systemRequestedQuit();
-        };
+        // The app OUTLIVES its windows now. Closing the last one used to quit, which
+        // meant a project window and a browser were the only two things keeping mira
+        // alive and closing both lost the session. On macOS an app with no windows open
+        // is ordinary; the way back is the menu-bar glyph (TrayIcon.h) and the Dock.
+        content->onGenerationWindowClosed = [this] {};
         content->onWindowTitleChanged = [this] { updateTitle(); };
         updateTitle();
     }
@@ -4466,15 +4512,10 @@ public:
 
     // MIRA-GENERATE.md §3.3: quit only when the last window closes. This used to quit
     // unconditionally, which meant closing the browser killed a generation in progress.
-    void closeButtonPressed() override
-    {
-        if (mainComponent != nullptr && mainComponent->hasGenerationWindowOpen())
-        {
-            setVisible(false); // hidden, NOT destroyed -- it owns the generate window
-            return;
-        }
-        juce::JUCEApplication::getInstance()->systemRequestedQuit();
-    }
+    // Hidden, never destroyed: this window owns the library, the folder tree and every
+    // generate window, so closing it must not tear any of that down. Quitting is Cmd-Q
+    // or the glyph's Quit, which is what those commands are for.
+    void closeButtonPressed() override { setVisible(false); }
 
     // Window > Library, and the generate window closing while this one is hidden.
     void reveal()
@@ -4705,6 +4746,10 @@ public:
         // destruction order alone for that part.
         juce::LookAndFeel::setDefaultLookAndFeel(&lookAndFeel);
         mainWindow = std::make_unique<MainWindow>(getApplicationName(), lookAndFeel);
+        // Built, but not shown. The library is one of two things mira does and opening it
+        // unconditionally is what hid the other one. It still has to EXIST first --
+        // everything, the database included, hangs off MainComponent.
+        mainWindow->setVisible(false);
 
         menuModel.onAddFolder = [this] { mainWindow->getMainComponent().getFolderTree().promptAddFolder(); };
         menuModel.onAddFiles = [this] { mainWindow->getMainComponent().getFolderTree().promptAddFiles(); };
@@ -4748,6 +4793,48 @@ public:
 #if JUCE_MAC
         juce::MenuBarModel::setMacMainMenu(&menuModel);
 #endif
+
+        // The glyph. Created last, once everything it can reach exists.
+        tray = std::make_unique<MiraTrayIcon>();
+        tray->onShowLibrary = [this] { mainWindow->reveal(); };
+        tray->onNewProject  = [this] { mainWindow->getMainComponent().getFolderTree().promptNewProject(); };
+        tray->onOpenProject = [this] { mainWindow->getMainComponent().getFolderTree().promptOpenProject(); };
+        tray->buildRecentMenu = [this](juce::PopupMenu& menu) {
+            auto recent = mainWindow->getMainComponent().getRecentProjects();
+            for (int i = 0; i < recent.size(); ++i)
+                menu.addItem(100 + i, juce::File(recent[i]).getFileName());
+        };
+        tray->onRecentChosen = [this](int index) {
+            auto recent = mainWindow->getMainComponent().getRecentProjects();
+            if (juce::isPositiveAndBelow(index, recent.size()))
+                mainWindow->getMainComponent().openProject(juce::File(recent[index]));
+        };
+        tray->onQuit = [this] { systemRequestedQuit(); };
+
+        showLaunchWindow();
+    }
+
+    // The first screen. Named choices instead of an assumed one.
+    void showLaunchWindow()
+    {
+        auto& main = mainWindow->getMainComponent();
+        launchWindow = std::make_unique<LaunchWindow>(lookAndFeel, main.getRecentProjects());
+        auto dismiss = [this] {
+            // callAsync: this runs from inside the window's own button callback, and
+            // deleting a component from its own message is how JUCE apps crash.
+            juce::MessageManager::callAsync([this] { launchWindow.reset(); });
+        };
+        launchWindow->onClosed = dismiss;
+        launchWindow->content->onOpenLibrary = [this, dismiss] { mainWindow->reveal(); dismiss(); };
+        launchWindow->content->onNewProject = [this, dismiss] {
+            mainWindow->getMainComponent().getFolderTree().promptNewProject(); dismiss();
+        };
+        launchWindow->content->onOpenProject = [this, dismiss] {
+            mainWindow->getMainComponent().getFolderTree().promptOpenProject(); dismiss();
+        };
+        launchWindow->content->onRecentChosen = [this, dismiss](juce::File f) {
+            mainWindow->getMainComponent().openProject(f); dismiss();
+        };
     }
 
     void shutdown() override
@@ -4755,6 +4842,10 @@ public:
 #if JUCE_MAC
         juce::MenuBarModel::setMacMainMenu(nullptr);
 #endif
+        // Before mainWindow: every one of its callbacks dereferences mainWindow, and a
+        // status item can still be clicked while the app is tearing down.
+        tray = nullptr;
+        launchWindow = nullptr;
         audioSettingsWindow = nullptr;
         mainWindow = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
@@ -4765,6 +4856,8 @@ private:
     MiraMenuBarModel menuModel;
     std::unique_ptr<MainWindow> mainWindow;
     std::unique_ptr<AudioSettingsWindow> audioSettingsWindow;
+    std::unique_ptr<MiraTrayIcon> tray;
+    std::unique_ptr<LaunchWindow> launchWindow;
 };
 
 START_JUCE_APPLICATION(MiraUiApp)
