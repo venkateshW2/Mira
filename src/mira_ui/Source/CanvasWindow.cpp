@@ -88,6 +88,24 @@ juce::Rectangle<int> CanvasView::faderBoxFor(int lane) const
     return { 8, laneToY(lane) + laneHeight - 18, kHeaderWidth - 30, 8 };
 }
 
+// Muted and deliberately NOT the accent: the accent means "selected" and "playing"
+// everywhere else in mira, so a column of amber faders made every track look active at
+// once. That is most of what "the yellow fader kills the ui" was.
+juce::Colour CanvasView::laneColour(int lane)
+{
+    static const juce::Colour palette[] = {
+        juce::Colour(0xff6f9bd1),   // slate blue
+        juce::Colour(0xffc98a7a),   // clay
+        juce::Colour(0xff7fae8c),   // sage
+        juce::Colour(0xffb79bd0),   // lilac
+        juce::Colour(0xffd0b06a),   // brass
+        juce::Colour(0xff6fb0b5),   // teal
+        juce::Colour(0xffd08f9f),   // rose
+        juce::Colour(0xff9aa8c4)    // steel
+    };
+    return palette[(size_t) juce::jmax(0, lane) % (sizeof(palette) / sizeof(palette[0]))];
+}
+
 juce::Rectangle<int> CanvasView::meterBoxFor(int lane) const
 {
     // VERTICAL, at the right edge of the header, running the lane's full height. A
@@ -603,7 +621,8 @@ void CanvasView::paint(juce::Graphics& g)
             continue;
         }
 
-        g.setColour(MiraLookAndFeel::surface3.withAlpha(laneMuted ? 0.45f : 1.0f));
+        const auto tint = laneColour(item->block.lane);
+        g.setColour(tint.withAlpha(laneMuted ? 0.07f : 0.17f));
         g.fillRoundedRectangle(r.toFloat(), 5.0f);
 
         if (item->thumb != nullptr && item->thumb->getTotalLength() > 0.0)
@@ -644,12 +663,12 @@ void CanvasView::paint(juce::Graphics& g)
             }
         }
 
-        g.setColour(isSelected ? MiraLookAndFeel::accent : MiraLookAndFeel::border);
+        g.setColour(isSelected ? MiraLookAndFeel::text : tint.withAlpha(0.55f));
         g.drawRoundedRectangle(r.toFloat().reduced(0.5f), 5.0f, isSelected ? 1.8f : 1.0f);
 
         if (r.getHeight() >= 46)
         {
-            g.setColour(isSelected ? MiraLookAndFeel::text : MiraLookAndFeel::textDim);
+            g.setColour(isSelected ? MiraLookAndFeel::text : tint.brighter(0.4f));
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
             // "block1 _ name of the file": the block's own name AND what is in it. The
             // block name alone says nothing about which take you chose, and the filename
@@ -697,7 +716,7 @@ void CanvasView::paint(juce::Graphics& g)
             drawChip(muteBoxFor(lane), "M", muted,  MiraLookAndFeel::warn);
             drawChip(soloBoxFor(lane), "S", soloed, MiraLookAndFeel::accent);
 
-            g.setColour(muted ? MiraLookAndFeel::textFaint : MiraLookAndFeel::textDim);
+            g.setColour(muted ? MiraLookAndFeel::textFaint : laneColour(lane).withAlpha(0.9f));
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.0f)));
             if (lane != renamingLane)
                 g.drawText(laneNames[lane].isNotEmpty() ? laneNames[lane] : juce::String(lane + 1),
@@ -729,7 +748,8 @@ void CanvasView::paint(juce::Graphics& g)
                 const float frac = (float) ((db + 60.0) / 66.0);
                 g.setColour(MiraLookAndFeel::surface3);
                 g.fillRoundedRectangle(fader.toFloat(), 3.0f);
-                g.setColour(muted ? MiraLookAndFeel::textFaint : MiraLookAndFeel::accent.withAlpha(0.8f));
+                g.setColour(muted ? MiraLookAndFeel::textFaint
+                                  : laneColour(lane).withAlpha(0.85f));
                 g.fillRoundedRectangle(fader.toFloat().withWidth(juce::jmax(3.0f, fader.getWidth() * frac)), 3.0f);
                 // Unity marked, because "where was 0 dB again" is the one question a
                 // fader with no numbers has to answer at a glance.
@@ -1042,7 +1062,16 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
 
 void CanvasView::togglePlay()
 {
-    if (player.isPlaying()) player.stop(); else player.play();
+    if (player.isPlaying())
+    {
+        player.stop();
+        if (returnOnStop) player.setPositionSeconds(playedFrom);
+    }
+    else
+    {
+        playedFrom = player.getPositionSeconds();
+        player.play();
+    }
     if (onStateChanged) onStateChanged();
     repaint();
 }
@@ -1096,7 +1125,9 @@ void CanvasView::filesDropped(const juce::StringArray& files, int x, int y)
 {
     juce::Array<juce::File> keep;
     for (const auto& f : files) keep.add(juce::File(f));
-    addFiles(keep, juce::jmax(0.0, xToSeconds(x)), yToLane(y));
+    // Clamped to ONE past the last track. Dropping low on an empty canvas used to create
+    // every lane up to the cursor -- three tracks from one file, two of them empty.
+    addFiles(keep, juce::jmax(0.0, xToSeconds(x)), juce::jmin(yToLane(y), laneCount));
 }
 
 void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds, int lane)
@@ -1120,11 +1151,15 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
         reader.reset();
 
         auto v = std::make_unique<Visual>();
-        v->block.lane = lane;
+        v->block.lane = juce::jlimit(0, laneCount, lane);
         v->block.start = at;
         v->block.length = len;
         v->block.id = nextId++;
         v->block.name = nextBlockName();
+        laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes,
+                                  juce::jmax(laneCount, v->block.lane + 1));
+        if (laneNames[v->block.lane].isEmpty())
+            laneNames.set(v->block.lane, "track " + juce::String(v->block.lane + 1));
 
         auto landed = f;
         if (auto folder = blockFolderFor(*v); folder != juce::File())
@@ -1149,9 +1184,6 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
 
         setFileOn(*v, landed);
         v->block.length = len;
-        laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, juce::jmax(laneCount, lane + 1));
-        if (laneNames[v->block.lane].isEmpty())
-            laneNames.set(v->block.lane, "track " + juce::String(v->block.lane + 1));
         selected.clear();
         selected.insert(v->block.id);
         items.push_back(std::move(v));
@@ -1497,6 +1529,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
                       juce::dontSendNotification);
         meter.setColour(juce::Label::textColourId,
                         held > 1.0f ? MiraLookAndFeel::warn : MiraLookAndFeel::textFaint);
+        // The labels are child components and repaint themselves; the master meter is
+        // drawn by THIS component's paint, which nothing was asking to run again. The
+        // number moved and the bar never did.
+        repaint(masterMeter.expanded(2, 2));
     }
 
     float held = 0.0f;

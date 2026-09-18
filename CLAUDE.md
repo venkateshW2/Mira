@@ -4,7 +4,7 @@ The index to every document in this repo: what each one is, whether it is curren
 when to read it. **Start here.** If you are picking the project up after a break, or you
 are an agent with no memory of the last session, this file is the entry point.
 
-**Last updated: 2026-09-17 (evening).** Keep the *Recent work* log at the bottom current — that is
+**Last updated: 2026-09-19.** Keep the *Recent work* log at the bottom current — that is
 this file's second job.
 
 ---
@@ -54,6 +54,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | [PRD.md](PRD.md) | the design: stack, models, phases, licence reasoning, every "why this and not that" | current as design; §-numbers are cited throughout the code |
 | [TASKS.md](TASKS.md) | the build checklist, phase by phase. Phases 0–5 complete, **Phase 6 in progress** | live — tick items here |
 | [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — **phases 1–5 built**, 6–7 open (2026-09-17) |
+| [CANVAS.md](CANVAS.md) | **the block canvas** — the Blockhead-shaped experiment: blocks that own their generator, tracks that sum, and the `.mira` document | live — experimental, 2026-09-19 |
 
 ### Captioning and training
 
@@ -156,6 +157,33 @@ These are not style preferences. Each one exists because breaking it caused a re
 ## Recent work
 
 Newest first. Keep this current — it is how the next session finds the thread.
+
+### 2026-09-19 — the block canvas
+
+A second, separate window ([CANVAS.md](CANVAS.md)) where a **block owns its generator**:
+interior a private take folder, exterior one piece of audio on a track. Only the chosen
+take reaches the timeline, which removes the clipping risk of stacked alternates by
+construction rather than by remembering to mute things. Tracks sum, with fader, mute, solo
+and a meter each. A project is a **`.mira` file**, not a folder — the ambiguity of "is this
+a project or the folder containing one" is what let a parent folder open as a project and
+list the real one inside it as a cue.
+
+Three audio bugs worth keeping, all from the same misunderstanding of
+`BufferingAudioSource` — that it, not the source, owns the read position:
+
+- **every voice silently skipped**: it fills its buffer in chunks far larger than one device
+  block (44,100 at a time) and the scratch buffer was `blockSize + 8`. Near silence, with
+  the odd small block getting through. The skip is a `jassert` now, not a `continue`.
+- **looping restarted every chunk**: it calls `setNextReadPosition(P)` with LINEAR positions
+  before every read, so an internal rewind at the out point meant every chunk restarted at
+  the in point. Looping is a pure mapping now, as `AudioFormatReaderSource` does it.
+- **the meter kept counting after a stop**: it pre-fills whether or not the transport runs.
+
+And one process failure worth more than any of them: **I committed code that did not
+compile.** An edit that was meant to add a declaration matched nothing and reported success
+anyway, and the build that should have caught it ran `cmake --build build` from a directory
+with no build folder — the command failed, a grep for "error:" found none, and I called it
+built. Assert that an edit applied; check the exit status, not the output.
 
 ### 2026-09-17 night — four LoRAs queued across two boxes
 

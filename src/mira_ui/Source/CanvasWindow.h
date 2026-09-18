@@ -56,6 +56,12 @@ public:
     void removeSelected();
     void setLoopFromSelection();
     void toggleLoop();
+    // "stopping the playback the play head returns to the start position of the last
+    // playback" -- the DAW default, and the only sane one when you are looping a bar to
+    // judge it: stop, change something, play again from the same place.
+    void setReturnOnStop(bool shouldReturn) { returnOnStop = shouldReturn; }
+    bool getReturnOnStop() const { return returnOnStop; }
+
     bool isPlaying() const { return player.isPlaying(); }
     bool isLooping() const { return player.isLooping(); }
     double getPositionSeconds() const { return player.getPositionSeconds(); }
@@ -139,6 +145,9 @@ private:
     juce::File projectFolder;      // the folder the document lives in
     juce::File documentFile;       // the .mira itself, or invalid for an unsaved canvas
     bool dirty = false;
+    bool returnOnStop = true;
+    double playedFrom = 0.0;
+
 
     // The view: seconds per pixel and the leftmost visible second. No bars, no beats --
     // there is no tempo here to have them in.
@@ -151,6 +160,12 @@ private:
     // thread reads.
     juce::uint64 muteMask = 0, soloMask = 0;
     juce::StringArray laneNames;
+    // A colour per track. The block takes its track's colour and so does the generator
+    // header, so "which block am I editing" is answered before you read a word.
+    static juce::Colour laneColour(int lane);
+    // A colour per track. The block takes its track's colour and so does the generator
+    // header, so "which block am I editing" is answered by the colour before you have
+    // read a single word.
     // How many tracks EXIST, rather than however many fit the window. An empty canvas
     // with fifteen tracks in it is fifteen promises nobody made; one track and a
     // "+ Track" button is the same thing a DAW does.
