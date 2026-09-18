@@ -134,6 +134,23 @@ PromptBuilderContent::Field& PromptBuilderContent::addField(const juce::String& 
     f.value.setMultiLine(false);
     fieldsHolder.addAndMakeVisible(f.value);
 
+    // A row with no vocabulary has nothing to roll FROM, so it gets no die rather than a
+    // die that does nothing -- the trigger row and the free-text tail included.
+    {
+        auto* fp = &f;
+        const bool rollable = key.isNotEmpty() && (vocabKey.isNotEmpty() || key == "BPM");
+        f.roll.setEnabled(rollable);
+        f.roll.setTooltip("Roll just this field.");
+        f.roll.onClick = [this, fp] {
+            randomiseField(*fp);
+            syncPicker(*fp);
+            previewLabel.setText("rolled " + fp->key + " - edit anything, then Construct",
+                                  juce::dontSendNotification);
+        };
+        if (rollable) fieldsHolder.addAndMakeVisible(f.roll);
+        else fieldsHolder.addChildComponent(f.roll);
+    }
+
     if (vocabKey.isNotEmpty()) {
         const auto values = byFrequency(vocabKey);
         if (!values.empty()) {
@@ -221,37 +238,42 @@ juce::String PromptBuilderContent::weightedPick(const Vocab& from) const {
     return from.begin()->first;
 }
 
-void PromptBuilderContent::randomise() {
-    for (auto& f : fields) {
-        // The trigger row is the QUESTION, not part of the answer -- rolling it would
-        // change which corpus every other field is drawn from, so a re-roll would never
-        // settle. The free-text tail is the user's, and is left alone too.
-        if (f->key.isEmpty()) continue;
-        const auto it = vocabKeyForField.find(f->key);
-        if (it == vocabKeyForField.end()) {
-            if (f->key == "BPM") {               // BPM has no picker but is still a real value
-                const auto pick = weightedPick(pooled("bpm"));
-                f->value.setText(pick, juce::dontSendNotification);
-            }
-            continue;
-        }
-        const auto candidates = pooled(it->second);
-        if (candidates.empty()) { f->value.clear(); continue; }
+// One row's worth of rolling. Pulled out of randomise() rather than copied, so the dice
+// beside a field and the Randomise button can never disagree about what that field's
+// vocabulary is -- which is exactly the drift that a second implementation would create.
+void PromptBuilderContent::randomiseField(Field& f) {
+    // The trigger row is the QUESTION, not part of the answer -- rolling it would change
+    // which corpus every other field is drawn from, so a re-roll would never settle. The
+    // free-text tail is the user's, and is left alone too.
+    if (f.key.isEmpty()) return;
 
-        if (!f->multi) {
-            f->value.setText(weightedPick(candidates), juce::dontSendNotification);
-            continue;
-        }
-        // Multi fields get a handful. Three to five is what a real caption carries; more
-        // reads as a shopping list and dilutes every word in it.
-        const int want = 3 + rng.nextInt(3);
-        juce::StringArray picked;
-        for (int tries = 0; tries < want * 6 && picked.size() < want; ++tries) {
-            const auto v = weightedPick(candidates);
-            if (v.isNotEmpty() && !picked.contains(v)) picked.add(v);
-        }
-        f->value.setText(picked.joinIntoString(", "), juce::dontSendNotification);
+    const auto it = vocabKeyForField.find(f.key);
+    if (it == vocabKeyForField.end()) {
+        if (f.key == "BPM")                      // BPM has no picker but is still a real value
+            f.value.setText(weightedPick(pooled("bpm")), juce::dontSendNotification);
+        return;
     }
+
+    const auto candidates = pooled(it->second);
+    if (candidates.empty()) { f.value.clear(); return; }
+
+    if (!f.multi) {
+        f.value.setText(weightedPick(candidates), juce::dontSendNotification);
+        return;
+    }
+    // Multi fields get a handful. Three to five is what a real caption carries; more
+    // reads as a shopping list and dilutes every word in it.
+    const int want = 3 + rng.nextInt(3);
+    juce::StringArray picked;
+    for (int tries = 0; tries < want * 6 && picked.size() < want; ++tries) {
+        const auto v = weightedPick(candidates);
+        if (v.isNotEmpty() && !picked.contains(v)) picked.add(v);
+    }
+    f.value.setText(picked.joinIntoString(", "), juce::dontSendNotification);
+}
+
+void PromptBuilderContent::randomise() {
+    for (auto& f : fields) randomiseField(*f);
     // Every branch above wrote straight into the text box, so each picker may now be
     // showing something the field no longer says. Put them back in step.
     for (auto& f : fields) syncPicker(*f);
@@ -302,6 +324,10 @@ void PromptBuilderContent::resized() {
         auto line = inner.removeFromTop(24);
         inner.removeFromTop(3);
         f->label.setBounds(line.removeFromLeft(86));
+        // Taken off the RIGHT first, so the text box shrinks to make room for it rather
+        // than the die landing on top of the text box on a narrow window.
+        f->roll.setBounds(line.removeFromRight(22).withSizeKeepingCentre(22, 22));
+        line.removeFromRight(4);
         if (f->picker.getNumItems() > 0) {
             f->picker.setBounds(line.removeFromLeft(190).reduced(0, 1));
             line.removeFromLeft(6);

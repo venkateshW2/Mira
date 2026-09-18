@@ -67,11 +67,38 @@ private:
     // than replacing it, which is what makes multi-value fields (instruments, moods)
     // work without a custom multi-select component -- and it keeps every field
     // hand-editable, including to values no corpus has ever used.
+    // A die, drawn rather than fetched: three pips on a rounded square, which reads as
+    // "roll this" at 18px where a word would not fit at all.
+    struct DiceButton : juce::Button {
+        DiceButton() : juce::Button("roll") {}
+        void paintButton(juce::Graphics& g, bool over, bool down) override {
+            auto r = getLocalBounds().toFloat().reduced(2.0f);
+            if (over || down)
+                { g.setColour(MiraLookAndFeel::surface2.brighter(down ? 0.22f : 0.10f));
+                  g.fillRoundedRectangle(r, 4.0f); }
+            const auto ink = isEnabled() ? (over ? MiraLookAndFeel::text : MiraLookAndFeel::textDim)
+                                          : MiraLookAndFeel::textFaint;
+            g.setColour(ink);
+            auto face = r.reduced(r.getWidth() * 0.18f, r.getHeight() * 0.18f);
+            g.drawRoundedRectangle(face, 3.0f, 1.3f);
+            const float pip = juce::jmax(1.4f, face.getWidth() * 0.11f);
+            auto dot = [&](float fx, float fy) {
+                g.fillEllipse(face.getX() + face.getWidth() * fx - pip,
+                              face.getY() + face.getHeight() * fy - pip, pip * 2.0f, pip * 2.0f);
+            };
+            dot(0.28f, 0.28f); dot(0.5f, 0.5f); dot(0.72f, 0.72f);
+        }
+    };
+
     struct Field {
         juce::String key;          // emitted as "Key: ..."; empty field is omitted
         juce::Label label;
         juce::ComboBox picker;     // empty when the field is free text only
         juce::TextEditor value;
+        // "per field randomizer": rolls THIS row only. Randomise-all is the same code in
+        // a loop, so the two can never drift into disagreeing about what a field's
+        // vocabulary is.
+        DiceButton roll;
         bool multi = false;
     };
 
@@ -85,6 +112,11 @@ private:
     // UNPICKABLE: choose "tonal", press Clear, choose "tonal" again -- nothing happens,
     // and the row looks broken. Call this after every programmatic write to `value`.
     static void syncPicker(Field& f);
+
+    // One row. Writes the text box and leaves the picker to the caller, because
+    // randomise() syncs every picker once at the end rather than nineteen times.
+    // Declared after Field, which it takes by reference.
+    void randomiseField(Field& f);
 
     // Nineteen fields at 27px need 513px; the layout gave them ~414. removeFromTop on an
     // exhausted rectangle returns an empty one, so the last four -- Motion, Keyscale, BPM
