@@ -117,6 +117,10 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
     promptEditor.setMultiLine(true, true);
     promptEditor.setReturnKeyStartsNewLine(true);
+    // The prompt is the one piece of text in this window you actually read word by word,
+    // so it gets a real reading size rather than the default control size.
+    promptEditor.setFont(laf.sansRegular(13.0f));
+    promptEditor.onTextChange = [this] { resized(); };
     // Matches the CASE and shape the LoRA was actually trained on. underfit's prompt
     // builder capitalises tag names ("Instruments:", "Moods:", "BPM:") before the text
     // encoder ever sees them, so prompting in lower case feeds T5 different tokens than
@@ -1670,6 +1674,22 @@ void GenerateContent::paint(juce::Graphics& g) {
 // (applyBounds=false) so the pane can be given a height tall enough for all of it, and
 // once to place. One function rather than two that must agree -- a measure pass that
 // drifts from the layout pass is how a control ends up half off the bottom of a viewport.
+// How tall the prompt box has to be to show the whole prompt at this width. Measured with
+// the editor's own font through a TextLayout rather than asking the editor, because the
+// measure pass runs BEFORE any bounds are set -- getTextHeight() would be answering about
+// whatever width the editor happened to have last time.
+int GenerateContent::promptHeightFor(int width) const {
+    const float inner = static_cast<float>(juce::jmax(40, width - 14));  // editor's own inset
+    juce::AttributedString as;
+    as.append(promptEditor.getText().isEmpty() ? juce::String("M") : promptEditor.getText(),
+              laf.sansRegular(13.0f));
+    juce::TextLayout layout;
+    layout.createLayout(as, inner);
+    // A floor so an empty prompt is still a box you can aim at, and a ceiling so pasting
+    // an essay cannot push Generate off the bottom of the pane.
+    return juce::jlimit(56, 220, juce::roundToInt(layout.getHeight()) + 14);
+}
+
 int GenerateContent::layoutRightPane(int width, bool applyBounds) {
     juce::Rectangle<int> r { 0, 0, width, 100000 };
     r = r.reduced(10, 8);
@@ -1700,7 +1720,11 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
     };
 
     // --- the prompt, first, because it is what the window is for
-    place(promptEditor, row(72));
+    // Grows with the prompt instead of clipping it. A fixed 72px box cut a seven-field
+    // caption mid-line and left you scrolling a four-line editor to read one sentence.
+    // The height is measured for THIS width with the editor's own font, so the measure
+    // pass and the layout pass cannot disagree about how many lines there are.
+    place(promptEditor, row(promptHeightFor(r.getWidth())));
     {
         auto line = row(26);
         place(buildPromptButton, line.removeFromLeft(130));

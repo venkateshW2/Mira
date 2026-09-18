@@ -444,6 +444,7 @@ private:
     LoraLanes loraLanes;
     std::unique_ptr<InpaintStrip> inpaintStrip;
     int layoutRightPane(int width, bool applyBounds);
+    int promptHeightFor(int width) const;
     juce::TextButton stopButton { "Stop" };
     // Memory readout. Generation RAM scales with clip length (peak was 11 GB at 30 s on
     // a 16 GB machine), and a second SA3 process -- a forgotten gradio, say -- is enough
