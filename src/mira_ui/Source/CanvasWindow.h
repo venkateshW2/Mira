@@ -88,6 +88,11 @@ public:
     std::function<void()> onDocumentChanged;   // title, mostly
     std::function<void()> onSaveRequested, onOpenRequested, onNewRequested;
     void addLane();
+    juce::String nextBlockName() const;
+    // A COPY, not another version. The trim, the fades, the gain, the generator settings
+    // and the same chosen take -- so four bars you like can become four bars you like
+    // twice, which is arranging rather than generating.
+    void duplicateSelection();
     int getLaneCount() const { return laneCount; }
     void writeTo(const juce::File& miraFile) const;
     bool readFrom(const juce::File& miraFile);
@@ -103,6 +108,9 @@ public:
     // generator in mira and this points it at a block.
     // Which block the side panel should be showing, or an empty name for none.
     std::function<void(const juce::String& name, const juce::File& folder)> onOpenGenerator;
+    // Double-click asks for the panel to be SHOWN, not just repointed -- a folded panel
+    // that silently changed which block it was about would be a no-op you cannot see.
+    std::function<void()> onRevealGenerator;
     // A take generated into a block's folder becomes that block's audio.
     void adoptTake(const juce::File& folder, const juce::File& take);
     float readAndClearPeak() { return player.readAndClearPeak(); }

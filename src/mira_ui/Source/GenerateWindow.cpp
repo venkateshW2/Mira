@@ -1982,7 +1982,10 @@ void GenerateContent::log(const juce::String& line) {
 }
 
 void GenerateContent::paint(juce::Graphics& g) {
-    g.fillAll(juce::Colour(0xff1a1a1a));
+    // In the canvas the panel is part of ONE surface with the arrangement beside it, so
+    // it takes the canvas's colour. The hardcoded near-black below is the generate
+    // window's own, where it is the whole window and has nothing to match.
+    g.fillAll(panelOnly ? MiraLookAndFeel::surface2 : juce::Colour(0xff1a1a1a));
     // The panel-mode divider, drawn as a grip rather than a gap -- an invisible drag
     // target is one nobody discovers.
     if (panelOnly && !panelDivider.isEmpty())

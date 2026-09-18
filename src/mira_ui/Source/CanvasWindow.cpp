@@ -141,13 +141,26 @@ void CanvasView::mouseDoubleClick(const juce::MouseEvent& e)
         return;
     }
 
-    // Double-click a block to open its generator. Single click selects and drags, which
-    // is what you do ninety times for every once you want the settings.
+    // Double-click a block opens its generator -- which now means EXPANDING the panel if
+    // it is folded, since the panel no longer opens as a window. Single click selects and
+    // points the panel at it, which is what you do ninety times for every once you want
+    // to go and look at the settings.
     Drag what = Drag::None;
-    if (auto* hit = hitTest(e.getPosition(), what); hit != nullptr && onOpenGenerator)
+    if (auto* hit = hitTest(e.getPosition(), what); hit != nullptr)
     {
-        auto folder = blockFolderFor(*hit);
-        if (folder != juce::File()) onOpenGenerator(hit->block.name, folder);
+        selected.clear();
+        selected.insert(hit->block.id);
+        if (onRevealGenerator) onRevealGenerator();
+        if (onOpenGenerator)
+        {
+            auto folder = blockFolderFor(*hit);
+            const auto label = hit->block.name
+                             + (hit->block.hasAudio()
+                                    ? "  -  " + hit->block.file.getFileNameWithoutExtension()
+                                    : juce::String("  -  empty"));
+            if (folder != juce::File()) onOpenGenerator(label, folder);
+        }
+        repaint();
     }
 }
 
@@ -196,6 +209,19 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
     }
 }
 
+// One place that names a block, so a dropped file and a "+ Block" cannot end up in
+// different naming schemes -- which is exactly how the canvas grew two kinds of block.
+juce::String CanvasView::nextBlockName() const
+{
+    int highest = 0;
+    for (const auto& i : items)
+    {
+        const auto n = i->block.name;
+        if (n.startsWith("block ")) highest = juce::jmax(highest, n.substring(6).getIntValue());
+    }
+    return "block " + juce::String(highest + 1);
+}
+
 void CanvasView::addLane()
 {
     if (laneCount >= CanvasAudioSource::kMaxLanes) return;
@@ -231,7 +257,7 @@ void CanvasView::addEmptyBlock()
     v->block.start = at;
     v->block.length = kNewBlockSeconds;
     v->block.id = nextId++;
-    v->block.name = "block " + juce::String(items.size() + 1);
+    v->block.name = nextBlockName();
     if (laneNames[lane].isEmpty()) laneNames.set(lane, "track " + juce::String(lane + 1));
     laneCount = juce::jmax(laneCount, lane + 1);
     selected.clear();
@@ -821,6 +847,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     {
         if (!e.mods.isShiftDown()) selected.clear();
         announceSelection();
+        if (onOpenGenerator) onOpenGenerator({}, {});
         drag = Drag::Marquee;
         marquee = { e.x, e.y, 0, 0 };
         repaint();
@@ -1074,6 +1101,15 @@ void CanvasView::filesDropped(const juce::StringArray& files, int x, int y)
 
 void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds, int lane)
 {
+    // A DROPPED FILE BECOMES A BLOCK LIKE ANY OTHER, and that is the whole point of this
+    // function now. The first version named the block after the file and left the audio
+    // where it was, so the block's folder was empty, its generator showed "no takes yet",
+    // and its label read "dun-s26-... - dun-s26-..." -- a block that looked like a take
+    // and a generator with nothing in it. Two kinds of block, one of them broken.
+    //
+    // Now: the block is named "block N" like the rest, its folder is created, and the file
+    // is COPIED into it as that block's first take. Drop it, and it is a take you can hear,
+    // re-generate against, and keep beside alternatives -- the same object in every case.
     double at = atSeconds;
     for (const auto& f : files)
     {
@@ -1081,19 +1117,38 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
         if (reader == nullptr) continue;
         const double len = reader->sampleRate > 0.0 ? reader->lengthInSamples / reader->sampleRate : 0.0;
         if (len <= 0.0) continue;
+        reader.reset();
 
         auto v = std::make_unique<Visual>();
-        v->block.file = f;
         v->block.lane = lane;
         v->block.start = at;
         v->block.length = len;
-        v->block.name = f.getFileNameWithoutExtension();
         v->block.id = nextId++;
-        v->thumb = std::make_unique<juce::AudioThumbnail>(512, formats, cache);
-        v->thumb->setSource(new juce::FileInputSource(f));
-        // A drop below the last track MAKES that track, rather than leaving a region
-        // floating on a lane with no header, no fader and no mute -- which is what
-        // happened, and is why it looked like a region belonging to nothing.
+        v->block.name = nextBlockName();
+
+        auto landed = f;
+        if (auto folder = blockFolderFor(*v); folder != juce::File())
+        {
+            if (folder.createDirectory().wasOk())
+            {
+                auto target = folder.getChildFile(f.getFileName());
+                for (int n = 2; target.existsAsFile(); ++n)
+                    target = folder.getChildFile(f.getFileNameWithoutExtension() + "-" + juce::String(n)
+                                                  + f.getFileExtension());
+                // Copied, not moved or referenced: the file may be someone else's, and a
+                // project that stops working because a sample was tidied up elsewhere is
+                // not a project. Its sidecar comes too when it has one.
+                if (f.copyFileTo(target))
+                {
+                    landed = target;
+                    if (auto side = f.withFileExtension("json"); side.existsAsFile())
+                        side.copyFileTo(target.withFileExtension("json"));
+                }
+            }
+        }
+
+        setFileOn(*v, landed);
+        v->block.length = len;
         laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, juce::jmax(laneCount, lane + 1));
         if (laneNames[v->block.lane].isEmpty())
             laneNames.set(v->block.lane, "track " + juce::String(v->block.lane + 1));
@@ -1104,6 +1159,7 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
     }
     markDirty();
     rebuildAudio();
+    announceSelection();
     repaint();
 }
 
@@ -1200,6 +1256,14 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         // Selecting a block points the panel at that block's folder. Nothing opens, moves
         // or floats -- the panel is always there and always about whatever is selected,
         // which is what "feels united" means in practice.
+        view.onRevealGenerator = [this] {
+            if (!panelCollapsed) return;
+            panelCollapsed = false;
+            panelToggle.setButtonText("Generate >");
+            if (panel != nullptr) panel->setVisible(true);
+            blockLabel.setVisible(true);
+            resized();
+        };
         view.onOpenGenerator = [this](const juce::String& name, const juce::File& folder) {
             if (panel == nullptr) return;
             // The same label the block carries on the canvas, so the panel and the track
