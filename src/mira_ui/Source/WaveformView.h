@@ -316,7 +316,17 @@ public:
     // "the osx toolbar should have setting for audio -- like output and buffer" --
     // MiraMenuBarModel's Audio Settings... menu item opens a juce::AudioDeviceSelectorComponent
     // bound to this device manager rather than mira owning a second, redundant one.
-    juce::AudioDeviceManager& getAudioDeviceManager() { return deviceManager; }
+    juce::AudioDeviceManager& getAudioDeviceManager() { return *device; }
+
+    // Play through someone else's device manager instead of this view's own.
+    //
+    // Every WaveformView used to own one, so a browser and two project windows meant
+    // three independent audio devices -- and Audio Settings only ever reconfigured the
+    // browser's. Changing the driver there did nothing to what a project window played
+    // through, which is exactly what "changing the driver doesn't take" looks like from
+    // the outside. One device for the app is the fix; the owned one stays as the default
+    // so a WaveformView built on its own still works.
+    void useSharedDeviceManager(juce::AudioDeviceManager& shared);
 
     // Audio settings did not survive a relaunch: initialiseWithDefaultDevices ran every
     // launch and there was nowhere to put a choice (the app has no PropertiesFile at
@@ -325,7 +335,7 @@ public:
     // the note above SegmentSpan). MainComponent owns where it is kept.
     juce::String getAudioDeviceState() const
     {
-        if (auto xml = deviceManager.createStateXml()) return xml->toString();
+        if (auto xml = device->createStateXml()) return xml->toString();
         return {};
     }
 
@@ -336,7 +346,7 @@ public:
         if (xml == nullptr) return;
         // selectDefaultDeviceOnFailure: a saved interface that is not plugged in today
         // must fall back to the built-in output, not leave playback silently dead.
-        deviceManager.initialise(0, 2, xml.get(), true);
+        device->initialise(0, 2, xml.get(), true);
     }
 
     // Fires whenever the device setup actually changes, so the new state can be stored.
@@ -371,7 +381,8 @@ private:
     // Playback graph -- own AudioDeviceManager (0 inputs, 2 outputs: no mic permission
     // prompt needed since this never records) rather than sharing one with anything else
     // in mira_ui, since nothing else plays audio yet.
-    juce::AudioDeviceManager deviceManager;
+    juce::AudioDeviceManager ownedDeviceManager;
+    juce::AudioDeviceManager* device = &ownedDeviceManager;
     juce::AudioSourcePlayer audioSourcePlayer;
     juce::AudioTransportSource transportSource;
     // Where a ranged audition must stop; <= 0 means "play to the end of the file" (ordinary

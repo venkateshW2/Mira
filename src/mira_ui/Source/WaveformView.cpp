@@ -82,14 +82,14 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
 
     // 0 inputs, 2 outputs -- playback only, never records, so no microphone permission
     // prompt (macOS would otherwise ask the first time an input-capable device opens).
-    auto err = deviceManager.initialiseWithDefaultDevices(0, 2);
+    auto err = device->initialiseWithDefaultDevices(0, 2);
     juce::ignoreUnused(err); // if this fails, playback silently won't work rather than
                              // crashing the app over it -- browsing/scanning still do.
     audioSourcePlayer.setSource(&transportSource);
-    deviceManager.addAudioCallback(&audioSourcePlayer);
+    device->addAudioCallback(&audioSourcePlayer);
     // Device/rate/buffer changes reach changeListenerCallback above, which is what lets
     // the choice be stored instead of reset at every launch.
-    deviceManager.addChangeListener(this);
+    device->addChangeListener(this);
 
     playButton.onClick = [this] { togglePlayPause(); };
     addAndMakeVisible(playButton);
@@ -176,9 +176,9 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
 WaveformView::~WaveformView()
 {
     thumbnail.removeChangeListener(this);
-    deviceManager.removeChangeListener(this);
+    device->removeChangeListener(this);
     transportSource.setSource(nullptr);
-    deviceManager.removeAudioCallback(&audioSourcePlayer);
+    device->removeAudioCallback(&audioSourcePlayer);
     audioSourcePlayer.setSource(nullptr);
 }
 
@@ -345,6 +345,23 @@ void WaveformView::setLanesButtonVisible(bool shouldShow)
     lanesShown = shouldShow;
     lanesButton.setVisible(shouldShow);
     resized();
+}
+
+void WaveformView::useSharedDeviceManager(juce::AudioDeviceManager& shared)
+{
+    if (device == &shared) return;
+    // Detach from the old one FIRST. Leaving the callback registered on a device this
+    // view no longer plays through means two devices pulling on one AudioSourcePlayer,
+    // which is a data race on the transport, not merely a stale reference.
+    device->removeChangeListener(this);
+    device->removeAudioCallback(&audioSourcePlayer);
+    // The view's own device is not just abandoned: it is closed, or it keeps the
+    // hardware open and a second output stream running for nothing.
+    if (device == &ownedDeviceManager) ownedDeviceManager.closeAudioDevice();
+
+    device = &shared;
+    device->addAudioCallback(&audioSourcePlayer);
+    device->addChangeListener(this);
 }
 
 void WaveformView::setFile(const juce::File& file)
@@ -1127,7 +1144,7 @@ void WaveformView::changeListenerCallback(juce::ChangeBroadcaster* source)
     // The device manager broadcasts too now (it is listened to so audio settings can be
     // persisted); a device change is not a reason to repaint the waveform, and the
     // thumbnail's own changes are not a reason to write to the database.
-    if (source == &deviceManager)
+    if (source == device)
     {
         if (onAudioDeviceChanged) onAudioDeviceChanged();
         return;

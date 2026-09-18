@@ -1356,6 +1356,10 @@ public:
         addAndMakeVisible(*fileList);
 
         bottomPanel = std::make_unique<BottomPanel>(laf);
+        // The browser's waveform joins the shared device BEFORE the saved state is
+        // restored, so the stored driver choice is applied once, to the device everything
+        // actually plays through.
+        bottomPanel->getWaveform().useSharedDeviceManager(sharedAudioDevice);
         restoreAudioSettings(); // before anything plays, so the first click uses the right device
         // Notices when the CLI (or another session) changes the library underneath us.
         libraryWatcher.tick = [this] { libraryWatchTick(); };
@@ -1502,7 +1506,12 @@ public:
         return false;
     }
 
-    juce::AudioDeviceManager& getAudioDeviceManager() { return bottomPanel->getAudioDeviceManager(); }
+    // ONE device for the app. Every WaveformView used to own its own, so the browser and
+    // each project window played through a different one -- and Audio Settings, which is
+    // handed this manager, only ever reconfigured the browser's. Picking a new driver did
+    // nothing to what a project window played through, which is what "changing the driver
+    // doesn't take" looks like from outside.
+    juce::AudioDeviceManager& getAudioDeviceManager() { return sharedAudioDevice; }
 
     // Audio settings survive a relaunch now. They did not: there is no PropertiesFile
     // anywhere in this app and initialiseWithDefaultDevices ran unconditionally at every
@@ -3137,6 +3146,7 @@ public:
         if (generateWindow != nullptr) { generateWindow->toFront(true); return; }
         generateWindow = std::make_unique<GenerateWindow>(laf, findStudioRoot(), *database,
                                                            ensureWorkerHub());
+        generateWindow->content->useSharedAudioDevice(sharedAudioDevice);
         generateWindow->content->onLibraryChanged = [this] {
             if (folderTree != nullptr) folderTree->refresh();
         };
@@ -3195,6 +3205,7 @@ public:
         };
         // setProject BEFORE setOutputFolder: loading the existing takes needs to know
         // the project in order to find the cue folders that hold the kept ones.
+        raw->content->useSharedAudioDevice(sharedAudioDevice);
         raw->content->setProject(project);
         raw->content->setOutputFolder(project.getChildFile("takes"));
         projectWindows.push_back(std::move(window));
@@ -4424,6 +4435,9 @@ private:
     // One SA3 worker for all of them. Declared here because MainComponent outlives every
     // generate window; see Sa3WorkerHub.h for why sharing is required rather than nice.
     std::unique_ptr<Sa3WorkerHub> workerHub;
+    // Declared here, not inside a window: it outlives every waveform that plays through
+    // it, and the Audio Settings window holds a reference for the life of the app.
+    juce::AudioDeviceManager sharedAudioDevice;
     std::unique_ptr<LoraLibraryWindow> loraLibraryWindow;
     std::unique_ptr<PrepareWindow> prepareWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;

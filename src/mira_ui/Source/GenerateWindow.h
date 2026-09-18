@@ -309,9 +309,28 @@ public:
     // dropdowns update without reopening the generate window.
     void reloadLoras() { refreshLoras(); }
 
+    // Join the app's single audio device, so this window plays through whatever Audio
+    // Settings last chose rather than through a device of its own that nothing can reach.
+    void useSharedAudioDevice(juce::AudioDeviceManager& shared)
+    {
+        preview.useSharedDeviceManager(shared);
+    }
+
     void setOutputFolder(const juce::File& folder)
     {
-        if (!folder.isDirectory()) return;
+        if (folder.getFullPathName().isEmpty()) return;
+        // CREATE it. A brand-new project has no takes/ yet, and returning early here
+        // left the window on its default -- ~/Music/mira-generated, which holds every
+        // previous session's takes. So a new project opened showing another project's
+        // files and wrote its own takes there too, silently. Convention 6: never fall
+        // back to something that looks like an answer.
+        if (!folder.isDirectory() && !folder.createDirectory().wasOk())
+        {
+            log("could not create output folder: " + folder.getFullPathName());
+            statusLabel.setText("could not create " + folder.getFullPathName(),
+                                 juce::dontSendNotification);
+            return;
+        }
         outputFolder = folder;
         log("output folder: " + folder.getFullPathName());
         loadExistingTakes();
