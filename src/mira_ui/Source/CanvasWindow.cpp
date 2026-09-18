@@ -261,6 +261,17 @@ juce::String CanvasView::nextBlockName() const
         const auto n = i->block.name;
         if (n.startsWith("block ")) highest = juce::jmax(highest, n.substring(6).getIntValue());
     }
+
+    // Skip past any name whose FOLDER already exists on disk. Removing a block takes it
+    // off the canvas but leaves its folder -- so the next "block 3" reused that folder and
+    // opened showing the deleted block's files. A new block has to be new all the way
+    // down, not just in the arrangement.
+    for (int n = highest + 1; n < highest + 1000; ++n)
+    {
+        const auto name = "block " + juce::String(n);
+        if (!projectFolder.isDirectory()) return name;
+        if (!projectFolder.getChildFile(juce::File::createLegalFileName(name)).exists()) return name;
+    }
     return "block " + juce::String(highest + 1);
 }
 

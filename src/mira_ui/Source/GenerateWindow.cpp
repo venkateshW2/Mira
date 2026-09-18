@@ -2155,11 +2155,20 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
     // button sitting between "Add LoRA file..." and "Build prompt..." with nothing to say
     // they were unrelated ("clean - output folder - show in finder are confusing the way
     // it is placed").
+    // In the canvas the BLOCK owns where its audio goes, so pointing the output somewhere
+    // else would break the one thing that makes a block a block. The row is the generate
+    // window's, where there is no block to own it.
+    if (!panelOnly)
     {
         auto line = row(26);
         place(outFolderButton, line.removeFromLeft(120));
         line.removeFromLeft(6);
         place(nameEditor, line);
+    }
+    else if (applyBounds)
+    {
+        outFolderButton.setBounds({});
+        nameEditor.setBounds({});
     }
 
     // --- the training bench, only on the SA3 Generate face (§3.4)
@@ -2229,35 +2238,30 @@ void GenerateContent::resized() {
     // --- column mode: everything in one narrow column, controls over takes.
     if (panelOnly)
     {
+        // THE PANEL IS THE GENERATOR AND NOTHING ELSE.
+        //
+        // It used to carry the take stack too, because it is the same GenerateContent the
+        // generate window uses and I brought the whole thing across. That was wrong, and
+        // it made the canvas incoherent: a block IS a generator with one result, so NOW,
+        // TAKES, KEPT, DISCARDED and the keep/discard thumbs are four states and two
+        // verbs the canvas has no use for. Generate, and the file lands on the block.
+        // Want to keep the old one? Duplicate the block -- that is what Duplicate is for.
+        //
+        // The files are all still on disk in the block's folder; they are simply not
+        // presented as a second hierarchy inside a view that already has one.
         rightView.setVisible(true);
         if (sidebar != nullptr) sidebar->setBounds({});
+        takesView.setBounds({});
+        takesLabel.setBounds({});
+        cleanupButton.setBounds({});
+        exportButton.setBounds({});
+        panelDivider = {};
 
-        // The controls take the height they need, up to two thirds -- past that the takes
-        // have nowhere to live, and a panel whose take list is four pixels tall is a panel
-        // with no take list.
         const int innerWidth = r.getWidth() - (rightView.isVerticalScrollBarShown() ? 10 : 0);
         const int needed = layoutRightPane(innerWidth, false);
-        // The split is DRAGGED, not derived. It used to be "whatever the controls need, up
-        // to two thirds", which meant the takes got whatever was left over and you could
-        // not decide otherwise.
-        const int controlsHeight = juce::jlimit(120, juce::jmax(140, r.getHeight() - 120),
-                                                 juce::roundToInt(r.getHeight() * panelSplit));
-        auto controls = r.removeFromTop(controlsHeight);
-        panelDivider = r.removeFromTop(8);
-        r.removeFromTop(2);
-        rightView.setBounds(controls);
-        rightPane.setSize(innerWidth, juce::jmax(needed, controls.getHeight()));
+        rightView.setBounds(r);
+        rightPane.setSize(innerWidth, juce::jmax(needed, r.getHeight()));
         layoutRightPane(innerWidth, true);
-
-        auto header = r.removeFromTop(26);
-        cleanupButton.setBounds(header.removeFromRight(84).withSizeKeepingCentre(84, 22));
-        header.removeFromRight(6);
-        exportButton.setBounds(header.removeFromRight(76).withSizeKeepingCentre(76, 22));
-        header.removeFromRight(6);
-        takesLabel.setBounds(header);
-        r.removeFromTop(4);
-        takesView.setBounds(r);
-        layoutTakeStack();
         return;
     }
 

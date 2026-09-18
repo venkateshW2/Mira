@@ -355,6 +355,14 @@ public:
         if (panelOnly == shouldBePanelOnly) return;
         panelOnly = shouldBePanelOnly;
         if (panelOnly && sidebar != nullptr) sidebar->setVisible(false);
+        // The take stack is not hidden by empty bounds alone -- a Viewport with no bounds
+        // still swallows clicks where it used to be.
+        takesView.setVisible(!panelOnly);
+        outFolderButton.setVisible(!panelOnly);
+        nameEditor.setVisible(!panelOnly);
+        takesLabel.setVisible(!panelOnly);
+        cleanupButton.setVisible(!panelOnly);
+        exportButton.setVisible(!panelOnly);
         generatePaneCollapsed = false;
         generatePaneToggle.setVisible(!panelOnly);
         resized();
@@ -389,6 +397,7 @@ public:
         outputFolder = juce::File();
         if (takeStack != nullptr) takeStack->clear();
         takesLabel.setText("select a block", juce::dontSendNotification);
+        statusLabel.setText("select a block", juce::dontSendNotification);
         preview.setFile({});
         resultTile.setFile({});
         keepButton.setEnabled(false);
