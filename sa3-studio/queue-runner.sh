@@ -37,6 +37,14 @@ fi
 echo $$ > "$LOCK/pid"
 trap 'rm -rf "$LOCK"' EXIT
 
+# Is anything actually on the GPU? A loading or training run holds gigabytes; an idle
+# A30 sits near zero. 500 MiB is well clear of both.
+gpu_busy() {
+  local used
+  used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+  [ -n "$used" ] && [ "$used" -gt 500 ] 2>/dev/null
+}
+
 echo "[$(date -u)] runner up; queued: $(ls $Q/*.json 2>/dev/null | wc -l)" >> $LOG
 
 while true; do
@@ -46,13 +54,18 @@ while true; do
     break
   fi
 
-  while pgrep -f lora_train.py >/dev/null; do sleep 60; done
+  # Readiness is asked of the GPU, not the process table. pgrep kept matching for 27
+  # minutes after a trainer had exited and the GPU had dropped to 0% -- a finished
+  # process still answers pgrep until it is reaped, and the runner sat waiting on a run
+  # that was already over while the box billed for an idle A30. The GPU cannot lie about
+  # whether work is on it.
+  while gpu_busy; do sleep 60; done
   echo "[$(date -u)] GPU free; settling ${SETTLE}s before $(basename $NEXT)" >> $LOG
   sleep $SETTLE
 
   # Someone may have started a run by hand while we settled. Theirs wins; we wait again
   # rather than stacking a second one on top of it.
-  if pgrep -f lora_train.py >/dev/null; then
+  if gpu_busy; then
     echo "[$(date -u)] training restarted during settle; standing down and re-waiting" >> $LOG
     continue
   fi
