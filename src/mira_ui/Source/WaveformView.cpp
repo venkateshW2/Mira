@@ -94,6 +94,14 @@ WaveformView::WaveformView() : thumbnail(512, formatManager, thumbnailCache)
     playButton.onClick = [this] { togglePlayPause(); };
     addAndMakeVisible(playButton);
 
+    loopButton.setClickingTogglesState(true);
+    loopButton.setTooltip("Loop the trimmed range (or the whole take when there is no trim).");
+    loopButton.onClick = [this] {
+        setLoopEnabled(loopButton.getToggleState());
+        if (onLoopToggled) onLoopToggled(looping);
+    };
+    addAndMakeVisible(loopButton);
+
     muteButton.onClick = [this] {
         muted = !muted;
         muteButton.setMuted(muted);
@@ -320,6 +328,22 @@ void GlyphButton::paintButton(juce::Graphics& g, bool over, bool down)
             p.quadraticTo(-3.4f, 6.6f, -4.4f, 3.0f);
             p.closeSubPath();
             g.fillPath(p, juce::AffineTransform::translation(0.0f, 0.5f));
+            break;
+        }
+
+        case Glyph::Loop:
+        {
+            // A rounded-rectangle circuit with one arrowhead: the shape every transport
+            // in every DAW uses, and the only one that reads as "repeat" rather than
+            // "refresh" at this size.
+            juce::Path p;
+            p.addRoundedRectangle(-6.4f, -4.4f, 12.8f, 8.8f, 3.6f);
+            strokePath(p);
+            // The head sits ON the top edge, at the same ink, so it reads as part of the
+            // circuit rather than a triangle parked on top of it.
+            juce::Path head;
+            head.addTriangle(0.4f, -7.2f, 0.4f, -1.6f, 4.8f, -4.4f);
+            g.fillPath(head);
             break;
         }
 
@@ -1214,6 +1238,16 @@ void WaveformView::stopPlayback()
 
 void WaveformView::timerCallback()
 {
+    // Looping is checked BEFORE the ranged-audition stop, because a loop whose out point
+    // is the same as the audition's would otherwise be stopped by it on the first pass and
+    // never come round.
+    if (looping && loopEnd > loopStart && transportSource.getCurrentPosition() >= loopEnd)
+    {
+        transportSource.setPosition(loopStart);
+        repaint();
+        return;
+    }
+
     // End of a ranged audition. Cleared first so the ordinary transport is unaffected
     // afterwards -- the next plain Play must run to the end of the file, not to this cue's.
     if (playStopAtSeconds > 0.0 && transportSource.getCurrentPosition() >= playStopAtSeconds)
@@ -2078,6 +2112,35 @@ void WaveformView::resized()
                       ? juce::jlimit(row.getX(), row.getRight() - playSize, wanted)
                       : wanted;
     playButton.setBounds(x, row.getY() + (row.getHeight() - playSize) / 2, playSize, playSize);
+
+    // Loop sits immediately right of Play, and only when the gap they share is actually
+    // wide enough for both. Drawn behind the zoom cluster it would be worse than absent,
+    // which is the lesson the play button itself already cost once.
+    constexpr int loopSize = 24;
+    const int loopX = x + playSize + 4;
+    if (row.getWidth() >= playSize + 4 + loopSize && loopX + loopSize <= row.getRight())
+        loopButton.setBounds(loopX, row.getY() + (row.getHeight() - loopSize) / 2, loopSize, loopSize);
+    else
+        loopButton.setBounds({});
+}
+
+void WaveformView::setLoop(bool shouldLoop, double startSeconds, double endSeconds)
+{
+    loopStart = startSeconds;
+    loopEnd = endSeconds;
+    setLoopEnabled(shouldLoop);
+}
+
+void WaveformView::setLoopEnabled(bool shouldLoop)
+{
+    looping = shouldLoop;
+    loopButton.setToggleState(looping, juce::dontSendNotification);
+    // Playing past the out point already? Come back now rather than at the end of the
+    // file -- turning loop on mid-play should take effect where you are, not next time.
+    if (looping && loopEnd > loopStart && transportSource.isPlaying()
+        && transportSource.getCurrentPosition() >= loopEnd)
+        transportSource.setPosition(loopStart);
+    repaint();
 }
 
 void WaveformView::setPlaybackGain(float gain)

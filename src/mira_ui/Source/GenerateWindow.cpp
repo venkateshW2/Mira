@@ -1192,6 +1192,10 @@ void GenerateContent::loadEditFor(const juce::File& wav) {
         auditionEnd = seg.endSeconds;
         preview.setFadeRange(seg.startSeconds, seg.endSeconds);
         preview.setFades(fadeInSlider.getValue(), fadeOutSlider.getValue());
+        // The loop region IS the trim. Keeping the toggle's own state across takes is
+        // deliberate: loop is a way of listening, not a property of the file, so turning
+        // it on once should survive clicking through a stack of takes.
+        preview.setLoop(preview.isLooping(), seg.startSeconds, seg.endSeconds);
         refreshEditControls();
         return;
     }
@@ -1202,8 +1206,11 @@ void GenerateContent::loadEditFor(const juce::File& wav) {
     preview.setSegments({});
     auditionStart = auditionEnd = 0.0;
     preview.setFadeRange(0.0, 0.0);
-    preview.setFadeRange(0.0, 0.0);
     preview.setFades(0.0, 0.0);
+    // No trim: the whole take is the loop. getTotalLengthSeconds() is 0 until the
+    // thumbnail has loaded, and a 0-length loop would wrap on every tick -- setLoop's
+    // own guard (end > start) is what keeps that from being an audible machine-gun.
+    preview.setLoop(preview.isLooping(), 0.0, preview.getTotalLengthSeconds());
     refreshEditControls();
 }
 
@@ -1260,6 +1267,7 @@ void GenerateContent::applyTrimFromSelection() {
     preview.setSegments({ { editSegmentId, a, b, {} } });
     auditionStart = a; auditionEnd = b;
     preview.setFadeRange(a, b);
+    preview.setLoop(preview.isLooping(), a, b);
     preview.clearSelection();
     refreshEditControls();
     statusLabel.setText("trimmed to " + juce::String(a, 2) + "s - " + juce::String(b, 2) + "s"
@@ -1274,6 +1282,7 @@ void GenerateContent::clearTrim() {
     editSegmentId = 0;
     preview.setSegments({});
     auditionStart = auditionEnd = 0.0;
+    preview.setLoop(preview.isLooping(), 0.0, preview.getTotalLengthSeconds());
     refreshEditControls();
     statusLabel.setText("trim removed - the take is full length again", juce::dontSendNotification);
     if (onLibraryChanged) onLibraryChanged();
@@ -1739,7 +1748,14 @@ void GenerateContent::generate() {
         // the same state as one that just finished rendering. (This comment described
         // what the code was MEANT to do; addTake was not actually firing onFocused, so a
         // new take showed the previous one's waveform until it was clicked.)
-        takeStack->addTake(wav);
+        // Do NOT steal the preview from something that is playing. A generation finishing
+        // used to focus the new take, which loaded a different file into the one transport
+        // and cut the audio off mid-bar -- while you were listening to decide whether the
+        // previous one was any good, which is exactly when you are least willing to lose
+        // it. The take still lands, and the NOW bay still shows it; it just does not take
+        // the speaker away from you.
+        const bool listening = preview.isPlaying();
+        takeStack->addTake(wav, TakeStack::State::Pending, !listening);
         revealButton.setEnabled(true);
         // Only a SUCCESSFUL run teaches the estimate. A failure stops early and would
         // drag k towards a number no real generation ever takes.
@@ -1748,7 +1764,9 @@ void GenerateContent::generate() {
         database.setSetting("gen_calibration", juce::String(genProgress.getCalibration(), 6).toStdString());
         const auto ms = static_cast<int>(payload.getProperty("wall_ms", 0));
         statusLabel.setText(wav.getFileName() + " - done in "
-                            + juce::String(ms / 1000.0, 1) + "s - drag the tile into your DAW",
+                            + juce::String(ms / 1000.0, 1) + "s"
+                            + (listening ? " - still playing the last one, click the new take to hear it"
+                                         : " - drag the tile into your DAW"),
                             juce::dontSendNotification);
     });
 }
@@ -1945,7 +1963,10 @@ void GenerateContent::timerCallback() {
             gain *= static_cast<float>(juce::jlimit(0.0, 1.0, (end - pos) / fadeOut));
 
         preview.setPlaybackGain(gain);
-        if (auditionEnd > auditionStart && pos >= auditionEnd - 0.01) preview.stopPlayback();
+        // Looping owns the out point when it is on; stopping here would end the take on
+        // its first pass and the loop would never come round.
+        if (!preview.isLooping() && auditionEnd > auditionStart && pos >= auditionEnd - 0.01)
+            preview.stopPlayback();
     } else if (auditioning) {
         stopAudition();
     }

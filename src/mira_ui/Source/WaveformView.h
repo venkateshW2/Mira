@@ -47,7 +47,7 @@ private:
 class GlyphButton : public juce::Button
 {
 public:
-    enum class Glyph { ZoomIn, ZoomOut, Fit, Hand, ThumbUp, ThumbDown, Scissors, FullLength };
+    enum class Glyph { ZoomIn, ZoomOut, Fit, Hand, ThumbUp, ThumbDown, Scissors, FullLength, Loop };
     explicit GlyphButton(Glyph g) : juce::Button("icon"), glyph(g) {}
     void setGlyph(Glyph g) { glyph = g; repaint(); }
     // Keep and Discard are the only two irreversible-feeling actions in the window and
@@ -299,6 +299,19 @@ public:
     void setPlaybackGain(float gain);
     double getPlayPositionSeconds() const;
     void stopPlayback();
+
+    // --- looping -----------------------------------------------------------------------
+    // The loop region is the TRIM, not a second range to set. A take already carries one
+    // in/out pair -- its segment -- and giving it a second one nobody could see would mean
+    // two answers to "which part of this take am I working on".
+    //
+    // The wrap happens on the 30 Hz transport timer, so it lands within ~33 ms of the out
+    // point rather than sample-accurately. That is fine for auditioning a section on
+    // repeat, and it is NOT a bounce: export renders the range exactly (Export.cpp).
+    void setLoop(bool shouldLoop, double startSeconds, double endSeconds);
+    void setLoopEnabled(bool shouldLoop);
+    bool isLooping() const { return looping; }
+    std::function<void(bool)> onLoopToggled;
     bool isPlaying() const { return transportSource.isPlaying(); }
     // Fires when playback stops for ANY reason, including a ranged audition reaching its
     // own end. Without it the cue workspace's Play/Stop button would stay on "Stop" after
@@ -394,6 +407,9 @@ private:
     // PositionableAudioSource wrapper that would have to be torn down on every file change.
     double playStopAtSeconds = 0.0;
     std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
+    GlyphButton loopButton { GlyphButton::Glyph::Loop };
+    bool looping = false;
+    double loopStart = 0.0, loopEnd = 0.0;
 
     TransportPlayButton playButton;
     MuteButton muteButton;
