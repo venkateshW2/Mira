@@ -1757,6 +1757,7 @@ void GenerateContent::generate() {
         const bool listening = preview.isPlaying();
         takeStack->addTake(wav, TakeStack::State::Pending, !listening);
         revealButton.setEnabled(true);
+        if (onTakeGenerated) onTakeGenerated(wav);
         // Only a SUCCESSFUL run teaches the estimate. A failure stops early and would
         // drag k towards a number no real generation ever takes.
         modelLoaded = true;

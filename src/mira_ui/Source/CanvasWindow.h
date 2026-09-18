@@ -4,7 +4,6 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "MiraLookAndFeel.h"
 #include "CanvasEngine.h"
-#include "CanvasInspector.h"
 
 // ---- the canvas experiment: the picture --------------------------------------------
 //
@@ -71,7 +70,14 @@ public:
     void chooseTakeForSelection(const juce::File& take);
     // name, block folder, generator settings, chosen take -- everything the inspector
     // needs, pushed rather than pulled so it cannot show a stale block.
-    std::function<void(const juce::String&, const juce::File&, const juce::var&, const juce::File&)> onSelectionChanged;
+    // Clicking a block asks the OWNER to open the real generate window bound to that
+    // block's folder. Not a second generator: the canvas had its own cut-down one for
+    // exactly one build, and a smaller copy of the generator is a copy that will drift
+    // from it -- different LoRA list, no prompt builder, no step gates. There is one
+    // generator in mira and this points it at a block.
+    std::function<void(const juce::String& name, const juce::File& folder)> onOpenGenerator;
+    // A take generated into a block's folder becomes that block's audio.
+    void adoptTake(const juce::File& folder, const juce::File& take);
     float readAndClearPeak() { return player.readAndClearPeak(); }
     std::function<void()> onStateChanged;
 
@@ -171,7 +177,7 @@ class CanvasWindow : public juce::DocumentWindow
 {
 public:
     CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
-                 juce::AudioThumbnailCache& cache, Sa3WorkerHub& hub, juce::File studioRoot);
+                 juce::AudioThumbnailCache& cache);
     // Defined in the .cpp, where Content is a complete type -- a unique_ptr to a forward
     // declared struct cannot be destroyed anywhere the definition is not visible.
     ~CanvasWindow() override;

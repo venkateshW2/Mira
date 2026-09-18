@@ -124,6 +124,16 @@ void CanvasView::mouseDoubleClick(const juce::MouseEvent& e)
     {
         const int lane = yToLane(e.y);
         if (nameBoxFor(lane).contains(e.getPosition())) beginRename(lane);
+        return;
+    }
+
+    // Double-click a block to open its generator. Single click selects and drags, which
+    // is what you do ninety times for every once you want the settings.
+    Drag what = Drag::None;
+    if (auto* hit = hitTest(e.getPosition(), what); hit != nullptr && onOpenGenerator)
+    {
+        auto folder = blockFolderFor(*hit);
+        if (folder != juce::File()) onOpenGenerator(hit->block.name, folder);
     }
 }
 
@@ -177,19 +187,23 @@ void CanvasView::addEmptyBlock()
     // Dropped on the first lane with nothing under the playhead, at the playhead. An
     // empty block is a FRAME: a length you meant, with nothing in it yet.
     const double at = juce::jmax(0.0, player.getPositionSeconds());
+    // Short. A new block is a placeholder you will resize, not a claim that the part is
+    // thirty seconds long -- and a full-window frame on an empty canvas reads as an error
+    // rather than as an invitation.
+    constexpr double kNewBlockSeconds = 8.0;
     int lane = 0;
     for (; lane < CanvasAudioSource::kMaxLanes; ++lane)
     {
         bool clash = false;
         for (const auto& i : items)
-            if (i->block.lane == lane && i->block.start < at + 30.0 && i->block.end() > at) clash = true;
+            if (i->block.lane == lane && i->block.start < at + kNewBlockSeconds && i->block.end() > at) clash = true;
         if (!clash) break;
     }
 
     auto v = std::make_unique<Visual>();
     v->block.lane = lane;
     v->block.start = at;
-    v->block.length = 30.0;
+    v->block.length = kNewBlockSeconds;
     v->block.id = nextId++;
     v->block.name = "block " + juce::String(items.size() + 1);
     if (laneNames[lane].isEmpty()) laneNames.set(lane, "track " + juce::String(lane + 1));
@@ -217,13 +231,19 @@ void CanvasView::chooseTakeForSelection(const juce::File& take)
     }
 }
 
-void CanvasView::announceSelection()
+void CanvasView::announceSelection() {}
+
+void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
 {
-    if (!onSelectionChanged) return;
-    if (auto* v = singleSelection())
-        onSelectionChanged(v->block.name, blockFolderFor(*v), v->settings, v->block.file);
-    else
-        onSelectionChanged({}, {}, {}, {});
+    for (auto& i : items)
+        if (blockFolderFor(*i) == folder)
+        {
+            setFileOn(*i, take);
+            rebuildAudio();
+            save();
+            repaint();
+            return;
+        }
 }
 
 // --- persistence. One canvas.json in the project root: blocks, where they sit, and each
@@ -932,8 +952,8 @@ void CanvasView::timerCallback()
 struct CanvasWindow::Content : juce::Component, private juce::Timer
 {
     Content(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
-            juce::AudioThumbnailCache& cache, Sa3WorkerHub& hub, juce::File studioRoot)
-        : view(laf, formats, cache), inspector(laf, hub, std::move(studioRoot))
+            juce::AudioThumbnailCache& cache)
+        : view(laf, formats, cache)
     {
         auto button = [this](juce::TextButton& b, const juce::String& text) {
             b.setButtonText(text);
@@ -959,15 +979,6 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         button(addBlockButton, "+ Block");
         newProjectButton.onClick = [this] { promptNewProject(); };
         addBlockButton.onClick   = [this] { view.addEmptyBlock(); };
-
-        // The inspector follows the SELECTION, the DAW way: one panel, not one per block.
-        view.onSelectionChanged = [this](const juce::String& name, const juce::File& folder,
-                                          const juce::var& settings, const juce::File& chosen) {
-            inspector.showBlock(name, folder, settings, chosen);
-        };
-        inspector.onSettingsChanged = [this](juce::var s) { view.applySettingsToSelection(s); };
-        inspector.onTakeChosen      = [this](juce::File f) { view.chooseTakeForSelection(f); };
-        addAndMakeVisible(inspector);
 
         view.onStateChanged = [this] {
             playButton.setButtonText(view.isPlaying() ? "Stop" : "Play");
@@ -1028,7 +1039,6 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         meter.setBounds(bar.removeFromRight(110));
         hint.setBounds(bar);
 
-        inspector.setBounds(r.removeFromRight(juce::jlimit(280, 340, r.getWidth() / 4)));
         view.setBounds(r);
     }
 
@@ -1058,18 +1068,16 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     float held = 0.0f;
 
     CanvasView view;
-    Inspector inspector;
     juce::TextButton playButton, loopButton, fitButton, deleteButton, addBlockButton, newProjectButton;
     juce::Label hint, clock, meter;
 };
 
 CanvasWindow::CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
-                           juce::AudioThumbnailCache& cache, Sa3WorkerHub& hub,
-                           juce::File studioRoot)
+                           juce::AudioThumbnailCache& cache)
     : juce::DocumentWindow("Canvas (experimental)", MiraLookAndFeel::surface,
                             juce::DocumentWindow::closeButton)
 {
-    content = std::make_unique<Content>(laf, formats, cache, hub, std::move(studioRoot));
+    content = std::make_unique<Content>(laf, formats, cache);
     view = &content->view;
     setUsingNativeTitleBar(true);
     setContentNonOwned(content.get(), false);

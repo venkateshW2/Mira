@@ -53,6 +53,10 @@ public:
     // Fired after Keep registers a file, so the library sidebar can pick up the new
     // "Generated" collection without a restart.
     std::function<void()> onLibraryChanged;
+    // Fired after a generation lands, with the file. The canvas uses it to make the new
+    // take its block's audio -- it owns the block, so it and not this window decides what
+    // a finished take means.
+    std::function<void(juce::File)> onTakeGenerated;
 
     // Replaces the prompt box contents (used by the file table's "Use Caption in SA3
     // Generate"). A trigger is NOT prepended here -- which LoRA you are about to use is
