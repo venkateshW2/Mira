@@ -73,13 +73,15 @@ juce::Rectangle<int> CanvasView::faderBoxFor(int lane) const
     // Only while the lane is tall enough to hold one. A fader squeezed into 28px would be
     // a control you cannot aim at, which is worse than a control that is not there.
     if (laneHeight < 44) return {};
-    return { 8, laneToY(lane) + laneHeight - 16, kHeaderWidth - 18, 8 };
+    return { 8, laneToY(lane) + laneHeight - 18, kHeaderWidth - 30, 8 };
 }
 
 juce::Rectangle<int> CanvasView::meterBoxFor(int lane) const
 {
-    if (laneHeight < 44) return {};
-    return { 8, laneToY(lane) + laneHeight - 26, kHeaderWidth - 18, 6 };
+    // VERTICAL, at the right edge of the header, running the lane's full height. A
+    // horizontal meter stacked above a horizontal fader read as two faders, one of which
+    // moved on its own -- and neither lined up with the other.
+    return { kHeaderWidth - 14, laneToY(lane) + 5, 6, juce::jmax(10, laneHeight - 14) };
 }
 
 juce::Rectangle<int> CanvasView::nameBoxFor(int lane) const
@@ -182,6 +184,15 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
     }
 }
 
+void CanvasView::addLane()
+{
+    if (laneCount >= CanvasAudioSource::kMaxLanes) return;
+    ++laneCount;
+    if (laneNames[laneCount - 1].isEmpty()) laneNames.set(laneCount - 1, "track " + juce::String(laneCount));
+    save();
+    repaint();
+}
+
 void CanvasView::addEmptyBlock()
 {
     // Dropped on the first lane with nothing under the playhead, at the playhead. An
@@ -192,13 +203,16 @@ void CanvasView::addEmptyBlock()
     // rather than as an invitation.
     constexpr double kNewBlockSeconds = 8.0;
     int lane = 0;
-    for (; lane < CanvasAudioSource::kMaxLanes; ++lane)
+    for (; lane < laneCount; ++lane)
     {
         bool clash = false;
         for (const auto& i : items)
             if (i->block.lane == lane && i->block.start < at + kNewBlockSeconds && i->block.end() > at) clash = true;
         if (!clash) break;
     }
+    // Every existing track is busy here, so make one -- rather than dropping the block on
+    // a track that does not exist yet and leaving a gap in the numbering.
+    if (lane >= laneCount) { addLane(); lane = laneCount - 1; }
 
     auto v = std::make_unique<Visual>();
     v->block.lane = lane;
@@ -207,6 +221,7 @@ void CanvasView::addEmptyBlock()
     v->block.id = nextId++;
     v->block.name = "block " + juce::String(items.size() + 1);
     if (laneNames[lane].isEmpty()) laneNames.set(lane, "track " + juce::String(lane + 1));
+    laneCount = juce::jmax(laneCount, lane + 1);
     selected.clear();
     selected.insert(v->block.id);
     items.push_back(std::move(v));
@@ -275,6 +290,7 @@ void CanvasView::save() const
     for (const auto& n : laneNames) names.add(n);
     root->setProperty("laneNames", juce::var(names));
     root->setProperty("muteMask", juce::String(muteMask));
+    root->setProperty("laneCount", laneCount);
     projectFolder.getChildFile("canvas.json")
         .replaceWithText(juce::JSON::toString(juce::var(root), false));
 }
@@ -285,6 +301,7 @@ void CanvasView::load()
     selected.clear();
     laneNames.clear();
     muteMask = soloMask = 0;
+    laneCount = 1;
 
     const auto file = projectFolder.getChildFile("canvas.json");
     if (!file.existsAsFile()) { applyMasks(); rebuildAudio(); repaint(); return; }
@@ -293,6 +310,7 @@ void CanvasView::load()
     if (auto* names = root.getProperty("laneNames", {}).getArray())
         for (int i = 0; i < names->size(); ++i) laneNames.set(i, (*names)[i].toString());
     muteMask = (juce::uint64) root.getProperty("muteMask", "0").toString().getLargeIntValue();
+    laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, (int) root.getProperty("laneCount", 1));
 
     if (auto* blocks = root.getProperty("blocks", {}).getArray())
         for (const auto& b : *blocks)
@@ -308,6 +326,7 @@ void CanvasView::load()
             v->block.gainDb = (double) b.getProperty("gainDb", 0.0);
             v->block.id = nextId++;
             v->settings = b.getProperty("settings", {});
+            laneCount = juce::jmax(laneCount, v->block.lane + 1);
             const auto path = b.getProperty("file", "").toString();
             // A take that has been moved or deleted leaves the block EMPTY rather than
             // silently vanishing: the frame and its generator are still what you meant.
@@ -345,7 +364,7 @@ void CanvasView::paint(juce::Graphics& g)
 {
     g.fillAll(MiraLookAndFeel::surface);
 
-    const int lanes = juce::jmax(4, (getHeight() - topRuler) / laneHeight + 1);
+    const int lanes = laneCount;
     for (int lane = 0; lane < lanes; ++lane)
     {
         auto r = juce::Rectangle<int>(0, laneToY(lane), getWidth(), laneHeight);
@@ -528,9 +547,9 @@ void CanvasView::paint(juce::Graphics& g)
                     // 20 dB and tells you nothing about anything quiet.
                     const float db = juce::Decibels::gainToDecibels(level);
                     const float frac = juce::jlimit(0.0f, 1.0f, (db + 48.0f) / 48.0f);
+                    const float h = juce::jmax(2.0f, meterBox.getHeight() * frac);
                     g.setColour(level >= 1.0f ? MiraLookAndFeel::warn : MiraLookAndFeel::active);
-                    g.fillRoundedRectangle(meterBox.toFloat().withWidth(
-                        juce::jmax(2.0f, meterBox.getWidth() * frac)), 2.5f);
+                    g.fillRoundedRectangle(meterBox.toFloat().withTrimmedTop(meterBox.getHeight() - h), 2.5f);
                 }
             }
 
@@ -678,6 +697,12 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     drag = what;
     dragTarget = hit->block.id;
     announceSelection();
+    // Selecting a block IS opening its generator now that the panel is always on screen.
+    if (onOpenGenerator)
+    {
+        auto folder = blockFolderFor(*hit);
+        if (folder != juce::File()) onOpenGenerator(hit->block.name, folder);
+    }
     dragOrigins.clear();
     for (const auto& i : items)
         if (selected.count(i->block.id)) dragOrigins[i->block.id] = { i->block.start, i->block.lane };
@@ -952,8 +977,8 @@ void CanvasView::timerCallback()
 struct CanvasWindow::Content : juce::Component, private juce::Timer
 {
     Content(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
-            juce::AudioThumbnailCache& cache)
-        : view(laf, formats, cache)
+            juce::AudioThumbnailCache& cache, GenerateContent* panelIn)
+        : view(laf, formats, cache), panel(panelIn)
     {
         auto button = [this](juce::TextButton& b, const juce::String& text) {
             b.setButtonText(text);
@@ -977,8 +1002,29 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
         button(newProjectButton, "New project...");
         button(addBlockButton, "+ Block");
+        button(addTrackButton, "+ Track");
         newProjectButton.onClick = [this] { promptNewProject(); };
         addBlockButton.onClick   = [this] { view.addEmptyBlock(); };
+        addTrackButton.onClick   = [this] { view.addLane(); };
+
+        // The generate pane, IN the side panel, in column mode: controls over takes, no
+        // project tree and no second takes column. The canvas already is the arrangement
+        // view, so those would be three views of the same project fighting over 340px.
+        if (panel != nullptr)
+        {
+            panel->setPanelOnly(true);
+            panel->setTrainingBenchVisible(false);
+            addAndMakeVisible(panel);
+        }
+        // Selecting a block points the panel at that block's folder. Nothing opens, moves
+        // or floats -- the panel is always there and always about whatever is selected,
+        // which is what "feels united" means in practice.
+        view.onOpenGenerator = [this](const juce::String& name, const juce::File& folder) {
+            if (panel == nullptr) return;
+            blockLabel.setText(name.isEmpty() ? "no block selected" : name, juce::dontSendNotification);
+            currentBlockFolder = folder;
+            if (folder != juce::File()) panel->setOutputFolder(folder);
+        };
 
         view.onStateChanged = [this] {
             playButton.setButtonText(view.isPlaying() ? "Stop" : "Play");
@@ -995,6 +1041,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         meter.setFont(laf.monoRegular(MiraLookAndFeel::textSize(11.0f)));
         meter.setJustificationType(juce::Justification::centredRight);
         addAndMakeVisible(meter);
+        blockLabel.setText("no block selected", juce::dontSendNotification);
+        blockLabel.setFont(laf.sansMedium(MiraLookAndFeel::textSize(12.0f)));
+        blockLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::accent);
+        addAndMakeVisible(blockLabel);
         startTimerHz(10);
         addAndMakeVisible(view);
     }
@@ -1030,6 +1080,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         bar.removeFromLeft(6);
         deleteButton.setBounds(bar.removeFromLeft(80));
         bar.removeFromLeft(6);
+        addTrackButton.setBounds(bar.removeFromLeft(74));
+        bar.removeFromLeft(6);
         addBlockButton.setBounds(bar.removeFromLeft(74));
         bar.removeFromLeft(6);
         newProjectButton.setBounds(bar.removeFromLeft(110));
@@ -1039,6 +1091,13 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         meter.setBounds(bar.removeFromRight(110));
         hint.setBounds(bar);
 
+        if (panel != nullptr)
+        {
+            auto side = r.removeFromRight(juce::jlimit(320, 400, r.getWidth() / 3));
+            blockLabel.setBounds(side.removeFromTop(22).reduced(10, 0));
+            panel->setBounds(side);
+            r.removeFromRight(4);
+        }
         view.setBounds(r);
     }
 
@@ -1068,16 +1127,20 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     float held = 0.0f;
 
     CanvasView view;
-    juce::TextButton playButton, loopButton, fitButton, deleteButton, addBlockButton, newProjectButton;
+    GenerateContent* panel = nullptr;      // owned by the window, not by this
+    juce::File currentBlockFolder;
+    juce::Label blockLabel;
+    juce::TextButton playButton, loopButton, fitButton, deleteButton,
+                     addBlockButton, addTrackButton, newProjectButton;
     juce::Label hint, clock, meter;
 };
 
 CanvasWindow::CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
-                           juce::AudioThumbnailCache& cache)
+                           juce::AudioThumbnailCache& cache, GenerateContent* panel)
     : juce::DocumentWindow("Canvas (experimental)", MiraLookAndFeel::surface,
                             juce::DocumentWindow::closeButton)
 {
-    content = std::make_unique<Content>(laf, formats, cache);
+    content = std::make_unique<Content>(laf, formats, cache, panel);
     view = &content->view;
     setUsingNativeTitleBar(true);
     setContentNonOwned(content.get(), false);

@@ -2197,6 +2197,36 @@ void GenerateContent::resized() {
     r.removeFromTop(6);
 
 
+    // --- column mode: everything in one narrow column, controls over takes.
+    if (panelOnly)
+    {
+        rightView.setVisible(true);
+        if (sidebar != nullptr) sidebar->setBounds({});
+
+        // The controls take the height they need, up to two thirds -- past that the takes
+        // have nowhere to live, and a panel whose take list is four pixels tall is a panel
+        // with no take list.
+        const int innerWidth = r.getWidth() - (rightView.isVerticalScrollBarShown() ? 10 : 0);
+        const int needed = layoutRightPane(innerWidth, false);
+        const int controlsHeight = juce::jmin(needed, juce::jmax(220, r.getHeight() * 2 / 3));
+        auto controls = r.removeFromTop(controlsHeight);
+        rightView.setBounds(controls);
+        rightPane.setSize(innerWidth, juce::jmax(needed, controls.getHeight()));
+        layoutRightPane(innerWidth, true);
+
+        r.removeFromTop(8);
+        auto header = r.removeFromTop(26);
+        cleanupButton.setBounds(header.removeFromRight(84).withSizeKeepingCentre(84, 22));
+        header.removeFromRight(6);
+        exportButton.setBounds(header.removeFromRight(76).withSizeKeepingCentre(76, 22));
+        header.removeFromRight(6);
+        takesLabel.setBounds(header);
+        r.removeFromTop(4);
+        takesView.setBounds(r);
+        layoutTakeStack();
+        return;
+    }
+
     // Two containers. The right one is sized to its content and scrolls; the left takes
     // whatever is left, with a floor so the takes never disappear on a narrow window.
     // Folded, the right pane takes no width at all and the takes column gets the window.
@@ -2243,6 +2273,12 @@ void GenerateContent::resized() {
         takesView.setBounds(leftArea);
     }
 
+    layoutTakeStack();
+}
+
+// The inside of the takes column, shared by the ordinary layout and the canvas's column
+// mode -- two copies of this would be two places for the waveform's bounds to drift.
+void GenerateContent::layoutTakeStack() {
     if (takeStack != nullptr) {
         const int innerWidth = takesView.getWidth() - (takesView.isVerticalScrollBarShown() ? 10 : 0);
         takeStack->setSize(innerWidth, juce::jmax(takeStack->getIdealHeight(), takesView.getHeight()));

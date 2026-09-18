@@ -4,6 +4,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "MiraLookAndFeel.h"
 #include "CanvasEngine.h"
+#include "GenerateWindow.h"
 
 // ---- the canvas experiment: the picture --------------------------------------------
 //
@@ -64,6 +65,8 @@ public:
     void fit();
     void clearAll();
     void addEmptyBlock();
+    void addLane();
+    int getLaneCount() const { return laneCount; }
     void save() const;
     void load();
     void applySettingsToSelection(const juce::var& settings);
@@ -75,6 +78,7 @@ public:
     // exactly one build, and a smaller copy of the generator is a copy that will drift
     // from it -- different LoRA list, no prompt builder, no step gates. There is one
     // generator in mira and this points it at a block.
+    // Which block the side panel should be showing, or an empty name for none.
     std::function<void(const juce::String& name, const juce::File& folder)> onOpenGenerator;
     // A take generated into a block's folder becomes that block's audio.
     void adoptTake(const juce::File& folder, const juce::File& take);
@@ -114,6 +118,10 @@ private:
     // thread reads.
     juce::uint64 muteMask = 0, soloMask = 0;
     juce::StringArray laneNames;
+    // How many tracks EXIST, rather than however many fit the window. An empty canvas
+    // with fifteen tracks in it is fifteen promises nobody made; one track and a
+    // "+ Track" button is the same thing a DAW does.
+    int laneCount = 1;
     // A fader per lane, in dB, -60 (off) to +6. Stacking drums against guitars is the
     // point of the canvas, and stacking without levels is just addition.
     std::vector<double> laneDb;
@@ -176,8 +184,11 @@ private:
 class CanvasWindow : public juce::DocumentWindow
 {
 public:
+    // Takes a ready-made GenerateContent and hosts it in the side panel. Built by the
+    // owner because it needs the database, the studio root and the shared worker -- none
+    // of which the canvas has any business knowing about.
     CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
-                 juce::AudioThumbnailCache& cache);
+                 juce::AudioThumbnailCache& cache, GenerateContent* panel);
     // Defined in the .cpp, where Content is a complete type -- a unique_ptr to a forward
     // declared struct cannot be destroyed anywhere the definition is not visible.
     ~CanvasWindow() override;

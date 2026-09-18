@@ -210,6 +210,7 @@ private:
     // trimming, filing them into cues -- needs none of prompt, LoRA or steps, and that
     // pane is half the window. Folded, the waveform gets the width.
     bool generatePaneCollapsed = false;
+    bool panelOnly = false;   // canvas side panel: controls over takes, one column
     juce::TextButton generatePaneToggle;
     std::unique_ptr<ProjectSidebar> sidebar;  // project window only
 
@@ -334,6 +335,21 @@ public:
     // MIRA-GENERATE.md Phase 3. When set, Keep asks for a cue and files the take into
     // <project>/<cue>/ under its working name. Unset (the SA3 Generate window) leaves
     // Keep exactly as it was: register in place, add to the "Generated" collection.
+    // Column mode, for the canvas: no project sidebar, no side-by-side columns -- the
+    // controls take the full width and the takes sit UNDER them. The canvas already IS
+    // the arrangement view, so a second takes column beside a second project tree inside
+    // its side panel would be three views of the same project fighting for the same
+    // 340 pixels.
+    void setPanelOnly(bool shouldBePanelOnly)
+    {
+        if (panelOnly == shouldBePanelOnly) return;
+        panelOnly = shouldBePanelOnly;
+        if (panelOnly && sidebar != nullptr) sidebar->setVisible(false);
+        generatePaneCollapsed = false;
+        generatePaneToggle.setVisible(!panelOnly);
+        resized();
+    }
+
     void setProject(const juce::File& folder)
     {
         projectFolder = folder;
@@ -479,6 +495,7 @@ private:
     LoraLanes loraLanes;
     std::unique_ptr<InpaintStrip> inpaintStrip;
     int layoutRightPane(int width, bool applyBounds);
+    void layoutTakeStack();
     int promptHeightFor(int width) const;
     juce::TextButton stopButton { "Stop" };
     // Memory readout. Generation RAM scales with clip length (peak was 11 GB at 30 s on

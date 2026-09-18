@@ -3207,48 +3207,25 @@ public:
     {
         if (canvasWindow != nullptr) { canvasWindow->toFront(true); return; }
         canvasFormats.registerBasicFormats();   // idempotent
-        canvasWindow = std::make_unique<mira::canvas::CanvasWindow>(laf, canvasFormats, canvasThumbs);
+        // The canvas hosts the REAL generate pane in its side panel. Built here because it
+        // needs the database, the studio root and the shared worker; the canvas owns its
+        // lifetime once handed over.
+        canvasPanel = std::make_unique<GenerateContent>(laf, findStudioRoot(), *database, ensureWorkerHub());
+        canvasPanel->useSharedAudioDevice(sharedAudioDevice);
+        canvasWindow = std::make_unique<mira::canvas::CanvasWindow>(laf, canvasFormats, canvasThumbs,
+                                                                     canvasPanel.get());
+        canvasPanel->onTakeGenerated = [this](juce::File take) {
+            if (canvasWindow != nullptr)
+                canvasWindow->getView().adoptTake(take.getParentDirectory(), take);
+        };
         // Double-clicking a block opens the REAL generate window bound to that block's
         // folder -- one generator in mira, pointed at a block, rather than a second
         // smaller one that would drift from it.
-        canvasWindow->getView().onOpenGenerator = [this](const juce::String& name, const juce::File& folder) {
-            openGeneratorForBlock(name, folder);
-        };
         canvasWindow->getView().attachTo(sharedAudioDevice);
         canvasWindow->getView().setProject(getCurrentProject());
         canvasWindow->onClosed = [this] {
-            juce::MessageManager::callAsync([this] { canvasWindow.reset(); });
+            juce::MessageManager::callAsync([this] { canvasWindow.reset(); canvasPanel.reset(); });
         };
-    }
-
-    // One generate window per block folder, raised if it is already open. The window is
-    // the same one the rest of mira uses -- same prompt builder, same LoRA dropdowns with
-    // the library's names, same step gates -- because a cut-down copy would be a second
-    // implementation of what a recipe means.
-    void openGeneratorForBlock(const juce::String& name, const juce::File& folder)
-    {
-        for (auto& w : blockGenerators)
-            if (w != nullptr && w->projectFolder == folder) { w->toFront(true); return; }
-
-        auto window = std::make_unique<GenerateWindow>(laf, findStudioRoot(), *database, ensureWorkerHub());
-        auto* raw = window.get();
-        raw->projectFolder = folder;
-        raw->setName("Generate - " + name);
-        raw->content->useSharedAudioDevice(sharedAudioDevice);
-        raw->content->setTrainingBenchVisible(false);
-        raw->content->setOutputFolder(folder);
-        // The canvas owns the block, so IT decides what a finished take means: the take
-        // becomes the block's audio and appears on the track.
-        raw->content->onTakeGenerated = [this, folder](juce::File take) {
-            if (canvasWindow != nullptr) canvasWindow->getView().adoptTake(folder, take);
-        };
-        raw->onClosed = [this, raw] {
-            juce::MessageManager::callAsync([this, raw] {
-                for (size_t i = 0; i < blockGenerators.size(); ++i)
-                    if (blockGenerators[i].get() == raw) { blockGenerators.erase(blockGenerators.begin() + (long) i); break; }
-            });
-        };
-        blockGenerators.push_back(std::move(window));
     }
 
     void showGenerateWindow()
@@ -4553,7 +4530,7 @@ private:
     juce::AudioFormatManager canvasFormats;
     juce::AudioThumbnailCache canvasThumbs { 128 };
     std::unique_ptr<mira::canvas::CanvasWindow> canvasWindow;
-    std::vector<std::unique_ptr<GenerateWindow>> blockGenerators;
+    std::unique_ptr<GenerateContent> canvasPanel;
     std::unique_ptr<LoraLibraryWindow> loraLibraryWindow;
     std::unique_ptr<PrepareWindow> prepareWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;
