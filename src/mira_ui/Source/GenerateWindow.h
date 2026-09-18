@@ -18,6 +18,7 @@
 #include "LogView.h"
 #include "GenerateProgress.h"
 #include "ProjectSidebar.h"
+#include "Sa3WorkerHub.h"
 
 // SA3 generation and pre-encoding, inside mira.
 //
@@ -43,7 +44,7 @@ class GenerateContent : public juce::Component,
 {
 public:
     GenerateContent(const MiraLookAndFeel& lafIn, juce::File studioRootIn,
-                     mira::Database& databaseIn);
+                     mira::Database& databaseIn, Sa3WorkerHub& hubIn);
     ~GenerateContent() override;
 
     void resized() override;
@@ -104,7 +105,9 @@ private:
     const MiraLookAndFeel& laf;
     mira::Database& database;
     juce::File studioRoot;                 // sa3-studio/
-    std::unique_ptr<mira::Sa3Worker> worker;
+    // Borrowed, never owned: one worker serves every window (Sa3WorkerHub.h).
+    Sa3WorkerHub& hub;
+    int hubToken = 0;
     juce::Array<juce::File> loraFiles;
 
     juce::Label statusLabel;
@@ -195,6 +198,11 @@ private:
     bool trainingBenchVisible = true; // the SA3 Generate window keeps its bench
     juce::File projectFolder;         // invalid = no project, Keep behaves as it always did
     juce::File scopeFolder;           // sidebar selection; invalid = show everything
+    // The generate controls fold away. Organising a project -- auditioning takes,
+    // trimming, filing them into cues -- needs none of prompt, LoRA or steps, and that
+    // pane is half the window. Folded, the waveform gets the width.
+    bool generatePaneCollapsed = false;
+    juce::TextButton generatePaneToggle;
     std::unique_ptr<ProjectSidebar> sidebar;  // project window only
 
     // A second look-and-feel instance, identical to the app's except that its popup menus
@@ -447,21 +455,26 @@ public:
     // so ordinary sibling behaviour (drop behind on every click in the main window, then
     // hunt for it in the Window menu) is wrong for it. Same reason a plugin's editor
     // floats. ProjectWindow is the one that does NOT float; see its note.
-    GenerateWindow(const MiraLookAndFeel& laf, juce::File studioRoot, mira::Database& db)
-        : GenerateWindow(laf, std::move(studioRoot), db, "SA3 Generate", true, true)
+    GenerateWindow(const MiraLookAndFeel& laf, juce::File studioRoot, mira::Database& db,
+                    Sa3WorkerHub& hub)
+        : GenerateWindow(laf, std::move(studioRoot), db, hub, "SA3 Generate", true, true)
     {
     }
 
     std::function<void()> onClosed;
     GenerateContent* content = nullptr;
+    // Which project this window is for. Set by the owner; used to raise an already-open
+    // project instead of opening a second window onto the same folder.
+    juce::File projectFolder;
 
     void setPrompt(const juce::String& text) {
         if (auto* c = dynamic_cast<GenerateContent*>(getContentComponent())) c->setPrompt(text);
     }
 
-    // Closing shuts the worker down with it (GenerateContent's destructor), releasing
-    // ~5 GB of resident model. That is deliberate: leaving a warm worker alive behind a
-    // closed window would quietly hold half the RAM on a 16 GB machine.
+    // Closing detaches from the shared worker but does NOT stop it -- another window may
+    // be mid-generation. (It used to own its worker and tear ~5 GB down on close; with
+    // one worker for the app, the model stays warm until the app quits or Stop is
+    // pressed, which is also what makes opening a second project cheap.)
     void closeButtonPressed() override { if (onClosed) onClosed(); }
 
 protected:
@@ -469,6 +482,7 @@ protected:
     // always-on-top. Everything else -- the worker, its 5 GB teardown, setPrompt -- is
     // inherited rather than copied.
     GenerateWindow(const MiraLookAndFeel& laf, juce::File studioRoot, mira::Database& db,
+                    Sa3WorkerHub& hub,
                     const juce::String& windowTitle, bool showTrainingBench, bool floatAbove)
         : juce::DocumentWindow(windowTitle, MiraLookAndFeel::surface, juce::DocumentWindow::allButtons)
     {
@@ -478,7 +492,7 @@ protected:
         // sits visibly disconnected from the window under it.
         setUsingNativeTitleBar(false);
         setTitleBarHeight(34);
-        content = new GenerateContent(laf, std::move(studioRoot), db);
+        content = new GenerateContent(laf, std::move(studioRoot), db, hub);
         setContentOwned(content, false);
         setResizable(true, false);
         centreWithSize(1180, 820); // two panes need the width; it was cramped at 720
@@ -506,8 +520,8 @@ class ProjectWindow : public GenerateWindow
 {
 public:
     ProjectWindow(const MiraLookAndFeel& laf, juce::File studioRoot, mira::Database& db,
-                   const juce::String& projectName)
-        : GenerateWindow(laf, std::move(studioRoot), db,
+                   Sa3WorkerHub& hub, const juce::String& projectName)
+        : GenerateWindow(laf, std::move(studioRoot), db, hub,
                           projectName.isNotEmpty() ? projectName : juce::String("Project"),
                           false, false)
     {

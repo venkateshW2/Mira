@@ -108,9 +108,9 @@ void GenerateContent::ResultTile::mouseDoubleClick(const juce::MouseEvent&) {
 // ── GenerateContent ───────────────────────────────────────────────────────────
 
 GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studioRootIn,
-                                  mira::Database& databaseIn)
+                                  mira::Database& databaseIn, Sa3WorkerHub& hubIn)
     : laf(lafIn), database(databaseIn), studioRoot(std::move(studioRootIn)),
-      resultTile(lafIn) {
+      hub(hubIn), resultTile(lafIn) {
 
     statusLabel.setText("starting worker...", juce::dontSendNotification);
     addAndMakeVisible(statusLabel);
@@ -547,6 +547,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
     // it just drew an empty bar, so nobody ever saw it.)
     addChildComponent(genProgress);
 
+    generatePaneToggle.setColour(juce::TextButton::buttonColourId, MiraLookAndFeel::surface2);
+    generatePaneToggle.setColour(juce::TextButton::textColourOffId, MiraLookAndFeel::textDim);
+    generatePaneToggle.onClick = [this] { generatePaneCollapsed = !generatePaneCollapsed; resized(); };
+    tip(generatePaneToggle, "Fold the generate controls away and give the width to the waveform.");
+    addAndMakeVisible(generatePaneToggle);
+
     datasetsLabel.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.45f));
     datasetsLabel.setFont(juce::FontOptions(11.0f));
     tip(datasetsLabel, "Prepared datasets: folder -> trigger (latent count).");
@@ -564,7 +570,9 @@ GenerateContent::~GenerateContent() {
     // through their own destructors -- a use-after-free that JUCE asserts on in debug and
     // simply crashes in release.
     for (auto& sl : slots) sl.box.setLookAndFeel(nullptr);
-    worker.reset();   // blocks until the child exits cleanly
+    // Detach, do NOT stop: the worker is shared and another window may be mid-generation.
+    // Leaving the listener registered would fan a log line into a destroyed object.
+    if (hubToken != 0) hub.removeListener(hubToken);
 }
 
 juce::String GenerateContent::triggerOfFolder(const juce::File& folder) const {
@@ -1296,15 +1304,21 @@ void GenerateContent::chooseOutputFolder() {
 
 void GenerateContent::startWorker() {
     modelLoaded = false;   // a fresh process has no weights in it
-    worker = std::make_unique<mira::Sa3Worker>();
-    worker->onLog = [this](juce::String line) { log(line); };
-    worker->onExit = [this](int code) {
-        statusLabel.setText("worker exited (" + juce::String(code) + ")", juce::dontSendNotification);
-        setBusy(false, {});
-    };
+    // Attach to the shared worker rather than spawning one. Registering the callbacks
+    // through the hub is the part that matters: Sa3Worker has ONE onLog and ONE onExit,
+    // so with several windows attached directly, whoever assigned last would silently
+    // own them and every other console would go quiet.
+    if (hubToken == 0)
+        hubToken = hub.addListener({
+            [this](juce::String line) { log(line); },
+            [this](int code) {
+                statusLabel.setText("worker exited (" + juce::String(code) + ")",
+                                     juce::dontSendNotification);
+                setBusy(false, {});
+            }});
+
     juce::String error;
-    const auto script = studioRoot.getChildFile("sa3_worker.py");
-    if (!worker->start(pythonFor(studioRoot), script, "medium", "same-l", error)) {
+    if (hub.get(error) == nullptr) {
         statusLabel.setText("worker failed to start", juce::dontSendNotification);
         log(error);
         generateButton.setEnabled(false);
@@ -1316,7 +1330,7 @@ void GenerateContent::startWorker() {
 }
 
 void GenerateContent::generate() {
-    if (busy || worker == nullptr || !worker->isRunning()) return;
+    if (busy || !hub.isRunning()) return;
 
     outputFolder.createDirectory();
     // "mira-20260915-095014.wav" says nothing about what made it. By convention every
@@ -1403,7 +1417,10 @@ void GenerateContent::generate() {
     setBusy(true, "generating");
     genProgress.start(busySteps, busySeconds, busyHadLoad);
     resized();
-    worker->send(req, [this, wav](bool ok, juce::var payload) {
+    juce::String sendError;
+    auto* w = hub.get(sendError);
+    if (w == nullptr) { statusLabel.setText("worker is not running", juce::dontSendNotification); return; }
+    w->send(req, [this, wav](bool ok, juce::var payload) {
         const double took = genProgress.elapsedSeconds();
         setBusy(false, {});
         if (!ok) {
@@ -1472,7 +1489,7 @@ void GenerateContent::zipLatents(const juce::File& latentsDir, const juce::File&
 }
 
 void GenerateContent::chooseEncodeFolder() {
-    if (busy || worker == nullptr || !worker->isRunning()) return;
+    if (busy || !hub.isRunning()) return;
     const auto trigger = triggerEditor.getText().trim();
     if (trigger.isEmpty()) {
         statusLabel.setText("pick a trigger token first", juce::dontSendNotification);
@@ -1514,7 +1531,10 @@ void GenerateContent::chooseEncodeFolder() {
         req->setProperty("audio_dir", dir.getFullPathName());
         req->setProperty("output_dir", outDir.getFullPathName());
         setBusy(true, "encoding " + dir.getFileName());
-        worker->send(req, [this, outDir, name, trigger](bool ok, juce::var payload) {
+        juce::String encodeError;
+        auto* ew = hub.get(encodeError);
+        if (ew == nullptr) { statusLabel.setText("worker is not running", juce::dontSendNotification); return; }
+        ew->send(req, [this, outDir, name, trigger](bool ok, juce::var payload) {
             if (!ok) {
                 setBusy(false, {});
                 log("pre-encode failed: " + payload.getProperty("error", "unknown").toString());
@@ -1577,10 +1597,13 @@ void GenerateContent::stopGeneration() {
     // returns, so a polite "cancel" message would sit unread until the thing we want to
     // cancel has already finished. Killing the process is the only real stop.
     log("stopping worker...");
-    worker.reset();
+    // One worker serves every window, so this cancels anything another window had
+    // queued too. Said out loud below rather than left as a surprise.
+    hub.restart();
     setBusy(false, {});
-    startWorker();
-    statusLabel.setText("stopped - worker restarted, model will reload on next run",
+    statusLabel.setText(hub.listenerCount() > 1
+                            ? juce::String("stopped - worker restarted; any other window's run was cancelled too")
+                            : juce::String("stopped - worker restarted, model will reload on next run"),
                         juce::dontSendNotification);
 }
 
@@ -1811,7 +1834,10 @@ void GenerateContent::resized() {
     auto r = getLocalBounds().reduced(10);
 
     auto top = r.removeFromTop(22);
-    pressureLabel.setBounds(top.removeFromRight(260));
+    generatePaneToggle.setButtonText(generatePaneCollapsed ? "Generate >" : "Generate <");
+    generatePaneToggle.setBounds(top.removeFromRight(96).withSizeKeepingCentre(96, 20));
+    top.removeFromRight(6);
+    pressureLabel.setBounds(top.removeFromRight(230));
     statusLabel.setBounds(top);
     // Directly under the status line, full width, and only while it is running. Anywhere
     // inside a pane costs that pane height permanently; here it costs 22px of the one
@@ -1825,12 +1851,19 @@ void GenerateContent::resized() {
 
     // Two containers. The right one is sized to its content and scrolls; the left takes
     // whatever is left, with a floor so the takes never disappear on a narrow window.
-    const int rightWidth = juce::jlimit(320, 520, r.getWidth() / 2);
-    auto rightArea = r.removeFromRight(rightWidth);
-    r.removeFromRight(8);
+    // Folded, the right pane takes no width at all and the takes column gets the window.
+    rightView.setVisible(!generatePaneCollapsed);
+    juce::Rectangle<int> rightArea;
+    if (!generatePaneCollapsed)
+    {
+        const int rightWidth = juce::jlimit(320, 520, r.getWidth() / 2);
+        rightArea = r.removeFromRight(rightWidth);
+        r.removeFromRight(8);
+    }
     auto leftArea = r;
 
     rightView.setBounds(rightArea);
+    if (!generatePaneCollapsed)
     {
         const int innerWidth = rightArea.getWidth() - (rightView.isVerticalScrollBarShown() ? 10 : 0);
         const int needed = layoutRightPane(innerWidth, false);

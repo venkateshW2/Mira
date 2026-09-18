@@ -1639,10 +1639,10 @@ public:
         // now on. Phase 2's project window will bind to this the same way; until then
         // this is what "switching project switches the output folder" means.
         if (generateWindow != nullptr) generateWindow->content->setOutputFolder(projectTakesFolder());
-        if (projectWindow != nullptr) {
-            projectWindow->content->setProject(folder);
-            projectWindow->content->setOutputFolder(projectTakesFolder());
-        }
+        // Project windows are NOT rebound here any more. Each one owns the project it
+        // was opened with, which is what lets two run side by side; switching the
+        // "current" project used to reach into the open window and change what it was
+        // looking at underneath you.
         if (onWindowTitleChanged) onWindowTitleChanged();
     }
 
@@ -1661,7 +1661,7 @@ public:
     // counts. A File Details or Log window is not a reason to keep the app running with
     // no library in sight, and calling this "the last window" when it only tracks some
     // of them would be the kind of half-truth convention 6 exists to prevent.
-    bool hasGenerationWindowOpen() const { return generateWindow != nullptr || projectWindow != nullptr; }
+    bool hasGenerationWindowOpen() const { return generateWindow != nullptr || !projectWindows.empty(); }
     std::function<void()> onGenerationWindowClosed;
 
     // Real macOS menu bar's File > Rescan (MiraMenuBarModel below) — "rescan can be in
@@ -3135,7 +3135,8 @@ public:
     void showGenerateWindow()
     {
         if (generateWindow != nullptr) { generateWindow->toFront(true); return; }
-        generateWindow = std::make_unique<GenerateWindow>(laf, findStudioRoot(), *database);
+        generateWindow = std::make_unique<GenerateWindow>(laf, findStudioRoot(), *database,
+                                                           ensureWorkerHub());
         generateWindow->content->onLibraryChanged = [this] {
             if (folderTree != nullptr) folderTree->refresh();
         };
@@ -3173,22 +3174,36 @@ public:
             folderTree->promptNewProject();
             return;
         }
-        if (projectWindow != nullptr) { projectWindow->toFront(true); return; }
-        projectWindow = std::make_unique<ProjectWindow>(laf, findStudioRoot(), *database,
-                                                         project.getFileName());
-        projectWindow->content->onLibraryChanged = [this] {
+        // Already open? Raise it. Two windows onto one folder would each hold their own
+        // take list and each believe it was current.
+        for (auto& w : projectWindows)
+            if (w != nullptr && w->projectFolder == project) { w->toFront(true); return; }
+
+        auto window = std::make_unique<ProjectWindow>(laf, findStudioRoot(), *database,
+                                                       ensureWorkerHub(), project.getFileName());
+        auto* raw = window.get();
+        raw->projectFolder = project;
+        raw->content->onLibraryChanged = [this] {
             if (folderTree != nullptr) folderTree->refresh();
         };
-        projectWindow->onClosed = [this] {
-            juce::MessageManager::callAsync([this] {
-                projectWindow.reset();
+        raw->onClosed = [this, raw] {
+            juce::MessageManager::callAsync([this, raw] {
+                for (size_t i = 0; i < projectWindows.size(); ++i)
+                    if (projectWindows[i].get() == raw) { projectWindows.erase(projectWindows.begin() + static_cast<long>(i)); break; }
                 if (onGenerationWindowClosed) onGenerationWindowClosed();
             });
         };
         // setProject BEFORE setOutputFolder: loading the existing takes needs to know
         // the project in order to find the cue folders that hold the kept ones.
-        projectWindow->content->setProject(project);
-        projectWindow->content->setOutputFolder(projectTakesFolder());
+        raw->content->setProject(project);
+        raw->content->setOutputFolder(project.getChildFile("takes"));
+        projectWindows.push_back(std::move(window));
+    }
+
+    Sa3WorkerHub& ensureWorkerHub()
+    {
+        if (workerHub == nullptr) workerHub = std::make_unique<Sa3WorkerHub>(findStudioRoot());
+        return *workerHub;
     }
 
     // "a new window called load loras - we add the loras and name the lora - so they
@@ -3198,10 +3213,13 @@ public:
     // item and anything added later cannot disagree about it.
     void sendPromptToGenerator(const juce::String& prompt)
     {
-        if (projectWindow != nullptr)
+        // The front-most project window gets it. With several open, "which one?" has to
+        // have an answer, and the one you were last looking at is the only defensible one.
+        if (!projectWindows.empty())
         {
-            projectWindow->setPrompt(prompt);
-            projectWindow->toFront(true);
+            auto& w = projectWindows.back();
+            w->setPrompt(prompt);
+            w->toFront(true);
             return;
         }
         if (generateWindow == nullptr && getCurrentProject().isDirectory())
@@ -3209,7 +3227,7 @@ public:
             // No generator open at all, but there IS a project: open that rather than the
             // training bench, which is the window the work was going to happen in anyway.
             showProjectWindow();
-            if (projectWindow != nullptr) { projectWindow->setPrompt(prompt); return; }
+            if (!projectWindows.empty()) { projectWindows.back()->setPrompt(prompt); return; }
         }
         showGenerateWindow();
         if (generateWindow != nullptr) generateWindow->setPrompt(prompt);
@@ -3233,7 +3251,7 @@ public:
         loraLibraryWindow = std::make_unique<LoraLibraryWindow>(laf, loraDir, *database);
         loraLibraryWindow->content->onChanged = [this] {
             if (generateWindow != nullptr) generateWindow->content->reloadLoras();
-            if (projectWindow != nullptr) projectWindow->content->reloadLoras();
+            for (auto& w : projectWindows) if (w != nullptr) w->content->reloadLoras();
         };
         loraLibraryWindow->onClosed = [this] {
             juce::MessageManager::callAsync([this] { loraLibraryWindow.reset(); });
@@ -4399,7 +4417,13 @@ private:
     LogStore logStore;
     std::unique_ptr<LogWindow> logWindow;
     std::unique_ptr<GenerateWindow> generateWindow;
-    std::unique_ptr<ProjectWindow> projectWindow; // MIRA-GENERATE.md Phase 2
+    // One project window per project, several at once -- a project is one job, and jobs
+    // run side by side. Keyed by folder so opening the same project twice raises the
+    // window that already has it rather than making a second view of one folder.
+    std::vector<std::unique_ptr<ProjectWindow>> projectWindows;
+    // One SA3 worker for all of them. Declared here because MainComponent outlives every
+    // generate window; see Sa3WorkerHub.h for why sharing is required rather than nice.
+    std::unique_ptr<Sa3WorkerHub> workerHub;
     std::unique_ptr<LoraLibraryWindow> loraLibraryWindow;
     std::unique_ptr<PrepareWindow> prepareWindow;
     std::unique_ptr<CueEditorWindow> cueEditor;
