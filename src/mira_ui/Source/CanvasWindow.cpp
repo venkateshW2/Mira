@@ -26,24 +26,31 @@ void CanvasView::setProject(const juce::File& project)
     projectFolder = project;
     items.clear();
     selected.clear();
-    if (!project.isDirectory()) { rebuildAudio(); repaint(); return; }
+    laneNames.clear();
+    muteMask = soloMask = 0;
+    if (!project.isDirectory()) { applyMasks(); rebuildAudio(); repaint(); return; }
 
-    // Everything the project holds, cue by cue, one lane per cue -- which is the mapping
-    // we already agreed: a cue IS a track. Takes of the same cue land on the same lane,
-    // laid end to end, so the canvas opens showing the project's actual shape rather than
-    // an empty grid waiting to be told what to do.
+    // TAKES STACK, CUES ADVANCE.
+    //
+    // The first version had this exactly backwards: takes laid end to end along one lane
+    // and a lane per cue. But takes are ALTERNATIVES of the same moment -- they belong at
+    // the same point in time, one above the other, so you can hear one against another and
+    // switch between them. Cues are SECTIONS -- they belong one after another in time.
+    //
+    // Note the canvas itself knows nothing about cues or takes. Blocks are blocks; this is
+    // only the arrangement it opens with, and moving any block anywhere is allowed.
     int lane = 0;
-    double widest = 0.0;
+    double cueStart = 0.0;
     for (const auto& dir : project.findChildFiles(juce::File::findDirectories, false))
     {
-        const auto name = dir.getFileName();
-        if (name == "discarded" || name == "export") continue;
+        const auto cue = dir.getFileName();
+        if (cue == "discarded" || cue == "export") continue;
 
         auto wavs = dir.findChildFiles(juce::File::findFiles, false, "*.wav");
         if (wavs.isEmpty()) continue;
         wavs.sort();
 
-        double at = 0.0;
+        double longest = 0.0;
         for (const auto& wav : wavs)
         {
             std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor(wav));
@@ -55,7 +62,7 @@ void CanvasView::setProject(const juce::File& project)
             auto v = std::make_unique<Visual>();
             v->block.file = wav;
             v->block.lane = lane;
-            v->block.start = at;
+            v->block.start = cueStart;      // every take of a cue starts together
             v->block.length = len;
             v->block.name = wav.getFileNameWithoutExtension();
             v->block.id = nextId++;
@@ -63,13 +70,21 @@ void CanvasView::setProject(const juce::File& project)
             v->thumb->setSource(new juce::FileInputSource(wav));
             items.push_back(std::move(v));
 
-            at += len + 1.0;   // a second of air between takes, so edges are grabbable
+            laneNames.set(lane, cue + " / " + juce::String(wavs.indexOf(wav) + 1));
+            // Stacked alternates all sounding at once is a wall of noise, not a mix, so
+            // everything but the first take of each cue arrives MUTED. That is also what
+            // a take folder does: one lane sounds, the rest wait to be auditioned.
+            if (lane < CanvasAudioSource::kMaxLanes && wavs.indexOf(wav) > 0)
+                muteMask |= juce::uint64 (1) << lane;
+
+            longest = juce::jmax(longest, len);
+            ++lane;
         }
-        widest = juce::jmax(widest, at);
-        ++lane;
+        cueStart += longest + 2.0;   // the next section begins after the longest take here
     }
 
-    if (widest > 0.0) fit();
+    applyMasks();
+    if (!items.empty()) fit();
     rebuildAudio();
     repaint();
 }
@@ -84,7 +99,7 @@ double CanvasView::contentEnd() const
 void CanvasView::fit()
 {
     const double end = contentEnd();
-    const int w = juce::jmax(200, getWidth() - kGutter * 2);
+    const int w = juce::jmax(200, getWidth() - kHeaderWidth + 16);
     viewStart = 0.0;
     pixelsPerSecond = end > 0.0 ? juce::jlimit(0.5, 400.0, w / end) : 40.0;
     repaint();
@@ -97,6 +112,27 @@ void CanvasView::rebuildAudio()
     for (const auto& i : items) blocks.push_back(i->block);
     player.rebuild(blocks, formats);
     if (onStateChanged) onStateChanged();
+}
+
+juce::Rectangle<int> CanvasView::muteBoxFor(int lane) const
+{
+    return { 8, laneToY(lane) + laneHeight / 2 - 9, 22, 18 };
+}
+
+juce::Rectangle<int> CanvasView::soloBoxFor(int lane) const
+{
+    return { 34, laneToY(lane) + laneHeight / 2 - 9, 22, 18 };
+}
+
+void CanvasView::clearAll()
+{
+    items.clear();
+    selected.clear();
+    laneNames.clear();
+    muteMask = soloMask = 0;
+    applyMasks();
+    rebuildAudio();
+    repaint();
 }
 
 juce::Rectangle<int> CanvasView::boundsOf(const Visual& v) const
@@ -150,7 +186,7 @@ void CanvasView::paint(juce::Graphics& g)
         for (double t = first; secondsToX(t) < getWidth(); t += step)
         {
             const int x = secondsToX(t);
-            if (x < kGutter) continue;
+            if (x < kHeaderWidth) continue;
             g.setColour(MiraLookAndFeel::border);
             g.drawVerticalLine(x, 0.0f, static_cast<float>(topRuler));
             g.setColour(MiraLookAndFeel::textDim);
@@ -165,13 +201,19 @@ void CanvasView::paint(juce::Graphics& g)
         if (r.getRight() < 0 || r.getX() > getWidth()) continue;
         const bool isSelected = selected.count(item->block.id) > 0;
 
-        g.setColour(MiraLookAndFeel::surface3);
+        const bool laneMuted = item->block.lane < CanvasAudioSource::kMaxLanes
+                            && ((muteMask & (juce::uint64 (1) << item->block.lane)) != 0
+                                || (soloMask != 0
+                                    && (soloMask & (juce::uint64 (1) << item->block.lane)) == 0));
+
+        g.setColour(MiraLookAndFeel::surface3.withAlpha(laneMuted ? 0.45f : 1.0f));
         g.fillRoundedRectangle(r.toFloat(), 5.0f);
 
         if (item->thumb != nullptr && item->thumb->getTotalLength() > 0.0)
         {
             auto wave = r.reduced(4, 16);
-            g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.85f : 0.6f));
+            g.setColour(MiraLookAndFeel::text.withAlpha(laneMuted ? 0.18f
+                                                                  : (isSelected ? 0.85f : 0.6f)));
             item->thumb->drawChannels(g, wave, item->block.sourceOffset,
                                        item->block.sourceOffset + item->block.length, 1.0f);
         }
@@ -219,10 +261,49 @@ void CanvasView::paint(juce::Graphics& g)
         g.drawRect(marquee, 1);
     }
 
+    // --- lane headers, painted AFTER the blocks so a block scrolled left disappears
+    // under them rather than over them.
+    {
+        auto strip = juce::Rectangle<int>(0, topRuler, kHeaderWidth, getHeight() - topRuler);
+        g.setColour(MiraLookAndFeel::surface2);
+        g.fillRect(strip);
+        g.setColour(MiraLookAndFeel::border);
+        g.drawVerticalLine(kHeaderWidth - 1, static_cast<float>(topRuler), static_cast<float>(getHeight()));
+
+        for (int lane = 0; lane < lanes; ++lane)
+        {
+            const bool muted  = lane < CanvasAudioSource::kMaxLanes
+                             && (muteMask & (juce::uint64 (1) << lane)) != 0;
+            const bool soloed = lane < CanvasAudioSource::kMaxLanes
+                             && (soloMask & (juce::uint64 (1) << lane)) != 0;
+
+            auto drawChip = [&](juce::Rectangle<int> box, const char* letter, bool on, juce::Colour tint) {
+                g.setColour(on ? tint : MiraLookAndFeel::surface3);
+                g.fillRoundedRectangle(box.toFloat(), 3.5f);
+                g.setColour(on ? MiraLookAndFeel::surface : MiraLookAndFeel::textDim);
+                g.setFont(laf.sansMedium(MiraLookAndFeel::textSize(10.0f)));
+                g.drawText(letter, box, juce::Justification::centred, false);
+            };
+            drawChip(muteBoxFor(lane), "M", muted,  MiraLookAndFeel::warn);
+            drawChip(soloBoxFor(lane), "S", soloed, MiraLookAndFeel::accent);
+
+            g.setColour(muted ? MiraLookAndFeel::textFaint : MiraLookAndFeel::textDim);
+            g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.0f)));
+            g.drawText(laneNames[lane].isNotEmpty() ? laneNames[lane] : juce::String(lane + 1),
+                        juce::Rectangle<int>(60, laneToY(lane), kHeaderWidth - 66, laneHeight),
+                        juce::Justification::centredLeft, true);
+        }
+        // The ruler's own corner, so the seconds do not run under the headers.
+        g.setColour(MiraLookAndFeel::surface2);
+        g.fillRect(0, 0, kHeaderWidth, topRuler);
+        g.setColour(MiraLookAndFeel::border);
+        g.drawVerticalLine(kHeaderWidth - 1, 0.0f, static_cast<float>(topRuler));
+    }
+
     // --- playhead, over everything
     {
         const int x = secondsToX(player.getPositionSeconds());
-        if (x >= kGutter && x < getWidth())
+        if (x >= kHeaderWidth && x < getWidth())
         {
             g.setColour(MiraLookAndFeel::accent);
             g.drawVerticalLine(x, 0.0f, static_cast<float>(getHeight()));
@@ -274,6 +355,23 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
     dragFrom = e.getPosition();
+
+    // The lane headers first: they sit over everything on the left, so a click there is
+    // never a click on a block.
+    if (e.x < kHeaderWidth && e.y >= topRuler)
+    {
+        const int lane = yToLane(e.y);
+        if (lane < CanvasAudioSource::kMaxLanes)
+        {
+            const juce::uint64 bit = juce::uint64 (1) << lane;
+            if (muteBoxFor(lane).contains(e.getPosition())) muteMask ^= bit;
+            else if (soloBoxFor(lane).contains(e.getPosition())) soloMask ^= bit;
+            else return;
+            applyMasks();
+            repaint();
+        }
+        return;
+    }
 
     if (e.y < topRuler)
     {
@@ -414,7 +512,7 @@ void CanvasView::zoomBy(double factor, int aroundX)
     // does not feel like the canvas jumped.
     const double anchor = xToSeconds(aroundX);
     pixelsPerSecond = juce::jlimit(0.5, 400.0, pixelsPerSecond * factor);
-    viewStart = juce::jmax(0.0, anchor - (aroundX - kGutter) / pixelsPerSecond);
+    viewStart = juce::jmax(0.0, anchor - (aroundX - kHeaderWidth) / pixelsPerSecond);
     repaint();
 }
 
@@ -424,6 +522,20 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
                                                { removeSelected(); return true; }
     if (key == juce::KeyPress::returnKey)      { player.setPositionSeconds(0.0); repaint(); return true; }
+    if (key.getTextCharacter() == 'm' || key.getTextCharacter() == 's')
+    {
+        // Acts on the lanes of whatever is selected, so "mute this take" is one key after
+        // clicking it rather than a trip to the header.
+        juce::uint64 bits = 0;
+        for (const auto& i : items)
+            if (selected.count(i->block.id) && i->block.lane < CanvasAudioSource::kMaxLanes)
+                bits |= juce::uint64 (1) << i->block.lane;
+        if (bits == 0) return true;
+        (key.getTextCharacter() == 'm' ? muteMask : soloMask) ^= bits;
+        applyMasks();
+        repaint();
+        return true;
+    }
     if (key.getTextCharacter() == 'l')         { setLoopFromSelection(); return true; }
     if (key.getTextCharacter() == 'f')         { fit(); return true; }
     return false;
@@ -569,6 +681,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         clock.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
         clock.setJustificationType(juce::Justification::centredRight);
         addAndMakeVisible(clock);
+        meter.setFont(laf.monoRegular(MiraLookAndFeel::textSize(11.0f)));
+        meter.setJustificationType(juce::Justification::centredRight);
+        addAndMakeVisible(meter);
         startTimerHz(10);
         addAndMakeVisible(view);
     }
@@ -586,6 +701,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         deleteButton.setBounds(bar.removeFromLeft(80));
         bar.removeFromLeft(12);
         clock.setBounds(bar.removeFromRight(190));
+        bar.removeFromRight(8);
+        meter.setBounds(bar.removeFromRight(110));
         hint.setBounds(bar);
         view.setBounds(r);
     }
@@ -594,14 +711,30 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
     void timerCallback() override
     {
+        // The peak matters MORE here than in a normal DAW. Stacking alternates means N
+        // takes that each peak near full scale summing into one bus: two is +6 dB over,
+        // four is +12. Nothing normalises that, so the number has to be on screen or the
+        // first thing the canvas teaches you is that it distorts.
+        const float p = view.readAndClearPeak();
+        if (p > held) held = p;
+        held *= 0.92f;                                     // a slow fall, so a hit is readable
+        const float dB = juce::Decibels::gainToDecibels(juce::jmax(held, 1.0e-6f));
+
         clock.setText(formatTime(view.getPositionSeconds()) + " / " + formatTime(view.getLengthSeconds())
                        + "   " + juce::String(view.getBlockCount()) + " blocks",
                       juce::dontSendNotification);
+        meter.setText(held > 1.0f ? "CLIP +" + juce::String(dB, 1) + " dB"
+                                  : juce::String(dB, 1) + " dB",
+                      juce::dontSendNotification);
+        meter.setColour(juce::Label::textColourId,
+                        held > 1.0f ? MiraLookAndFeel::warn : MiraLookAndFeel::textFaint);
     }
+
+    float held = 0.0f;
 
     CanvasView view;
     juce::TextButton playButton, loopButton, fitButton, deleteButton;
-    juce::Label hint, clock;
+    juce::Label hint, clock, meter;
 };
 
 CanvasWindow::CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,

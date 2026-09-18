@@ -36,6 +36,12 @@ juce::int64 CanvasAudioSource::getTotalLength() const
     return 0;
 }
 
+void CanvasAudioSource::setLaneMasks(juce::uint64 muted, juce::uint64 soloed)
+{
+    muteMask.store(muted);
+    soloMask.store(soloed);
+}
+
 void CanvasAudioSource::setLoopRange(double startSeconds, double endSeconds)
 {
     loopStart.store(static_cast<juce::int64>(startSeconds * deviceRate));
@@ -88,12 +94,21 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
 
     const juce::int64 to = from + numSamples;
     const int outChannels = info.buffer->getNumChannels();
+    const juce::uint64 mutes = muteMask.load();
+    const juce::uint64 solos = soloMask.load();
 
     for (auto& v : a->voices)
     {
         const juce::int64 voiceEnd = v.startSample + v.lengthSamples;
         if (voiceEnd <= from || v.startSample >= to) continue;   // not sounding in this block
         if (v.reader == nullptr) continue;
+
+        if (v.lane < kMaxLanes)
+        {
+            const juce::uint64 bit = juce::uint64 (1) << v.lane;
+            if (mutes & bit) continue;
+            if (solos != 0 && !(solos & bit)) continue;   // any solo silences everything else
+        }
 
         const juce::int64 overlapStart = juce::jmax(from, v.startSample);
         const juce::int64 overlapEnd   = juce::jmin(to, voiceEnd);
@@ -129,6 +144,15 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
                 dst[i] += src[i] * env;
             }
         }
+    }
+
+    // One peak for the whole mix, after summing -- which is the only place the stacking
+    // problem is visible. Read and cleared by the UI.
+    for (int ch = 0; ch < outChannels; ++ch)
+    {
+        const float m = info.buffer->getMagnitude(ch, info.startSample, numSamples);
+        float seen = peak.load();
+        while (m > seen && !peak.compare_exchange_weak(seen, m)) {}
     }
 }
 
@@ -184,6 +208,7 @@ void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatMa
         v.fadeInSamples  = static_cast<juce::int64>(b.fadeIn * rate);
         v.fadeOutSamples = static_cast<juce::int64>(b.fadeOut * rate);
         v.gain           = juce::Decibels::decibelsToGain(static_cast<float>(b.gainDb));
+        v.lane           = b.lane;
         v.reader         = std::move(reader);
         next->totalSamples = juce::jmax(next->totalSamples, v.startSample + v.lengthSamples);
         next->voices.push_back(std::move(v));

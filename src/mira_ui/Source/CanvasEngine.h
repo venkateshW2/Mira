@@ -57,6 +57,7 @@ public:
     struct Voice
     {
         std::unique_ptr<juce::AudioFormatReader> reader;
+        int lane = 0;                    // so mute and solo can be atomic bitmasks
         juce::int64 startSample = 0;     // on the canvas timeline, at the DEVICE rate
         juce::int64 lengthSamples = 0;
         juce::int64 sourceStartSample = 0;
@@ -92,7 +93,17 @@ public:
 
     void setLoopRange(double startSeconds, double endSeconds);
 
+    // Mute and solo as BITMASKS, updated atomically, so toggling either takes effect on
+    // the next block with no rebuild. Rebuilding would reopen every file on disk just to
+    // silence one lane, and the gap while it did would be audible.
+    void setLaneMasks(juce::uint64 muted, juce::uint64 soloed);
+    static constexpr int kMaxLanes = 64;   // one bit each; past this, mute/solo is ignored
+
     double getSampleRate() const { return deviceRate; }
+    // Highest sample seen since the last read, and cleared by reading it. Summing N takes
+    // that each peak near full scale is N times full scale, so a canvas that stacks
+    // alternates WILL clip unless it says so.
+    float readAndClearPeak() { return peak.exchange(0.0f); }
 
 private:
     Arrangement::Ptr active;                 // read by the audio thread
@@ -102,6 +113,8 @@ private:
     std::atomic<juce::int64> position { 0 };
     std::atomic<bool> looping { false };
     std::atomic<juce::int64> loopStart { 0 }, loopEnd { 0 };
+    std::atomic<juce::uint64> muteMask { 0 }, soloMask { 0 };
+    std::atomic<float> peak { 0.0f };
     double deviceRate = 44100.0;
     int blockSize = 512;
 
@@ -133,6 +146,8 @@ public:
 
     void setLoop(bool on, double startSeconds, double endSeconds);
     bool isLooping() const { return loopOn; }
+    void setLaneMasks(juce::uint64 muted, juce::uint64 soloed) { canvasSource.setLaneMasks(muted, soloed); }
+    float readAndClearPeak() { return canvasSource.readAndClearPeak(); }
 
 private:
     juce::TimeSliceThread readThread { "canvas file reader" };

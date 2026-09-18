@@ -61,6 +61,8 @@ public:
     int getBlockCount() const { return static_cast<int>(items.size()); }
     void zoomBy(double factor, int aroundX);
     void fit();
+    void clearAll();
+    float readAndClearPeak() { return player.readAndClearPeak(); }
     std::function<void()> onStateChanged;
 
 private:
@@ -86,8 +88,13 @@ private:
     // there is no tempo here to have them in.
     double pixelsPerSecond = 40.0;
     double viewStart = 0.0;
-    int laneHeight = 84;
+    int laneHeight = 64;
     int topRuler = 26;
+    // Mute and solo live on the LANE, not the block: a lane is one take, and muting "this
+    // take" is the whole point of stacking them. Bitmasks because that is what the audio
+    // thread reads.
+    juce::uint64 muteMask = 0, soloMask = 0;
+    juce::StringArray laneNames;
     double loopStart = 0.0, loopEnd = 0.0;
 
     Drag drag = Drag::None;
@@ -103,8 +110,11 @@ private:
     double panFromView = 0.0;
     juce::Rectangle<int> marquee;
 
-    double xToSeconds(int x) const { return viewStart + (x - kGutter) / pixelsPerSecond; }
-    int secondsToX(double s) const { return kGutter + juce::roundToInt((s - viewStart) * pixelsPerSecond); }
+    double xToSeconds(int x) const { return viewStart + (x - kHeaderWidth) / pixelsPerSecond; }
+    int secondsToX(double s) const { return kHeaderWidth + juce::roundToInt((s - viewStart) * pixelsPerSecond); }
+    void applyMasks() { player.setLaneMasks(muteMask, soloMask); }
+    juce::Rectangle<int> muteBoxFor(int lane) const;
+    juce::Rectangle<int> soloBoxFor(int lane) const;
     int laneToY(int lane) const { return topRuler + lane * laneHeight; }
     int yToLane(int y) const { return juce::jmax(0, (y - topRuler) / laneHeight); }
     juce::Rectangle<int> boundsOf(const Visual&) const;
@@ -113,7 +123,10 @@ private:
     void timerCallback() override;
     double contentEnd() const;
 
-    static constexpr int kGutter = 8;
+    // The lane headers on the left. Fixed, and the time axis starts after them -- a
+    // header that scrolled with the canvas would stop saying which lane you were looking
+    // at exactly when you needed it to.
+    static constexpr int kHeaderWidth = 116;
     static constexpr int kEdgeGrab = 7;   // px either side of a block edge that trims
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CanvasView)
