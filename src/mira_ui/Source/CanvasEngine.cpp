@@ -79,43 +79,55 @@ void CanvasAudioSource::getNextAudioBlock(const juce::AudioSourceChannelInfo& in
     Arrangement::Ptr a = active;
     if (a == nullptr || a->voices.empty()) { position.fetch_add(info.numSamples); return; }
 
-    juce::int64 from = position.load();
+    const juce::int64 from = position.load();
+    const bool loop = looping.load();
+    const juce::int64 ls = loopStart.load(), le = loopEnd.load();
+    const juce::int64 span = le - ls;
 
-    if (looping.load())
-    {
-        const juce::int64 ls = loopStart.load(), le = loopEnd.load();
-        if (le > ls)
-        {
-            // Wrapped here rather than by a timer, so the seam is sample-accurate: a
-            // visual loop that drifts by a block every pass is worse than no loop.
-            int done = 0;
-            while (done < info.numSamples)
-            {
-                if (from >= le) from = ls;
-                const int chunk = static_cast<int>(juce::jmin<juce::int64>(
-                                      juce::jmin<juce::int64>(info.numSamples - done, le - from),
-                                      scratch.getNumSamples()));
-                if (chunk <= 0) break;
-                juce::AudioSourceChannelInfo part (info.buffer, info.startSample + done, chunk);
-                renderRange(part, from, chunk);
-                from += chunk;
-                done += chunk;
-            }
-            position.store(from);
-            return;
-        }
-    }
-
-    // Chunked to the scratch buffer, so a caller asking for 44,100 samples at once is
-    // served in pieces rather than dropped.
+    // LOOPING IS A PURE MAPPING FROM THE REQUESTED POSITION, not an internal rewind.
+    //
+    // The first version rewound `position` when it crossed the out point. That cannot
+    // work here: a BufferingAudioSource sits in front of this source and calls
+    // setNextReadPosition(P) before every chunk it reads, always with LINEAR positions --
+    // P, P+n, P+2n. It is the authority on position, not us. So once P passed the out
+    // point, every chunk was asked for a position beyond it and every chunk restarted at
+    // the in point: about a second of audio repeating, which is exactly what it sounded
+    // like.
+    //
+    // Mapping instead -- position stays monotonic, and where it READS from is
+    // (start + (pos - start) mod span) -- is what AudioFormatReaderSource does for its own
+    // looping, and for the same reason.
     int done = 0;
     while (done < info.numSamples)
     {
-        const int chunk = juce::jmin(info.numSamples - done, scratch.getNumSamples());
+        const juce::int64 linear = from + done;
+        juce::int64 source = linear;
+        int chunk = juce::jmin(info.numSamples - done, scratch.getNumSamples());
+
+        if (loop && span > 0)
+        {
+            if (linear < ls)
+            {
+                // Before the loop: play straight through, but stop the chunk at the in
+                // point so the next one starts the loop cleanly.
+                chunk = (int) juce::jmin<juce::int64>(chunk, ls - linear);
+            }
+            else
+            {
+                const juce::int64 into = (linear - ls) % span;
+                source = ls + into;
+                // Never read across the out point inside one chunk -- that is the seam,
+                // and it has to land on a sample boundary rather than near one.
+                chunk = (int) juce::jmin<juce::int64>(chunk, span - into);
+            }
+        }
+
+        if (chunk <= 0) break;
         juce::AudioSourceChannelInfo part (info.buffer, info.startSample + done, chunk);
-        renderRange(part, from + done, chunk);
+        renderRange(part, source, chunk);
         done += chunk;
     }
+
     position.store(from + info.numSamples);
 }
 
@@ -305,6 +317,15 @@ void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatMa
 }
 
 
+double CanvasPlayer::getPositionSeconds() const
+{
+    const double pos = transport.getCurrentPosition();
+    if (!loopOn) return pos;
+    const double a = loopFrom, b = loopTo;
+    if (b <= a || pos < a) return pos;
+    return a + std::fmod(pos - a, b - a);
+}
+
 void CanvasPlayer::play()
 {
     if (transport.getCurrentPosition() >= transport.getLengthInSeconds()) transport.setPosition(0.0);
@@ -316,6 +337,8 @@ void CanvasPlayer::stop() { transport.stop(); }
 void CanvasPlayer::setLoop(bool on, double startSeconds, double endSeconds)
 {
     loopOn = on;
+    loopFrom = startSeconds;
+    loopTo = endSeconds;
     canvasSource.setLoopRange(startSeconds, endSeconds);
     canvasSource.setLooping(on);
 }

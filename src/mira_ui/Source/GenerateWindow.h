@@ -48,6 +48,10 @@ public:
     ~GenerateContent() override;
 
     void resized() override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    void mouseMove(const juce::MouseEvent&) override;
     void paint(juce::Graphics&) override;
 
     // Fired after Keep registers a file, so the library sidebar can pick up the new
@@ -211,6 +215,11 @@ private:
     // pane is half the window. Folded, the waveform gets the width.
     bool generatePaneCollapsed = false;
     bool panelOnly = false;   // canvas side panel: controls over takes, one column
+    // Where the controls end and the takes begin, as a fraction of the panel. Dragged by
+    // the divider between them -- "make the takes smaller and stuff".
+    double panelSplit = 0.62;
+    bool draggingSplit = false;
+    juce::Rectangle<int> panelDivider;
     juce::TextButton generatePaneToggle;
     std::unique_ptr<ProjectSidebar> sidebar;  // project window only
 
@@ -496,6 +505,7 @@ private:
     std::unique_ptr<InpaintStrip> inpaintStrip;
     int layoutRightPane(int width, bool applyBounds);
     void layoutTakeStack();
+    juce::Rectangle<int> panelDividerArea() const;
     int promptHeightFor(int width) const;
     juce::TextButton stopButton { "Stop" };
     // Memory readout. Generation RAM scales with clip length (peak was 11 GB at 30 s on

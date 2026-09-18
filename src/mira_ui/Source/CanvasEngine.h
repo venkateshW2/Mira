@@ -169,7 +169,10 @@ public:
     void play();
     void stop();
     bool isPlaying() const { return transport.isPlaying(); }
-    double getPositionSeconds() const { return transport.getCurrentPosition(); }
+    // What the playhead should draw. The transport's position is linear and keeps
+    // climbing past the out point while looping; where you are actually HEARING is the
+    // mapped position, and a playhead that says otherwise is lying about the audio.
+    double getPositionSeconds() const;
     void setPositionSeconds(double s) { transport.setPosition(s); }
     double getLengthSeconds() const { return transport.getLengthInSeconds(); }
 
@@ -188,6 +191,7 @@ private:
     juce::AudioSourcePlayer player;
     juce::AudioDeviceManager* deviceManager = nullptr;
     bool loopOn = false;
+    double loopFrom = 0.0, loopTo = 0.0;
     // Readers kept between rebuilds, keyed by path. Cleared of anything the new
     // arrangement did not claim, so deleting a block still closes its file.
     std::map<juce::String, std::shared_ptr<juce::AudioFormatReader>> readerCache;

@@ -23,14 +23,26 @@ CanvasView::~CanvasView() { player.detach(); }
 
 void CanvasView::setProject(const juce::File& project)
 {
-    // A canvas project is a FOLDER with a canvas.json in it, and one subfolder per block
-    // holding that block's takes. No cue/take walk any more: the canvas has no idea what a
-    // cue is, which is what "forget the idea of cue and takes" actually means in code.
     commitRename();
-    projectFolder = project;
-    if (project.isDirectory()) project.createDirectory();
-    load();
-    announceSelection();
+    if (!project.isDirectory()) return;
+
+    // Opening a FOLDER is the legacy path and stays only so an existing canvas.json is not
+    // stranded: the first .mira in the folder wins, otherwise a canvas.json is read and
+    // written back out as one. New work goes through New/Open.
+    auto found = project.findChildFiles(juce::File::findFiles, false, juce::String("*") + kExtension);
+    if (!found.isEmpty()) { openDocument(found[0]); return; }
+
+    const auto legacy = project.getChildFile("canvas.json");
+    if (legacy.existsAsFile())
+    {
+        projectFolder = project;
+        readFrom(legacy);
+        documentFile = project.getChildFile(project.getFileName() + kExtension);
+        writeTo(documentFile);
+        legacy.moveToTrash();
+        dirty = false;
+        if (onDocumentChanged) onDocumentChanged();
+    }
 }
 
 double CanvasView::contentEnd() const
@@ -189,7 +201,7 @@ void CanvasView::addLane()
     if (laneCount >= CanvasAudioSource::kMaxLanes) return;
     ++laneCount;
     if (laneNames[laneCount - 1].isEmpty()) laneNames.set(laneCount - 1, "track " + juce::String(laneCount));
-    save();
+    markDirty();
     repaint();
 }
 
@@ -226,13 +238,13 @@ void CanvasView::addEmptyBlock()
     selected.insert(v->block.id);
     items.push_back(std::move(v));
     announceSelection();
-    save();
+    markDirty();
     repaint();
 }
 
 void CanvasView::applySettingsToSelection(const juce::var& settings)
 {
-    if (auto* v = singleSelection()) { v->settings = settings; save(); }
+    if (auto* v = singleSelection()) { v->settings = settings; markDirty(); }
 }
 
 void CanvasView::chooseTakeForSelection(const juce::File& take)
@@ -241,7 +253,7 @@ void CanvasView::chooseTakeForSelection(const juce::File& take)
     {
         setFileOn(*v, take);
         rebuildAudio();
-        save();
+        markDirty();
         repaint();
     }
 }
@@ -255,18 +267,34 @@ void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
         {
             setFileOn(*i, take);
             rebuildAudio();
-            save();
+            markDirty();
             repaint();
             return;
         }
 }
 
-// --- persistence. One canvas.json in the project root: blocks, where they sit, and each
-// block's generator. Takes are NOT listed -- they are whatever is in the block's folder,
-// so a take added or removed outside mira is simply seen next time.
-void CanvasView::save() const
+// --- the document ---------------------------------------------------------------------
+//
+// One .mira file per project, beside the block folders it names. Takes are NOT listed --
+// they are whatever is in a block's folder, so a take added or removed outside mira is
+// simply seen next time.
+
+juce::String CanvasView::getDocumentName() const
 {
-    if (!projectFolder.isDirectory()) return;
+    return documentFile != juce::File() ? documentFile.getFileNameWithoutExtension()
+                                        : juce::String("Untitled");
+}
+
+void CanvasView::markDirty()
+{
+    if (dirty) return;
+    dirty = true;
+    if (onDocumentChanged) onDocumentChanged();
+}
+
+void CanvasView::writeTo(const juce::File& miraFile) const
+{
+    const auto base = miraFile.getParentDirectory();
     juce::Array<juce::var> blocks;
     for (const auto& i : items)
     {
@@ -279,36 +307,52 @@ void CanvasView::save() const
         o->setProperty("fadeIn", i->block.fadeIn);
         o->setProperty("fadeOut", i->block.fadeOut);
         o->setProperty("gainDb", i->block.gainDb);
-        if (i->block.hasAudio()) o->setProperty("file", i->block.file.getFullPathName());
+        if (i->block.hasAudio())
+        {
+            // Relative when it lives under the document, absolute when it does not. A
+            // project you can rename or move to another drive is the difference between a
+            // document and a folder with a pointer in it.
+            const auto full = i->block.file.getFullPathName();
+            const bool inside = full.startsWith(base.getFullPathName() + "/");
+            o->setProperty("file", inside ? i->block.file.getRelativePathFrom(base) : full);
+        }
         if (!i->settings.isVoid()) o->setProperty("settings", i->settings);
         blocks.add(juce::var(o));
     }
-    auto* root = new juce::DynamicObject();
-    root->setProperty("blocks", juce::var(blocks));
-    root->setProperty("lanes", juce::var(juce::Array<juce::var>()));
+
     juce::Array<juce::var> names;
     for (const auto& n : laneNames) names.add(n);
+    juce::Array<juce::var> gains;
+    for (auto g : laneDb) gains.add(g);
+
+    auto* root = new juce::DynamicObject();
+    root->setProperty("format", "mira-canvas");
+    root->setProperty("version", 1);
+    root->setProperty("blocks", juce::var(blocks));
     root->setProperty("laneNames", juce::var(names));
-    root->setProperty("muteMask", juce::String(muteMask));
+    root->setProperty("laneGainDb", juce::var(gains));
     root->setProperty("laneCount", laneCount);
-    projectFolder.getChildFile("canvas.json")
-        .replaceWithText(juce::JSON::toString(juce::var(root), false));
+    root->setProperty("muteMask", juce::String(muteMask));
+    miraFile.replaceWithText(juce::JSON::toString(juce::var(root), false));
 }
 
-void CanvasView::load()
+bool CanvasView::readFrom(const juce::File& miraFile)
 {
     items.clear();
     selected.clear();
     laneNames.clear();
+    laneDb.clear();
     muteMask = soloMask = 0;
     laneCount = 1;
 
-    const auto file = projectFolder.getChildFile("canvas.json");
-    if (!file.existsAsFile()) { applyMasks(); rebuildAudio(); repaint(); return; }
+    const auto root = juce::JSON::parse(miraFile.loadFileAsString());
+    if (!root.isObject()) return false;
+    const auto base = miraFile.getParentDirectory();
 
-    const auto root = juce::JSON::parse(file.loadFileAsString());
     if (auto* names = root.getProperty("laneNames", {}).getArray())
         for (int i = 0; i < names->size(); ++i) laneNames.set(i, (*names)[i].toString());
+    if (auto* gains = root.getProperty("laneGainDb", {}).getArray())
+        for (int i = 0; i < gains->size(); ++i) setLaneDb(i, (double) (*gains)[i]);
     muteMask = (juce::uint64) root.getProperty("muteMask", "0").toString().getLargeIntValue();
     laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, (int) root.getProperty("laneCount", 1));
 
@@ -319,7 +363,7 @@ void CanvasView::load()
             v->block.name = b.getProperty("name", "block").toString();
             v->block.lane = (int) b.getProperty("lane", 0);
             v->block.start = (double) b.getProperty("start", 0.0);
-            v->block.length = (double) b.getProperty("length", 30.0);
+            v->block.length = (double) b.getProperty("length", 8.0);
             v->block.sourceOffset = (double) b.getProperty("offset", 0.0);
             v->block.fadeIn = (double) b.getProperty("fadeIn", 0.0);
             v->block.fadeOut = (double) b.getProperty("fadeOut", 0.0);
@@ -327,10 +371,13 @@ void CanvasView::load()
             v->block.id = nextId++;
             v->settings = b.getProperty("settings", {});
             laneCount = juce::jmax(laneCount, v->block.lane + 1);
+
             const auto path = b.getProperty("file", "").toString();
             // A take that has been moved or deleted leaves the block EMPTY rather than
             // silently vanishing: the frame and its generator are still what you meant.
-            if (path.isNotEmpty()) setFileOn(*v, juce::File(path));
+            if (path.isNotEmpty())
+                setFileOn(*v, juce::File::isAbsolutePath(path) ? juce::File(path)
+                                                               : base.getChildFile(path));
             items.push_back(std::move(v));
         }
 
@@ -338,6 +385,58 @@ void CanvasView::load()
     if (!items.empty()) fit();
     rebuildAudio();
     repaint();
+    return true;
+}
+
+bool CanvasView::newDocument(const juce::File& folder, const juce::String& name)
+{
+    const auto clean = juce::File::createLegalFileName(name.trim());
+    if (clean.isEmpty()) return false;
+    const auto root = folder.getChildFile(clean);
+    if (!root.isDirectory() && !root.createDirectory().wasOk()) return false;
+
+    items.clear(); selected.clear(); laneNames.clear(); laneDb.clear();
+    muteMask = soloMask = 0;
+    laneCount = 1;
+    projectFolder = root;
+    documentFile = root.getChildFile(clean + kExtension);
+    dirty = false;
+    writeTo(documentFile);
+    applyMasks();
+    rebuildAudio();
+    if (onDocumentChanged) onDocumentChanged();
+    repaint();
+    return true;
+}
+
+bool CanvasView::openDocument(const juce::File& miraFile)
+{
+    if (!miraFile.existsAsFile()) return false;
+    projectFolder = miraFile.getParentDirectory();
+    documentFile = miraFile;
+    if (!readFrom(miraFile)) return false;
+    dirty = false;
+    if (onDocumentChanged) onDocumentChanged();
+    return true;
+}
+
+bool CanvasView::saveDocument()
+{
+    if (documentFile == juce::File()) return false;   // caller has to ask where
+    writeTo(documentFile);
+    dirty = false;
+    if (onDocumentChanged) onDocumentChanged();
+    return true;
+}
+
+bool CanvasView::saveDocumentAs(const juce::File& miraFile)
+{
+    auto target = miraFile;
+    if (!target.getFileName().endsWithIgnoreCase(kExtension))
+        target = target.getParentDirectory().getChildFile(target.getFileName() + kExtension);
+    projectFolder = target.getParentDirectory();
+    documentFile = target;
+    return saveDocument();
 }
 
 void CanvasView::clearAll()
@@ -791,7 +890,7 @@ void CanvasView::mouseUp(const juce::MouseEvent&)
     const bool changed = drag == Drag::Move || drag == Drag::TrimLeft || drag == Drag::TrimRight;
     drag = Drag::None;
     marquee = {};
-    if (changed) { rebuildAudio(); save(); }
+    if (changed) { rebuildAudio(); markDirty(); }
     repaint();
 }
 
@@ -827,6 +926,15 @@ void CanvasView::zoomBy(double factor, int aroundX)
 
 bool CanvasView::keyPressed(const juce::KeyPress& key)
 {
+    // The document shortcuts every app has. Handled here rather than in the app menu bar
+    // because the canvas is the only thing that has a document, and a global Cmd+S that
+    // sometimes meant the canvas and sometimes meant nothing would be worse than none.
+    if (key.getModifiers().isCommandDown())
+    {
+        if (key.getKeyCode() == 'S' && onSaveRequested) { onSaveRequested(); return true; }
+        if (key.getKeyCode() == 'O' && onOpenRequested) { onOpenRequested(); return true; }
+        if (key.getKeyCode() == 'N' && onNewRequested)  { onNewRequested();  return true; }
+    }
     if (key == juce::KeyPress::spaceKey)       { togglePlay(); return true; }
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
                                                { removeSelected(); return true; }
@@ -1000,10 +1108,15 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
         addAndMakeVisible(hint);
 
-        button(newProjectButton, "New project...");
+        button(newProjectButton, "New");
+        button(openProjectButton, "Open...");
+        button(saveProjectButton, "Save");
         button(addBlockButton, "+ Block");
         button(addTrackButton, "+ Track");
-        newProjectButton.onClick = [this] { promptNewProject(); };
+        newProjectButton.onClick  = [this] { promptNewProject(); };
+        openProjectButton.onClick = [this] { promptOpenProject(); };
+        saveProjectButton.onClick = [this] { saveOrAsk(); };
+        view.onDocumentChanged = [this] { updateTitle(); };
         addBlockButton.onClick   = [this] { view.addEmptyBlock(); };
         addTrackButton.onClick   = [this] { view.addLane(); };
 
@@ -1049,23 +1162,83 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         addAndMakeVisible(view);
     }
 
-    void promptNewProject()
+    // The title says the document and whether it has unsaved changes, the way every DAW
+    // does. Without it a window called "Canvas (experimental)" is the same window whatever
+    // you have open, which is how you save over the wrong project.
+    void updateTitle()
+    {
+        const juce::String t = "Canvas - " + view.getDocumentName() + (view.isDirty() ? " *" : "");
+        if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setName(t);
+        saveProjectButton.setEnabled(view.isDirty() || view.getDocumentFile() == juce::File());
+    }
+
+    bool saveOrAsk()
+    {
+        if (view.saveDocument()) return true;
+        promptSaveAs();
+        return false;
+    }
+
+    void promptSaveAs()
     {
         auto chooser = std::make_shared<juce::FileChooser>(
-            "New canvas project - choose or create a folder",
-            juce::File::getSpecialLocation(juce::File::userMusicDirectory));
-        chooser->launchAsync(juce::FileBrowserComponent::openMode
-                                 | juce::FileBrowserComponent::canSelectDirectories
-                                 | juce::FileBrowserComponent::saveMode,
+            "Save project as", juce::File::getSpecialLocation(juce::File::userMusicDirectory),
+            juce::String("*") + mira::canvas::CanvasView::kExtension);
+        chooser->launchAsync(juce::FileBrowserComponent::saveMode
+                                 | juce::FileBrowserComponent::warnAboutOverwriting,
                               [this, chooser](const juce::FileChooser& fc) {
-            const auto folder = fc.getResult();
-            if (folder == juce::File()) return;
-            if (!folder.isDirectory() && !folder.createDirectory().wasOk()) return;
-            view.setProject(folder);
-            setName("Canvas - " + folder.getFileName());
-            if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-                w->setName("Canvas - " + folder.getFileName());
+            const auto f = fc.getResult();
+            if (f == juce::File()) return;
+            view.saveDocumentAs(f);
+            updateTitle();
         });
+    }
+
+    void promptOpenProject()
+    {
+        auto chooser = std::make_shared<juce::FileChooser>(
+            "Open a mira project", juce::File::getSpecialLocation(juce::File::userMusicDirectory),
+            juce::String("*") + mira::canvas::CanvasView::kExtension);
+        chooser->launchAsync(juce::FileBrowserComponent::openMode
+                                 | juce::FileBrowserComponent::canSelectFiles,
+                              [this, chooser](const juce::FileChooser& fc) {
+            const auto f = fc.getResult();
+            if (f == juce::File()) return;
+            view.openDocument(f);
+            updateTitle();
+        });
+    }
+
+    void promptNewProject()
+    {
+        // A NAME, then a place to put it -- which is what makes a project a document
+        // rather than a folder someone pointed at. The folder is created for you, and the
+        // .mira lands inside it with the block folders as its siblings.
+        auto* w = new juce::AlertWindow("New project", "Name this project.",
+                                         juce::AlertWindow::NoIcon, this);
+        w->addTextEditor("name", "Untitled", "Name");
+        w->addButton("Create", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        w->enterModalState(true, juce::ModalCallbackFunction::create([this, w](int result) {
+            const auto name = w->getTextEditorContents("name").trim();
+            delete w;
+            if (result != 1 || name.isEmpty()) return;
+
+            auto chooser = std::make_shared<juce::FileChooser>(
+                "Where should \"" + name + "\" live?",
+                juce::File::getSpecialLocation(juce::File::userMusicDirectory));
+            chooser->launchAsync(juce::FileBrowserComponent::openMode
+                                     | juce::FileBrowserComponent::canSelectDirectories,
+                                  [this, chooser, name](const juce::FileChooser& fc) {
+                const auto parent = fc.getResult();
+                if (parent == juce::File()) return;
+                if (!view.newDocument(parent, name))
+                    juce::AlertWindow::showMessageBoxAsync(
+                        juce::AlertWindow::WarningIcon, "New project",
+                        "Could not create the project folder in " + parent.getFullPathName());
+                updateTitle();
+            });
+        }), false);
     }
 
     void resized() override
@@ -1084,7 +1257,11 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         bar.removeFromLeft(6);
         addBlockButton.setBounds(bar.removeFromLeft(74));
         bar.removeFromLeft(6);
-        newProjectButton.setBounds(bar.removeFromLeft(110));
+        newProjectButton.setBounds(bar.removeFromLeft(56));
+        bar.removeFromLeft(4);
+        openProjectButton.setBounds(bar.removeFromLeft(70));
+        bar.removeFromLeft(4);
+        saveProjectButton.setBounds(bar.removeFromLeft(56));
         bar.removeFromLeft(12);
         clock.setBounds(bar.removeFromRight(190));
         bar.removeFromRight(8);
@@ -1093,15 +1270,44 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
         if (panel != nullptr)
         {
-            auto side = r.removeFromRight(juce::jlimit(320, 400, r.getWidth() / 3));
+            const int wanted = juce::roundToInt(r.getWidth() * panelFraction);
+            auto side = r.removeFromRight(juce::jlimit(260, juce::jmax(280, r.getWidth() - 320), wanted));
             blockLabel.setBounds(side.removeFromTop(22).reduced(10, 0));
             panel->setBounds(side);
-            r.removeFromRight(4);
+            sideDivider = r.removeFromRight(6);
         }
         view.setBounds(r);
     }
 
-    void paint(juce::Graphics& g) override { g.fillAll(MiraLookAndFeel::surface2); }
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(MiraLookAndFeel::surface2);
+        if (!sideDivider.isEmpty())
+        {
+            g.setColour(MiraLookAndFeel::border);
+            const int cx = sideDivider.getCentreX(), cy = sideDivider.getCentreY();
+            for (int i = -1; i <= 1; ++i)
+                g.fillRect(cx - 1, cy + i * 10 - 6, 2, 12);
+        }
+    }
+
+    void mouseMove(const juce::MouseEvent& e) override
+    {
+        setMouseCursor(sideDivider.expanded(3, 0).contains(e.getPosition())
+                           ? juce::MouseCursor::LeftRightResizeCursor
+                           : juce::MouseCursor::NormalCursor);
+    }
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        draggingSide = sideDivider.expanded(3, 0).contains(e.getPosition());
+    }
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (!draggingSide) return;
+        panelFraction = juce::jlimit(0.18, 0.6, (double) (getWidth() - e.x) / juce::jmax(1, getWidth()));
+        resized();
+    }
+    void mouseUp(const juce::MouseEvent&) override { draggingSide = false; }
 
     void timerCallback() override
     {
@@ -1128,10 +1334,16 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
     CanvasView view;
     GenerateContent* panel = nullptr;      // owned by the window, not by this
+    // How much of the window the side panel takes. Dragged, not fixed -- a panel that is
+    // always a third is wrong at 1100px and wrong again at 2400.
+    double panelFraction = 0.30;
+    juce::Rectangle<int> sideDivider;
+    bool draggingSide = false;
     juce::File currentBlockFolder;
     juce::Label blockLabel;
     juce::TextButton playButton, loopButton, fitButton, deleteButton,
-                     addBlockButton, addTrackButton, newProjectButton;
+                     addBlockButton, addTrackButton,
+                     newProjectButton, openProjectButton, saveProjectButton;
     juce::Label hint, clock, meter;
 };
 

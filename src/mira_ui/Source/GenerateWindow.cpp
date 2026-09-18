@@ -1983,6 +1983,15 @@ void GenerateContent::log(const juce::String& line) {
 
 void GenerateContent::paint(juce::Graphics& g) {
     g.fillAll(juce::Colour(0xff1a1a1a));
+    // The panel-mode divider, drawn as a grip rather than a gap -- an invisible drag
+    // target is one nobody discovers.
+    if (panelOnly && !panelDivider.isEmpty())
+    {
+        g.setColour(MiraLookAndFeel::border);
+        const int cx = panelDivider.getCentreX(), cy = panelDivider.getCentreY();
+        for (int i = -1; i <= 1; ++i)
+            g.fillRect(cx + i * 10 - 6, cy - 1, 12, 2);
+    }
 }
 
 // Everything in the right pane, laid out once. Called twice per resize: once to MEASURE
@@ -2208,13 +2217,18 @@ void GenerateContent::resized() {
         // with no take list.
         const int innerWidth = r.getWidth() - (rightView.isVerticalScrollBarShown() ? 10 : 0);
         const int needed = layoutRightPane(innerWidth, false);
-        const int controlsHeight = juce::jmin(needed, juce::jmax(220, r.getHeight() * 2 / 3));
+        // The split is DRAGGED, not derived. It used to be "whatever the controls need, up
+        // to two thirds", which meant the takes got whatever was left over and you could
+        // not decide otherwise.
+        const int controlsHeight = juce::jlimit(120, juce::jmax(140, r.getHeight() - 120),
+                                                 juce::roundToInt(r.getHeight() * panelSplit));
         auto controls = r.removeFromTop(controlsHeight);
+        panelDivider = r.removeFromTop(8);
+        r.removeFromTop(2);
         rightView.setBounds(controls);
         rightPane.setSize(innerWidth, juce::jmax(needed, controls.getHeight()));
         layoutRightPane(innerWidth, true);
 
-        r.removeFromTop(8);
         auto header = r.removeFromTop(26);
         cleanupButton.setBounds(header.removeFromRight(84).withSizeKeepingCentre(84, 22));
         header.removeFromRight(6);
@@ -2278,6 +2292,27 @@ void GenerateContent::resized() {
 
 // The inside of the takes column, shared by the ordinary layout and the canvas's column
 // mode -- two copies of this would be two places for the waveform's bounds to drift.
+juce::Rectangle<int> GenerateContent::panelDividerArea() const { return panelDivider; }
+
+void GenerateContent::mouseMove(const juce::MouseEvent& e) {
+    setMouseCursor(panelOnly && panelDivider.contains(e.getPosition())
+                       ? juce::MouseCursor::UpDownResizeCursor
+                       : juce::MouseCursor::NormalCursor);
+}
+
+void GenerateContent::mouseDown(const juce::MouseEvent& e) {
+    draggingSplit = panelOnly && panelDivider.expanded(0, 3).contains(e.getPosition());
+}
+
+void GenerateContent::mouseDrag(const juce::MouseEvent& e) {
+    if (!draggingSplit) return;
+    const int usable = juce::jmax(200, getHeight() - 40);
+    panelSplit = juce::jlimit(0.15, 0.85, (double) (e.y - 40) / usable);
+    resized();
+}
+
+void GenerateContent::mouseUp(const juce::MouseEvent&) { draggingSplit = false; }
+
 void GenerateContent::layoutTakeStack() {
     if (takeStack != nullptr) {
         const int innerWidth = takesView.getWidth() - (takesView.isVerticalScrollBarShown() ? 10 : 0);

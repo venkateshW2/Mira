@@ -65,10 +65,33 @@ public:
     void fit();
     void clearAll();
     void addEmptyBlock();
+
+    // ---- the document (.mira) ---------------------------------------------------------
+    //
+    // A project is a FILE you open, the way .npr or .als is, not a folder you point the
+    // app at. That distinction is the whole of "normal daw behaviour": a folder is
+    // ambiguous -- is this a project, or the folder containing one? -- and mira has
+    // already been bitten by exactly that, opening a parent folder as a project and
+    // listing the real project inside it as a cue.
+    //
+    // The file lives IN the project folder with the block folders beside it, and block
+    // paths are stored RELATIVE to it, so moving or renaming the whole folder keeps
+    // working. Absolute paths are kept for anything outside.
+    static constexpr const char* kExtension = ".mira";
+    bool newDocument(const juce::File& folder, const juce::String& name);
+    bool openDocument(const juce::File& miraFile);
+    bool saveDocument();                       // false when there is nowhere to save yet
+    bool saveDocumentAs(const juce::File& miraFile);
+    juce::File getDocumentFile() const { return documentFile; }
+    juce::String getDocumentName() const;
+    bool isDirty() const { return dirty; }
+    std::function<void()> onDocumentChanged;   // title, mostly
+    std::function<void()> onSaveRequested, onOpenRequested, onNewRequested;
     void addLane();
     int getLaneCount() const { return laneCount; }
-    void save() const;
-    void load();
+    void writeTo(const juce::File& miraFile) const;
+    bool readFrom(const juce::File& miraFile);
+    void markDirty();
     void applySettingsToSelection(const juce::var& settings);
     void chooseTakeForSelection(const juce::File& take);
     // name, block folder, generator settings, chosen take -- everything the inspector
@@ -105,7 +128,9 @@ private:
     std::vector<std::unique_ptr<Visual>> items;
     std::set<juce::int64> selected;
     juce::int64 nextId = 1;
-    juce::File projectFolder;
+    juce::File projectFolder;      // the folder the document lives in
+    juce::File documentFile;       // the .mira itself, or invalid for an unsaved canvas
+    bool dirty = false;
 
     // The view: seconds per pixel and the leftmost visible second. No bars, no beats --
     // there is no tempo here to have them in.
