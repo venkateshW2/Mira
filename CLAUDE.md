@@ -55,7 +55,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | [PRD.md](PRD.md) | the design: stack, models, phases, licence reasoning, every "why this and not that" | current as design; §-numbers are cited throughout the code |
 | [TASKS.md](TASKS.md) | the build checklist, phase by phase. Phases 0–5 complete, **Phase 6 in progress** | live — tick items here |
 | [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — **phases 1–5 built**, 6–7 open (2026-09-17) |
-| [MIRA-VIDEO.md](MIRA-VIDEO.md) | **scoring to picture** — a video window slaved to the transport, a locked reference track, timecode, markers, a cue sheet | live — **Phases 0–5 built**; 1–2 verified on screen, 3–5 not yet (2026-09-19) |
+| [MIRA-VIDEO.md](MIRA-VIDEO.md) | **scoring to picture** — a video window slaved to the transport, a locked reference track, timecode, markers, a cue sheet | live — **Phases 0–5 built and verified on screen** (2026-09-19) |
 | [CANVAS.md](CANVAS.md) | **the block canvas** — the Blockhead-shaped experiment: blocks that own their generator, tracks that sum, and the `.mira` document | live — experimental, 2026-09-19 |
 
 ### Captioning and training
@@ -178,9 +178,19 @@ Newest first. Keep this current — it is how the next session finds the thread.
 
 ### 2026-09-19 (latest) — timecode, several reels, and the spotting notes
 
-[MIRA-VIDEO.md](MIRA-VIDEO.md) Phases 3, 4 and 5. **Built and compiling; not yet seen
-running** — the user tests these themselves now, so convention 8 is satisfied by them, not
-by me, and until they say so these are unverified.
+[MIRA-VIDEO.md](MIRA-VIDEO.md) Phases 3, 4 and 5. **Built and confirmed working by the
+user** — they drive the UI checks now, which is how three real faults surfaced in this
+session within seconds of each feature landing.
+
+**Markers took three passes, and every fault was invisible to the compiler:**
+`paintMarkers` was written and NEVER CALLED (the edit that should have added the call was
+made conditional on the call already being there — *assert that an edit applied*, the same
+lesson as the canvas entry below, now twice); `Cmd-M` is **Minimise** on macOS, so the
+window shrank to the dock and no marker appeared; and then the labels collided with the
+ruler's time ticks, which is what drawing them on the ruler was always going to do. They
+have their own row now, are draggable by the whole label, and have a list window with
+go-to — the third thing this canvas has had to give a row of its own, after the picture
+and the reference.
 
 - **Timecode** ([Timecode.h](src/mira_ui/Source/Timecode.h), header-only and UI-free). The
   ruler, the transport clock and every block header read the same way. **The two rates are
