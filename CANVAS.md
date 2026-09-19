@@ -91,15 +91,26 @@ step with the picture; the picture *is* the number.
 
 ### Cutting is remembered, so you can continue from where the audio really ends
 
-A generated take often ends in silence. Drag the block's right edge **in** to cut it off —
-or put the playhead where the audio really stops and press **`Cmd-E`** — and that cut is
-kept: dragging back **out** grows the empty tail instead of revealing the silence you just
-removed. So "the take trails off, end it there and carry on" is a cut, a drag and a button.
+**Trimming hides; only `Cmd-E` cuts.** Drag the right edge in and less of the take sounds;
+drag it back out and it is all there again — the ordinary, reversible edit every DAW has.
+An earlier version treated pulling in as a cut and remembered it, so trimming a block
+destroyed its audio as far as the canvas was concerned, with no way back but a menu item.
 
-**`Cmd-E` cuts; it does not split.** It ends the block at the playhead and leaves *one*
-block. Splitting into two is still there, on the right-click menu, where it reads as the
-deliberate operation it is — a second block means a second folder with an empty generator
-in it, which is not what you want when all you said was "the take ends here".
+A generated take often ends in silence. Put the playhead where the audio really stops and
+press **`Cmd-E`**: that ends the block there *and says the audio ends there*, which is the
+thing an extend needs to know and a trim never meant to say. Drag the edge back out and the
+gap is a tail to fill rather than the silence you just removed. So "the take trails off, end
+it there and carry on" is a cut, a drag and a button.
+
+**`Cmd-E` cuts; it does not split.** It leaves *one* block. Splitting into two is on the
+right-click menu, where it reads as the deliberate operation it is — a second block means a
+second folder with an empty generator in it, which is not what you want when all you said
+was "the take ends here".
+
+The block's length also caps what sounds, which is what makes trimming a hide: a trimmed
+block draws and plays only the part it covers. Without that clamp it still claimed the whole
+file, and the waveform came out squashed — thirty seconds of audio painted into twenty
+seconds of block.
 
 `contentSeconds` on the block is what holds this — how much of the *file* the block uses,
 as against `length`, how long the block is on the *timeline*. The difference between them
@@ -351,6 +362,6 @@ to hand.
 | double-click a block | open its generator |
 | right-click a block | mute, fade shape, clear fades, restore full take, duplicate, cut, split in two, remove |
 | the `M` on a block | mute just that block |
-| drag a block's right edge in | cut the audio short, and remember it |
-| drag it back out | make a tail for Extend / Remix |
+| drag a block's right edge | hide or show more of the take (never destructive) |
+| drag it out past the audio, or past a `Cmd-E` cut | make a tail for Extend / Remix |
 | drag a block's top corner | its fade in / out |

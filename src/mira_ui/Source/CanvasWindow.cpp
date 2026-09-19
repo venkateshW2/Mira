@@ -480,7 +480,7 @@ void CanvasView::showBlockMenu(Visual& v)
                                  {
                                      i->block.contentSeconds = 0.0;
                                      i->block.length = juce::jmax(i->block.length,
-                                                                   self.soundingSecondsOf(*i));
+                                                                   self.availableSecondsOf(*i));
                                  }
                              self.rebuildAudio(); self.markDirty();
                              self.announceSelection(); self.repaint();
@@ -501,14 +501,24 @@ void CanvasView::showBlockMenu(Visual& v)
                      });
 }
 
-// How much of this block actually sounds: the cut length if one was made, otherwise
-// whatever the file has left after the block's offset into it.
-double CanvasView::soundingSecondsOf(const Visual& v) const
+// How much audio this block HAS to give, before its length is considered: the cut, if one
+// was made with Cmd-E, otherwise whatever the file has left after the block's offset.
+double CanvasView::availableSecondsOf(const Visual& v) const
 {
     if (!v.block.hasAudio() || v.audioSeconds <= 0.0) return 0.0;
-    const double available = juce::jmax(0.0, v.audioSeconds - v.block.sourceOffset);
-    if (v.block.contentSeconds > 0.0) return juce::jmin(v.block.contentSeconds, available);
-    return available;
+    const double inFile = juce::jmax(0.0, v.audioSeconds - v.block.sourceOffset);
+    return v.block.contentSeconds > 0.0 ? juce::jmin(v.block.contentSeconds, inFile) : inFile;
+}
+
+// How much of this block actually sounds. CLAMPED BY THE BLOCK'S LENGTH, which is what
+// makes trimming a hide rather than a cut: pull the right edge in and less of the file
+// sounds, pull it back out and it is all there again.
+//
+// Without the clamp a trimmed block still claimed the whole file, and the waveform was
+// drawn squashed -- thirty seconds of audio painted into twenty seconds of block.
+double CanvasView::soundingSecondsOf(const Visual& v) const
+{
+    return juce::jmin(availableSecondsOf(v), v.block.length);
 }
 
 double CanvasView::tailSecondsOf(const Visual& v) const
@@ -1517,26 +1527,14 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
         }
         else if (drag == Drag::TrimRight && b.id == dragTarget)
         {
-            b.length = juce::jmax(0.05, dragOriginLength + deltaSeconds);
-            // PULLING IN IS A CUT, and it is remembered. Dragging back out then grows the
-            // empty tail rather than revealing what you just cut off -- which is what
-            // makes "the take ends in silence, cut it and continue from there" one gesture
-            // instead of a split, a delete and a re-drag.
+            // TRIMMING HIDES, IT DOES NOT CUT. Pulling the right edge in shows less of the
+            // take; pulling it back out shows it again. An earlier version treated pulling
+            // in as a cut and remembered it, so trimming a block destroyed its audio as
+            // far as the canvas was concerned and there was no way back but a menu.
             //
-            // The full take is not lost: "Restore full take" is on the right-click menu.
-            if (b.hasAudio())
-            {
-                for (const auto& other : items)
-                    if (other->block.id == b.id)
-                    {
-                        const double available = juce::jmax(0.0, other->audioSeconds - b.sourceOffset);
-                        const double was = b.contentSeconds > 0.0
-                                               ? juce::jmin(b.contentSeconds, available)
-                                               : available;
-                        if (b.length < was) b.contentSeconds = b.length;
-                        break;
-                    }
-            }
+            // Cutting is Cmd-E, and only Cmd-E: a deliberate "the audio ends here", which
+            // is the thing an extend needs to know and a trim never meant to say.
+            b.length = juce::jmax(0.05, dragOriginLength + deltaSeconds);
         }
         else if (drag == Drag::FadeIn && b.id == dragTarget)
         {

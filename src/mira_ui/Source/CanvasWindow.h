@@ -262,8 +262,10 @@ private:
     // Seconds of empty block past the end of its audio: what "extend" would fill. Zero
     // when the audio reaches the end of the block, or when there is no audio at all.
     double tailSecondsOf(const Visual& v) const;
-    // How much of the block actually sounds -- the cut, when one was made.
+    // How much of the block actually sounds, clamped by its length -- so trimming hides.
     double soundingSecondsOf(const Visual& v) const;
+    // How much audio it HAS, before length is considered: the Cmd-E cut, or the file.
+    double availableSecondsOf(const Visual& v) const;
     // Right-click on a block: mute it, change its fade shape, split or remove it. The
     // things a block IS, in one place, rather than five shortcuts to remember.
     void showBlockMenu(Visual& v);
