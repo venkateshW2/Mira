@@ -4,6 +4,7 @@
 
 #include "mira/caption/CaptionFields.h"
 #include "Export.h"
+#include "CanvasEngine.h"   // fadeGain: one crossfade curve for the whole app
 #include "mira/caption/Sa3Renderer.h"
 
 #include <mach/mach.h>
@@ -683,6 +684,111 @@ juce::StringArray GenerateContent::loadedLoraTriggers() const {
         out.addIfNotAlreadyThere(loraTrigger(loraFiles[sel - 2]));
     }
     return out;
+}
+
+// ---- keeping what was already there --------------------------------------------------
+//
+// MEASURED, AGAINST A CLAIM THAT WAS WRONG. CLAUDE.md said an inpaint leaves everything
+// outside the range bit-exact -- verified by READING sa3_mlx.py, never by measuring the
+// output. It is not true and cannot be: the mask preserves LATENTS, but the whole
+// timeline is decoded from latents at the end and the source had to be ENCODED first, so
+// the kept region takes a lossy encode/decode round trip.
+//
+// It is audible, and it ACCUMULATES -- error relative to the signal, first 62 s, same
+// audio extended three times:
+//
+//     after 1 extension   -21.9 dB      corr 0.99675
+//     after 2             -17.2 dB      corr 0.99051
+//     after 3             -14.5 dB      corr 0.98254
+//
+// So mira stops trusting the model to preserve anything. It has the original file on
+// disk: outside the range it writes the ORIGINAL SAMPLES back, and takes from the
+// generation only what was actually asked for. Now an extension truly leaves the earlier
+// audio alone, however many times it is extended.
+//
+// A short equal-power crossfade at each boundary, not a butt join: the two sides are the
+// same music (corr 0.997) but not the same samples, so a hard splice is a click. Equal
+// power rather than linear -- two linear fades summing lose 3 dB in the middle, and the
+// middle is exactly the seam.
+//
+// Returns false and says why rather than half-doing it: a source that disagrees about
+// rate or channels is not something to paper over.
+static bool spliceKeptRegion(juce::AudioFormatManager& formats, const juce::File& source,
+                      const juce::File& result, double rangeStart, double rangeEnd,
+                      juce::String& errorOut)
+{
+    std::unique_ptr<juce::AudioFormatReader> src (formats.createReaderFor(source));
+    std::unique_ptr<juce::AudioFormatReader> gen (formats.createReaderFor(result));
+    if (src == nullptr || gen == nullptr) { errorOut = "could not read one of the files"; return false; }
+    if (std::abs(src->sampleRate - gen->sampleRate) > 1.0)
+    {
+        errorOut = "sample rates differ (" + juce::String(src->sampleRate, 0) + " vs "
+                 + juce::String(gen->sampleRate, 0) + ")";
+        return false;
+    }
+    const int channels = (int) juce::jmin(src->numChannels, gen->numChannels);
+    if (channels <= 0) { errorOut = "no channels"; return false; }
+
+    const double rate = gen->sampleRate;
+    const auto genLen = (int) juce::jmin<juce::int64>(gen->lengthInSamples, 1 << 30);
+    const auto srcLen = (int) juce::jmin<juce::int64>(src->lengthInSamples, 1 << 30);
+
+    juce::AudioBuffer<float> out ((int) channels, genLen);
+    gen->read (&out, 0, genLen, 0, true, true);
+    juce::AudioBuffer<float> original ((int) channels, srcLen);
+    src->read (&original, 0, srcLen, 0, true, true);
+    src.reset(); gen.reset();
+
+    const int from = juce::jlimit (0, genLen, (int) std::llround (rangeStart * rate));
+    const int to   = juce::jlimit (from, genLen, rangeEnd > rangeStart
+                                                     ? (int) std::llround (rangeEnd * rate)
+                                                     : genLen);
+    const int fade = (int) std::llround (0.030 * rate);   // 30 ms
+
+    // Everything BEFORE the range is the original, verbatim.
+    const int head = juce::jmin (from, srcLen);
+    for (int c = 0; c < channels; ++c)
+        out.copyFrom (c, 0, original, c, 0, head);
+    // ... crossfading into the generation over the last `fade` samples of it.
+    for (int c = 0; c < channels; ++c)
+        for (int i = juce::jmax (0, head - fade); i < head; ++i)
+        {
+            const float t = (float) (i - (head - fade)) / (float) juce::jmax (1, fade);
+            out.setSample (c, i, original.getSample (c, i) * mira::canvas::fadeGain (1.0f - t, mira::canvas::FadeShape::EqualPower)
+                                 + out.getSample (c, i) * mira::canvas::fadeGain (t, mira::canvas::FadeShape::EqualPower));
+        }
+
+    // Everything AFTER the range is the original too, when there is any -- an interior
+    // inpaint. An extension has nothing past the range and this does nothing.
+    if (to < genLen && to < srcLen)
+    {
+        const int tailLen = juce::jmin (genLen - to, srcLen - to);
+        for (int c = 0; c < channels; ++c)
+            out.copyFrom (c, to, original, c, to, tailLen);
+        for (int c = 0; c < channels; ++c)
+            for (int i = to; i < juce::jmin (genLen, to + fade); ++i)
+            {
+                const float t = (float) (i - to) / (float) juce::jmax (1, fade);
+                out.setSample (c, i, out.getSample (c, i) * mira::canvas::fadeGain (t, mira::canvas::FadeShape::EqualPower)
+                                     + original.getSample (c, i) * mira::canvas::fadeGain (1.0f - t, mira::canvas::FadeShape::EqualPower));
+            }
+    }
+
+    // Written beside it and moved into place, so an interrupted write cannot leave a
+    // half-spliced take where the finished one was.
+    auto temp = result.getSiblingFile (result.getFileNameWithoutExtension() + "-splice.wav");
+    temp.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::FileOutputStream> stream (temp.createOutputStream());
+    if (stream == nullptr) { errorOut = "could not open " + temp.getFullPathName(); return false; }
+    std::unique_ptr<juce::AudioFormatWriter> writer (
+        wav.createWriterFor (stream.get(), rate, (unsigned) channels, 24, {}, 0));
+    if (writer == nullptr) { errorOut = "could not create a writer"; return false; }
+    stream.release();                       // the writer owns it now
+    writer->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+    writer.reset();
+    if (!temp.moveFileTo (result)) { errorOut = "could not replace " + result.getFileName(); return false; }
+    return true;
 }
 
 void GenerateContent::refreshLoras() {
@@ -1977,6 +2083,10 @@ void GenerateContent::generate() {
         lastRecipe = juce::var(r);
     }
 
+    // What must survive this generation untouched. Captured HERE, with the request, so it
+    // cannot drift from what was actually asked for.
+    juce::File spliceSource;
+    double spliceFrom = 0.0, spliceTo = 0.0;
     if (initAudio.existsAsFile()) {
         if (inpaintToggle.getToggleState()) {
             // Inpainting keeps everything OUTSIDE the range bit-exact and regenerates
@@ -1984,6 +2094,9 @@ void GenerateContent::generate() {
             juce::Array<juce::var> range { inpaintStart.getValue(), inpaintEnd.getValue() };
             req->setProperty("inpaint_audio", initAudio.getFullPathName());
             req->setProperty("inpaint_range", juce::var(range));
+            spliceSource = initAudio;
+            spliceFrom = inpaintStart.getValue();
+            spliceTo = inpaintEnd.getValue();
         } else {
             req->setProperty("init_audio", initAudio.getFullPathName());
         }
@@ -2022,7 +2135,7 @@ void GenerateContent::generate() {
     juce::String sendError;
     auto* w = hub.get(sendError);
     if (w == nullptr) { statusLabel.setText("worker is not running", juce::dontSendNotification); return; }
-    w->send(req, [this, wav](bool ok, juce::var payload) {
+    w->send(req, [this, wav, spliceSource, spliceFrom, spliceTo](bool ok, juce::var payload) {
         const double took = genProgress.elapsedSeconds();
         setBusy(false, {});
         if (!ok) {
@@ -2033,6 +2146,21 @@ void GenerateContent::generate() {
         // The recipe beside the audio. It exists because this information otherwise
         // lives only in the log and dies with the session -- and a generation you cannot
         // reproduce is a generation you cannot learn from.
+        // The kept region, put back from the original. See spliceKeptRegion above: the
+        // model's "preserved" audio is a lossy round trip, and it compounds every time.
+        if (spliceSource.existsAsFile() && spliceFrom > 0.001) {
+            juce::String why;
+            if (spliceKeptRegion(takeFormatManager, spliceSource, wav, spliceFrom, spliceTo, why))
+                log("kept the original audio before " + juce::String(spliceFrom, 1)
+                    + "s rather than the model's re-encoding of it");
+            else
+                // Convention 6: the take still exists and still plays, but it is NOT the
+                // thing that was promised, so it does not pass in silence.
+                log("could not keep the original audio (" + why
+                    + ") - everything before " + juce::String(spliceFrom, 1)
+                    + "s is the model's re-encoded version");
+        }
+
         if (auto* obj = lastRecipe.getDynamicObject()) {
             obj->setProperty("file", wav.getFileName());
             obj->setProperty("created", juce::Time::getCurrentTime().toISO8601(true));

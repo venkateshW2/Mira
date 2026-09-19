@@ -158,6 +158,42 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
+### 2026-09-19 — four generation bugs, all found by measuring instead of reading
+
+The user reported the generator "taking a different prompt" and an `acr` block throwing
+koan-ish drums. Reading the code said the request was correct, and it was — the sidecars
+prove the prompt and the LoRA that left mira were exactly the ones on screen. What the
+code could not say is what the OUTPUT did.
+
+- **One Extend was guiding every generation after it.** `generateExtension`/`generateRemix`
+  set `initAudio` and nothing ever put it back, so every later generation — another block,
+  a brand-new block — silently carried `init_audio` pointing at the old block's take.
+  Invisible three times over: `panelOnly` hides the AUDIO IN section on the canvas,
+  `applySettings` never cleared it, and the sidecar never recorded it. Now scoped to the
+  action, cleared on block switch, and **recorded in the recipe**.
+- **The recipe could not reproduce its own audio.** Two takes with byte-identical recipes
+  correlate **0.50**; a third regenerated from its own sidecar correlates **0.003** (8.84
+  onsets/s against the recipe's 0.05). That gap is what located the bug above — a recipe
+  that does not reproduce means the request held something the recipe does not record.
+- **"Outside the range stays bit-exact" was false.** Verified by reading `sa3_mlx.py`,
+  never measured. The mask preserves latents; the timeline is decoded from latents and the
+  source was encoded first, so the kept region takes a lossy round trip — −21.9 dB relative
+  error after one extension, **−14.5 dB after three**. mira now writes the original samples
+  back outside the range with a 30 ms equal-power crossfade. Kept region is bit-exact after.
+- **The trigger is in the LoRA filename**, so it stopped being something to remember: the
+  prompt builder's trigger row is filled from the loaded slots, and `generate()` reports a
+  mismatch in both directions. That row also decides which corpus every other field draws
+  from, so a wrong trigger offers words the loaded LoRA never saw.
+- **`extendSelection` returned silently** in three cases, so "extend does not work" had no
+  way to become a reason (convention 6). After an extension lands the block is full again,
+  which is exactly when the next extend silently refused.
+
+Measured and **ruled out** on the way: worker LoRA state. It does leave residue on a cached
+DiT — the fp16 clear is not the exact inverse `_reconcile_lora` claims, and a warm worker's
+second generation of a gated config differs from its first — but at −55 to −66 dBFS, corr
+0.9997 or better. Real, logged, far too small to hear. Reporting it as the cause before
+measuring its size was the mistake to avoid repeating.
+
 ### 2026-09-19 — the block canvas
 
 A second, separate window ([CANVAS.md](CANVAS.md)) where a **block owns its generator**:
@@ -295,6 +331,8 @@ Phases 1–5 done, 6–7 planned. Nothing that already worked was changed.
 - **Inpainting is extension**, verified in `sa3_mlx.py`: init audio is zero-padded to the
   requested duration, so a range past the end of the audio generates a continuation. The
   strip's timeline is the duration, not the file length.
+  **Corrected 2026-09-19:** this entry also claimed everything outside the range stays
+  bit-exact. It does not — see the 2026-09-19 entry below.
 - **The LoRA step window is in sampler steps** and compared against Steps, so a slider
   running to 50 while Steps was 8 offered 42 positions that did not exist.
 

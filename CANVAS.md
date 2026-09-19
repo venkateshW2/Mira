@@ -134,7 +134,7 @@ with how many seconds it holds. Two buttons fill it:
 
 | | |
 |---|---|
-| **Extend** | fills the empty tail; the existing audio stays bit-exact |
+| **Extend** | fills the empty tail; the existing audio is written back bit-exact (see below) |
 | **Remix** | regenerates the *whole* block at its length, guided by the take it already has |
 
 **Both run the prompt exactly as it stands on screen.** Extend used to re-apply the block's
@@ -151,8 +151,34 @@ window asks for.
 
 This works because of something verified in `sa3_mlx.py` and recorded on 2026-09-17: **init
 audio is zero-padded to the requested duration**, so a range past the end of the audio
-generates a continuation, and everything *outside* the range stays bit-exact. Extending is
-not a second pass over the whole piece — the audio you already have is untouched.
+generates a continuation.
+
+**The second half of that claim was wrong, and mira now compensates for it.** "Everything
+outside the range stays bit-exact" was verified by *reading* `sa3_mlx.py`, never by
+measuring the output. It is not true and cannot be: the mask preserves **latents**, but the
+whole timeline is decoded from latents at the end and the source had to be **encoded**
+first, so the kept region takes a lossy round trip. Measured on the same 62 s of audio
+extended three times, error relative to the signal:
+
+| | null vs original | rel. signal | corr |
+|---|---|---|---|
+| after 1 extension | −39.6 dBFS | −21.9 dB | 0.99675 |
+| after 2 | −34.9 dBFS | −17.2 dB | 0.99051 |
+| after 3 | −32.1 dBFS | −14.5 dB | 0.98254 |
+
+Audible, and compounding — the failure mode is a piece that quietly gets worse the more you
+work on it, which never looks like a failure.
+
+So mira **does not trust the model to preserve anything**. It has the original file on
+disk: after an inpaint it writes the original samples back outside the range and keeps from
+the generation only what was actually asked for, with a 30 ms equal-power crossfade at each
+boundary (the two sides are the same music, corr 0.997, but not the same samples, so a butt
+join is a click). Verified: the kept region is bit-exact afterwards, and the seam's largest
+sample-to-sample step is 0.0008 against 0.0005 in an ungapped generation.
+
+The cost is still the total, not the new part — extending a three-minute piece by ten
+seconds is a three-minute generation (80 s/34 s, 120 s/53 s, 180 s/111 s, 240 s/147 s,
+measured). A sliding context window would fix that; correctness no longer depends on it.
 
 A block longer than the model will generate is **refused with the number**, not quietly
 truncated: audio that stopped short of the frame with nothing on screen explaining why is
