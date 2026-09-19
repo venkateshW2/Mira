@@ -1242,7 +1242,7 @@ public:
             // tracks, the mixer and the generator are all there, and it is the thing that
             // has a document. File > New Project otherwise leaves you looking at an empty
             // folder with no hint of what comes next.
-            showCanvasWindow();
+            showCanvasWindow(false);   // this handler is about to open the real one
             // The document when Open named one, the folder otherwise. setProject on a
             // folder guesses (first .mira wins, and writes an empty one when there is
             // none) -- fine for New Project, wrong for Open.
@@ -3278,7 +3278,13 @@ public:
     // The canvas experiment. Opened from Window, closes on its own, and joins the app's
     // single audio device like every other window that makes sound -- that is the ONLY
     // thing it shares with the rest of mira.
-    void showCanvasWindow()
+    // `bindCurrentProject` is false when the CALLER is about to open a specific project.
+    // Without it the canvas loaded a project twice on every launch -- once here from
+    // ui_settings.current_project, once from the launch window's choice -- and the second
+    // load discarded everything the first had built. Harmless-looking until a film was
+    // involved: the trace showed "reference: read straight from finalucut.mp4" twice, and
+    // on a 40-minute reel that is the expensive half of opening a project, done twice.
+    void showCanvasWindow(bool bindCurrentProject = true)
     {
         // refreshMenuState() at every exit, not just on creation. The macOS menu bar bakes
         // each item's enabled state in when the menu is BUILT (see onMenuStateChanged), so
@@ -3313,7 +3319,7 @@ public:
             if (database != nullptr) database->setSetting(key.toStdString(), value.toStdString());
         };
         canvasWindow->getView().attachTo(sharedAudioDevice);
-        canvasWindow->getView().setProject(getCurrentProject());
+        if (bindCurrentProject) canvasWindow->getView().setProject(getCurrentProject());
         canvasWindow->onClosed = [this] {
             juce::MessageManager::callAsync([this] {
                 canvasWindow.reset();
@@ -3364,7 +3370,7 @@ public:
         if (!folder.isDirectory()) return;
         setCurrentProject(folder);
         rememberRecentProject(folder);
-        showCanvasWindow();
+        showCanvasWindow(false);   // the setProject below is the one that counts
         if (canvasWindow != nullptr) canvasWindow->getView().setProject(folder);
     }
 

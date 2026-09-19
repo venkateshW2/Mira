@@ -313,21 +313,56 @@ undo a fade would be a three-minute undo.
 
 ### Phase 2 — the reference track
 
-- [ ] **2.1** The film's audio as a block on a reserved lane: **try `createReaderFor` first**
-  (works for `.mp4`), **fall back to an `AVAssetReader` pass** that writes a wav beside the
-  project (needed for `.mov`), and **log which route ran**. Never a silent fallback — the
-  two have very different load times and a user who cannot tell them apart cannot explain
-  why one film took three minutes to open and another took none.
-- [ ] **2.2** **Locked to its clip**: moving or trimming either moves or trims both. Enforced
-  in `mouseDrag`, so there is no gesture that can separate them.
-- [ ] **2.3** Excluded from `promptExport` in all three modes, and from "export every track".
-  A test that proves the exclusion, not a comment claiming it.
-- [ ] **2.4** Its lane header says what it is — `REFERENCE`, not `track 4` — and has no
-  generator.
-- [ ] **2.5** It still has a fader, a mute and a meter. Scoring against picture means
-  riding the reference under the cue constantly.
+**Built and verified on screen, 2026-09-19.** Both routes were run against real files and
+the export exclusion was checked by looking in the folder, not by reading the code.
 
-**Done when** exporting every track gives you your stems and no dialogue.
+- [x] **2.1** The film's audio as a block on a reserved lane, **both routes measured**:
+  - `Absolut_DC90_060826.mp4` → **read straight from the file**, 44.1 kHz, 2 ch, 93.0 s.
+  - `2026-04-11 17-40-00.mov` → JUCE has no reader (Phase 0.1 again), so **AVAssetReader
+    wrote `reference/<name>.wav` in 0.3 s** — 48 kHz, 2 ch, 24-bit, 14.9 MB, 51.9 s.
+    A second open of the same film reuses that file and says so.
+  - Which route ran is **always said**, with the rate, the channels and the length. They
+    cost wildly different amounts, and a user who cannot tell them apart cannot explain why
+    one cut opened instantly and another took three minutes.
+  - **The first version of the extractor asked for non-interleaved float.** `canAddOutput`
+    said yes, `startReading` said yes, and then every `copyNextSampleBuffer` returned
+    nothing while the reader's status never went to Failed — a silent empty read, the exact
+    shape convention 6 forbids. `AVAssetReaderAudioMixOutput` wants interleaved; the
+    deinterleave pass is the price. The failure message now carries the buffer count, the
+    frame count and the reader status, because "produced no audio" sent the first round of
+    this looking at the wrong half.
+- [x] **2.2** **Locked**: the reference is skipped in `hitTest`, the one place a gesture
+  finds a block. No move, no trim, no fade handle, no gain box — and therefore no
+  selection, no duplicate, no remove and no generator pointed at it, without six separate
+  checks that could each be forgotten. Verified by clicking it: the panel still says "no
+  block selected". `removeLane` refuses it and says why; renaming it says why.
+- [x] **2.3** **Excluded from export.** Measured, not asserted: a canvas with two audio
+  tracks and a 51.9 s reference exported **two files** —
+  `KOAN-PHILP_block 1_track 2.wav`, `KOAN-PHILP_block 2_track 1.wav` — and the note read
+  `exported 2 files ... (reference track excluded)`. The two targeted exports refuse
+  outright rather than writing a file you would have to notice was wrong.
+- [x] **2.4** The lane header says **REFERENCE**, in the picture's violet, and it is not a
+  name you can edit — it is not a name anyone chose.
+- [~] **2.5** It keeps its fader, its mute, its solo and its meter: the same lane-header
+  code path as every other track, drawn and on screen in the violet. The M chip's toggle
+  could not be driven through the automation harness used for the rest of this — that is a
+  limit of the input injection, not a finding about the control, and it is one click to
+  confirm by hand.
+
+**Done when** exporting every track gives you your stems and no dialogue. **It does.**
+
+**A bug this phase found in the canvas, not in video:** a project was opened **twice** at
+launch — once by `showCanvasWindow` from `ui_settings.current_project`, once by the launch
+window's own choice — and the second pass discarded everything the first had built. It went
+unnoticed for as long as the work was cheap; with a film attached the trace said
+`reference: read straight from finalucut.mp4` twice, and on a 40-minute reel that is the
+expensive half of opening a project, done for nothing. `showCanvasWindow(false)` where the
+caller is about to open its own.
+
+**`MIRA_TRACE_VIDEO=1`** prints every canvas note to stderr, following the `MIRA_TRACE_ROWS`
+precedent. The status line is one line that anything else can overwrite, and "which route
+read this film, and why did the other one fail" must not depend on having been looking at
+the right moment. It is how both bugs above were found.
 
 ### Phase 3 — timecode
 

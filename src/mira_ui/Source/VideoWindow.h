@@ -105,6 +105,19 @@ private:
 // Implemented in VideoNative.mm.
 namespace video_native {
 bool probe(const juce::File& file, double& seconds, double& framesPerSecond, juce::String& error);
+
+// MIRA-VIDEO.md Phase 2.1, the fallback route. JUCE's CoreAudioFormat reads the audio
+// track of an `.mp4` and, measured in Phase 0.1, does NOT read a `.mov` -- 4 of 4 against
+// 0 of 4, despite `.mov` being in its own advertised extension list and `afinfo` opening
+// every one of them. So when `createReaderFor` returns nothing, Core Audio is asked
+// directly and the result written beside the project as a wav.
+//
+// The source rate is kept (48 kHz stays 48 kHz): the canvas resamples per voice on the way
+// to the device, so converting here would be a second resample nobody asked for.
+//
+// `progress` is called from the calling thread with 0..1; returning false cancels.
+bool extractAudio(const juce::File& source, const juce::File& destinationWav,
+                  juce::String& error, const std::function<bool(double)>& progress);
 }
 
 } // namespace mira::canvas

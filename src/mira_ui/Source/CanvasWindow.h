@@ -239,6 +239,28 @@ public:
     // film to undo a fade would be a three-minute undo.
     std::function<void(const VideoClip&)> onVideoClipChanged;
     std::function<void()> onVideoCleared;
+
+    // ---- the reference track (MIRA-VIDEO.md Phase 2) ---------------------------------
+    //
+    // The film's own audio, on a RESERVED lane. It is an ordinary block with two
+    // differences, and both are enforced where the gesture happens rather than by a flag
+    // something downstream has to remember to check:
+    //
+    //   - it cannot be dragged, trimmed or removed on its own. It belongs to its picture,
+    //     and a reference that has drifted from its film is worse than no reference.
+    //   - it is skipped by every export path. You do not want dialogue in your stems, and
+    //     you never want to FIND it there.
+    //
+    // It keeps its fader, its mute and its meter, because scoring to picture means riding
+    // the reference under the cue constantly.
+    void attachReference(const juce::File& audio, double startOnTimeline);
+    void detachReference();
+    // How far the reference's waveform has got, or -1 when there is none or it is done.
+    // MIRA-VIDEO.md 0.3 measured 12x realtime off an external drive -- 200 seconds for a
+    // 40-minute film -- so this is a progress number, not a formality.
+    double referenceWaveformProgress() const;
+    bool isReferenceLane(int lane) const { return referenceLane >= 0 && lane == referenceLane; }
+    int getReferenceLane() const { return referenceLane; }
     static constexpr double getTimelineRate() { return CanvasPlayer::getTimelineRate(); }
     std::function<void()> onStateChanged;
 
@@ -386,6 +408,8 @@ private:
     // 100+i shows take i, 200+i moves it to the Trash.
     void chooseTake(juce::int64 blockId, int menuId);
     std::vector<VideoClip> videoClips;
+    // Which lane is the film's audio, or -1. One lane, because there is one video track.
+    int referenceLane = -1;
     void paintVideoStrip(juce::Graphics&);
     double genFraction = -1.0;   // <0 = nothing generating
     std::unique_ptr<juce::TextEditor> blockRenameEditor;

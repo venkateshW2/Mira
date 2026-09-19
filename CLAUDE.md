@@ -176,6 +176,39 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
+### 2026-09-19 (latest) — the reference track, and two bugs the UI found
+
+[MIRA-VIDEO.md](MIRA-VIDEO.md) Phase 2. The film's audio arrives as a block on a reserved
+REFERENCE lane: locked to its picture, excluded from every export, and still carrying a
+fader, a mute and a meter, because scoring to picture means riding the reference under the
+cue constantly.
+
+- **Two routes, and which one ran is always said.** An `.mp4` is read straight from the
+  file (44.1 kHz, 2 ch, 93.0 s). A `.mov` — which Phase 0.1 measured JUCE refusing 4 times
+  out of 4 — goes through **AVAssetReader**, written to `reference/<name>.wav` beside the
+  project: 0.3 s for 51.9 s of 48 kHz stereo. They cost wildly different amounts and a user
+  who cannot tell them apart cannot explain why one cut opened at once and another took
+  three minutes.
+- **The extractor's first version read nothing, silently.** Non-interleaved float:
+  `canAddOutput` said yes, `startReading` said yes, and every `copyNextSampleBuffer`
+  returned nothing while the status never went to Failed. `AVAssetReaderAudioMixOutput`
+  wants interleaved. The error now carries buffer count, frame count and reader status —
+  "produced no audio" sent the first round looking at the wrong half.
+- **The exclusion is measured, not asserted.** Two audio tracks plus a 51.9 s reference
+  exported exactly two files, and the note said `(reference track excluded)`.
+- **A project was being opened TWICE at launch** — `showCanvasWindow` bound
+  `ui_settings.current_project`, then the launch window opened its own choice, and the
+  second pass threw away everything the first built. Invisible while the work was cheap;
+  with a film attached the trace read `reference: read straight from finalucut.mp4` twice,
+  which on a 40-minute reel is the expensive half of opening a project, done for nothing.
+- **The same double-load silently deleted the reference lane**, because the "same film,
+  do not reload the picture" guard is about the PICTURE — which is expensive to reopen —
+  and the reference is rebuilt state. Whether it is missing is a different question from
+  whether the film changed.
+- **`MIRA_TRACE_VIDEO=1`** prints every canvas note to stderr (the `MIRA_TRACE_ROWS`
+  precedent). Both bugs above were found with it, after the status line — one line anything
+  can overwrite — had silently dropped the message that would have explained them.
+
 ### 2026-09-19 (later still) — picture, and a spike that measured the wrong thing twice
 
 [MIRA-VIDEO.md](MIRA-VIDEO.md) Phase 0 and Phase 1. `spike/07_video_sync/` answered the

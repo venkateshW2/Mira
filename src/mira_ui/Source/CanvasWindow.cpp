@@ -1,7 +1,15 @@
 #include "CanvasWindow.h"
 #include "VideoWindow.h"
+#include <iostream>
 #include "mira/db/PathNormalise.h"
 #include "NativeWindowChrome.h"
+
+// The picture track's colour, and the reference track's with it. Deliberately NOT one of
+// laneColour's eight: every track colour in this canvas is a desaturated mid-tone, because
+// eight of them have to sit side by side without any one shouting. A saturated violet
+// belongs to none of that family, so the two rows that came from a FILM read as a different
+// kind of thing before the words PICTURE and REFERENCE have been read at all.
+static const juce::Colour kPictureColour { 0xff9b6fd8 };
 
 namespace mira::canvas {
 
@@ -328,6 +336,16 @@ void CanvasView::promptExport(int what, juce::int64 id)
 
         juce::String error;
         juce::StringArray written;
+        // PHASE 2.3. The reference is the film's own audio -- dialogue, effects, whatever
+        // the cut arrived with -- and it is not yours to deliver. Refused at the two
+        // targeted exports and skipped by the one that walks every lane.
+        if ((what == 0 || what == 1) && v != nullptr && self.isReferenceLane(v->block.lane))
+        {
+            if (self.onTakeNote)
+                self.onTakeNote("the reference track is the film's audio - it is never exported");
+            return;
+        }
+        int excluded = 0;
         if (what == 0 && v != nullptr)
         {
             // The block alone, over its own span -- not the whole timeline with silence
@@ -349,6 +367,7 @@ void CanvasView::promptExport(int what, juce::int64 id)
             const double end = self.contentEnd();
             for (int lane = 0; lane < self.laneCount && error.isEmpty(); ++lane)
             {
+                if (self.isReferenceLane(lane)) { ++excluded; continue; }
                 // Lanes with nothing on them are not silent files nobody asked for.
                 const Visual* first = nullptr;
                 for (const auto& i : self.items)
@@ -367,7 +386,9 @@ void CanvasView::promptExport(int what, juce::int64 id)
                                 ? "export failed: " + error
                                 : "exported " + juce::String(written.size()) + " file"
                                       + (written.size() == 1 ? "" : "s") + " - "
-                                      + written.joinIntoString(", "));
+                                      + written.joinIntoString(", ")
+                                      + (excluded > 0 ? "   (reference track excluded)"
+                                                      : juce::String()));
     });
 }
 
@@ -645,6 +666,11 @@ void CanvasView::setGenerationProgress(double fraction)
 
 void CanvasView::beginRename(int lane)
 {
+    if (isReferenceLane(lane))
+    {
+        if (onTakeNote) onTakeNote("the reference track is named by its film, not by you");
+        return;
+    }
     commitRename();
     renamingLane = lane;
     renameEditor = std::make_unique<juce::TextEditor>();
@@ -887,6 +913,13 @@ void CanvasView::addLane()
 void CanvasView::removeLane(int lane)
 {
     if (lane < 0 || lane >= laneCount || laneCount <= 1) return;
+    if (isReferenceLane(lane))
+    {
+        // The reference belongs to the picture. Closing the film is what removes it, and
+        // saying so is better than a delete that silently does nothing (convention 6).
+        if (onTakeNote) onTakeNote("the reference track goes with its film - close the video to remove it");
+        return;
+    }
     pushUndo();
     UndoGuard oneEdit (*this);
 
@@ -916,6 +949,8 @@ void CanvasView::removeLane(int lane)
     applyMasks();
 
     --laneCount;
+    // Everything below the removed lane moved up, and the reference is something below.
+    if (referenceLane > lane) --referenceLane;
     selectedLane = juce::jlimit(-1, laneCount - 1, selectedLane >= laneCount ? laneCount - 1 : selectedLane);
     selected.clear();
     pointPanelAt(nullptr);
@@ -1462,6 +1497,9 @@ juce::String CanvasView::toJson(const juce::File& base) const
         }
         root->setProperty("video", juce::var(clips));
     }
+    // Which lane the film's audio is on. Written whether or not there is a clip right now,
+    // because a document mid-edit can hold one without the other and -1 is a real answer.
+    root->setProperty("referenceLane", referenceLane);
     return juce::JSON::toString(juce::var(root), false);
 }
 
@@ -1480,6 +1518,7 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
     // would be a three-minute undo.
     const auto previousVideo = videoClips.empty() ? juce::File() : videoClips.front().file;
     videoClips.clear();
+    referenceLane = -1;
     laneNames.clear();
     laneDb.clear();
     muteMask = soloMask = 0;
@@ -1494,6 +1533,8 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
         for (int i = 0; i < gains->size(); ++i) setLaneDb(i, (double) (*gains)[i]);
     muteMask = (juce::uint64) root.getProperty("muteMask", "0").toString().getLargeIntValue();
     laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, (int) root.getProperty("laneCount", 1));
+    referenceLane = (int) root.getProperty("referenceLane", -1);
+    if (referenceLane >= laneCount) referenceLane = -1;   // a document that lost its film
     waveZoom = juce::jlimit(0.15f, 16.0f, (float) (double) root.getProperty("waveZoom", 1.0));
 
     if (auto* blocks = root.getProperty("blocks", {}).getArray())
@@ -1549,10 +1590,20 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
     {
         if (previousVideo.getFullPathName().isNotEmpty() && onVideoCleared) onVideoCleared();
     }
-    else if (!mira::pathsEquivalent(videoClips.front().file.getFullPathName().toStdString(),
-                                    previousVideo.getFullPathName().toStdString()))
+    else
     {
-        if (onVideoClipChanged) onVideoClipChanged(videoClips.front());
+        const bool differentFilm =
+            !mira::pathsEquivalent(videoClips.front().file.getFullPathName().toStdString(),
+                                    previousVideo.getFullPathName().toStdString());
+        // `|| referenceLane < 0` is not belt and braces -- it is a bug that was on screen.
+        // A canvas opens its project TWICE at launch (showCanvasWindow loads the current
+        // project, then the launch window's handler loads the chosen one), and the second
+        // pass wiped the reference lane this pass had just built while the "same film,
+        // do not reload" guard correctly said nothing had changed. The guard is about the
+        // PICTURE, which is expensive to reopen; the reference is rebuilt state, and
+        // whether it is missing is a different question from whether the film changed.
+        if (differentFilm || referenceLane < 0)
+            if (onVideoClipChanged) onVideoClipChanged(videoClips.front());
     }
 
     applyMasks();
@@ -1816,7 +1867,8 @@ void CanvasView::paint(juce::Graphics& g)
         // The BLOCK's colour, not the track's. Dragging a block to another track used to
         // recolour it, so the one thing you were following down a stack changed identity
         // exactly when you moved it.
-        const auto tint = laneColour(item->block.colour);
+        const auto tint = isReferenceLane(item->block.lane) ? kPictureColour
+                                                            : laneColour(item->block.colour);
         g.setColour(tint.withAlpha(laneMuted ? 0.07f : 0.17f));
         g.fillRoundedRectangle(r.toFloat(), 5.0f);
 
@@ -2023,10 +2075,16 @@ void CanvasView::paint(juce::Graphics& g)
             drawChip(muteBoxFor(lane), "M", muted,  MiraLookAndFeel::warn);
             drawChip(soloBoxFor(lane), "S", soloed, MiraLookAndFeel::accent);
 
-            g.setColour(muted ? MiraLookAndFeel::textFaint : laneColour(lane).brighter(0.2f));
-            g.setFont(laf.sansSemiBold(MiraLookAndFeel::textSize(12.5f)));
+            // The reference lane says WHAT IT IS, not "track 4" -- and it is not a name
+            // you can edit, because it is not a name anyone chose.
+            const bool referenceHere = isReferenceLane(lane);
+            g.setColour(muted ? MiraLookAndFeel::textFaint
+                              : (referenceHere ? kPictureColour : laneColour(lane).brighter(0.2f)));
+            g.setFont(laf.sansSemiBold(MiraLookAndFeel::textSize(referenceHere ? 11.0f : 12.5f)));
             if (lane != renamingLane)
-                g.drawText(laneNames[lane].isNotEmpty() ? laneNames[lane] : juce::String(lane + 1),
+                g.drawText(referenceHere ? juce::String("REFERENCE")
+                                         : (laneNames[lane].isNotEmpty() ? laneNames[lane]
+                                                                         : juce::String(lane + 1)),
                             nameBoxFor(lane), juce::Justification::centredLeft, true);
 
             auto fader = faderBoxFor(lane);
@@ -2203,6 +2261,11 @@ CanvasView::Visual* CanvasView::hitTest(juce::Point<int> p, Drag& what)
     {
         auto r = boundsOf(**it);
         if (!r.contains(p)) continue;
+        // THE LOCK (Phase 2.2). The reference is not a block you can grab: no move, no
+        // trim, no fade handle, no gain box, and therefore no selection, no duplicate, no
+        // remove and no generator pointed at it. Enforced here, at the one place a gesture
+        // finds a block, rather than by six separate checks that could each be forgotten.
+        if (isReferenceLane((*it)->block.lane)) continue;
         const auto& b = (*it)->block;
 
         // The fade handles ride the TOP of the block, where the wedge meets the edge, and
@@ -3313,13 +3376,13 @@ private:
 
 // ---- picture on the timeline (MIRA-VIDEO.md Phase 1) --------------------------------
 
+// (kPictureColour is defined near the top of this file -- paint() needs it.)
 // The picture track's colour, and it is deliberately NOT one of laneColour's eight. Every
 // track colour in this canvas is a desaturated mid-tone, because eight of them have to sit
 // side by side without any one shouting; a saturated violet belongs to none of that family,
 // so the video track reads as a DIFFERENT KIND OF THING before you have read the word
 // PICTURE. That is the whole job: it is the one lane on the canvas that carries no audio,
 // sums into nothing and exports nowhere, and it should not look like a track you could mix.
-static const juce::Colour kPictureColour { 0xff9b6fd8 };
 
 void CanvasView::paintVideoStrip(juce::Graphics& g)
 {
@@ -3381,6 +3444,9 @@ void CanvasView::setVideoClip(const juce::File& file, double lengthSeconds, doub
     c.file = file;
     c.length = juce::jmax(0.0, lengthSeconds);
     c.fps = juce::jmax(0.0, framesPerSecond);
+    // A new film means the old film's audio is the wrong reference. Dropped before the
+    // clip is replaced, so there is no moment at which the two disagree.
+    detachReference();
     videoClips.clear();            // Phase 1: one clip. Phase 4 makes this an append.
     videoClips.push_back(c);
     markDirty();
@@ -3389,10 +3455,92 @@ void CanvasView::setVideoClip(const juce::File& file, double lengthSeconds, doub
     repaint();
 }
 
+// ---- the reference track (MIRA-VIDEO.md Phase 2) ------------------------------------
+
+void CanvasView::attachReference(const juce::File& audio, double startOnTimeline)
+{
+    detachReference();
+    if (!audio.existsAsFile())
+    {
+        if (onTakeNote) onTakeNote("the film's audio is not where it was left: " + audio.getFullPathName());
+        return;
+    }
+
+    pushUndo();
+    UndoGuard oneEdit (*this);
+
+    // Its own lane, at the bottom. Appending rather than inserting keeps every existing
+    // block's lane index -- and so every mute bit, solo bit and fader -- exactly where it
+    // was, which an insert at 0 would not.
+    referenceLane = juce::jlimit(0, CanvasAudioSource::kMaxLanes - 1, laneCount);
+    laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, referenceLane + 1);
+    laneNames.set(referenceLane, "REFERENCE");
+    setLaneDb(referenceLane, 0.0);
+
+    auto v = std::make_unique<Visual>();
+    v->block.lane = referenceLane;
+    v->block.colour = referenceLane;
+    v->block.start = startOnTimeline;
+    v->block.id = nextId++;
+    v->block.name = audio.getFileNameWithoutExtension();
+    // length 0 so setFileOn takes it from the file: the reference is exactly as long as
+    // the film's audio, and there is no gesture that could have made it anything else.
+    v->block.length = 0.0;
+    setFileOn(*v, audio);
+    if (!videoClips.empty()) videoClips.front().audioBlockId = v->block.id;
+    items.push_back(std::move(v));
+
+    markDirty();
+    rebuildAudio();
+    repaint();
+}
+
+double CanvasView::referenceWaveformProgress() const
+{
+    if (referenceLane < 0) return -1.0;
+    for (const auto& i : items)
+        if (i->block.lane == referenceLane && i->thumb != nullptr)
+        {
+            const double p = i->thumb->getProportionComplete();
+            // 0.999, not 1.0. getProportionComplete never quite reaches 1.0 -- the Phase 0
+            // spike spent its whole 120 s timeout waiting for it to, on a read that had
+            // finished in two seconds.
+            return p >= 0.999 ? -1.0 : p;
+        }
+    return -1.0;
+}
+
+void CanvasView::detachReference()
+{
+    if (referenceLane < 0) return;
+    const int lane = referenceLane;
+    referenceLane = -1;       // cleared FIRST, or removeLane below refuses its own caller
+
+    items.erase(std::remove_if(items.begin(), items.end(),
+                                [lane](const std::unique_ptr<Visual>& v) { return v->block.lane == lane; }),
+                 items.end());
+    for (auto& v : items) if (v->block.lane > lane) --v->block.lane;
+    laneNames.remove(lane);
+    if (lane < (int) laneDb.size()) laneDb.erase(laneDb.begin() + lane);
+    auto shift = [lane](juce::uint64 mask) {
+        const juce::uint64 below = mask & ((juce::uint64 (1) << lane) - 1);
+        const juce::uint64 above = mask >> (lane + 1);
+        return below | (above << lane);
+    };
+    muteMask = shift(muteMask);
+    soloMask = shift(soloMask);
+    applyMasks();
+    laneCount = juce::jmax(1, laneCount - 1);
+    if (!videoClips.empty()) videoClips.front().audioBlockId = 0;
+    rebuildAudio();
+    repaint();
+}
+
 void CanvasView::clearVideo()
 {
     if (videoClips.empty()) return;
     pushUndo();
+    detachReference();
     videoClips.clear();
     markDirty();
     if (onVideoCleared) onVideoCleared();
@@ -3404,7 +3552,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 {
     Content(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
             juce::AudioThumbnailCache& cache, GenerateContent* panelIn)
-        : view(laf, formats, cache), panel(panelIn), tabs(laf)
+        : view(laf, formats, cache), panel(panelIn), tabs(laf), formatManager(formats)
     {
         auto button = [this](juce::TextButton& b, const juce::String& text) {
             b.setButtonText(text);
@@ -3522,6 +3670,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         // a project that carries a film opens the film with it.
         view.onVideoClipChanged = [this](const VideoClip& c) {
             openPicture(c);
+            // A document that already carries a reference lane brought its own; only a
+            // film arriving fresh needs one built.
+            if (view.getReferenceLane() < 0) attachReferenceFor(c);
             if (owner != nullptr && owner->onVideoChanged) owner->onVideoChanged();
         };
         view.onVideoCleared = [this] {
@@ -3529,8 +3680,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             videoWindow.reset();
             if (owner != nullptr && owner->onVideoChanged) owner->onVideoChanged();
         };
-        view.onTakeNote = [this](const juce::String& note) {
-            if (panel != nullptr) panel->setStatus(note);
+        view.onTakeNote = [this](const juce::String& text) {
+            note(text);
         };
         view.onCaptureSettings = [this]() -> juce::var {
             return panel != nullptr ? panel->captureSettings() : juce::var();
@@ -3874,6 +4025,89 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         videoWindow->toFront(false);
     }
 
+    // ---- the reference track (MIRA-VIDEO.md Phase 2.1) -------------------------------
+    //
+    // TWO ROUTES, and which one ran is always said out loud. Phase 0.1 measured JUCE's
+    // CoreAudioFormat reading 4 of 4 `.mp4` files and 0 of 4 `.mov` files -- while
+    // `canHandleFile` cheerfully claimed `.mov`, and `afinfo` opened every one. So the
+    // direct read is tried first and Core Audio is asked directly when it fails.
+    //
+    // They cost wildly different amounts -- one is instant, the other reads and rewrites
+    // the whole film -- and a user who cannot tell them apart cannot explain why one cut
+    // opened at once and another took three minutes. That is the whole reason for the note.
+    void attachReferenceFor(const VideoClip& c)
+    {
+        if (!c.file.existsAsFile())
+        {
+            note("the film is not where the project left it: " + c.file.getFullPathName());
+            return;
+        }
+
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor(c.file));
+            if (reader != nullptr && reader->sampleRate > 0.0 && reader->lengthInSamples > 0)
+            {
+                const auto rate = reader->sampleRate;
+                const auto chans = (int) reader->numChannels;
+                const double secs = reader->lengthInSamples / rate;
+                reader.reset();
+                view.attachReference(c.file, c.start);
+                note("reference: read straight from " + c.file.getFileName() + " - "
+                      + juce::String(rate / 1000.0, 1) + " kHz, " + juce::String(chans)
+                      + " ch, " + juce::String(secs, 1) + " s");
+                sawWaveformProgress = false;
+                return;
+            }
+        }
+
+        const auto home = view.getProjectFolder();
+        if (home == juce::File())
+        {
+            // The extraction writes a file, and a file needs somewhere to live.
+            note("save the canvas first - the film's audio has to be written beside the project");
+            return;
+        }
+
+        const auto dest = home.getChildFile("reference")
+                              .getChildFile(c.file.getFileNameWithoutExtension() + ".wav");
+        if (dest.existsAsFile() && dest.getSize() > 1024)
+        {
+            view.attachReference(dest, c.start);
+            note("reference: reusing the extraction in " + dest.getParentDirectory().getFileName()
+                  + "/ (" + juce::String(dest.getSize() / (1024.0 * 1024.0), 1) + " MB)");
+            sawWaveformProgress = false;
+            return;
+        }
+
+        if (extractor != nullptr) { note("still extracting the last film's audio"); return; }
+        note("JUCE cannot read this file's audio - extracting it with AVAssetReader...");
+        extractStartMs = juce::Time::getMillisecondCounterHiRes();
+        extractor = std::make_unique<Extractor>(c.file, dest);
+        extractor->startThread();
+    }
+
+    void pollExtractor()
+    {
+        if (extractor == nullptr) return;
+        if (!extractor->done)
+        {
+            note("extracting the film's audio - " + juce::String(extractor->progress * 100.0, 0) + "%");
+            return;
+        }
+        const bool ok = extractor->ok;
+        const auto error = extractor->error;
+        const auto dest = extractor->dest;
+        const double took = (juce::Time::getMillisecondCounterHiRes() - extractStartMs) / 1000.0;
+        extractor.reset();
+
+        if (!ok) { note("could not extract the film's audio - " + error); return; }
+        view.attachReference(dest, view.getVideoClips().empty() ? 0.0
+                                                                : view.getVideoClips().front().start);
+        note("reference: extracted with AVAssetReader in " + juce::String(took, 1) + " s -> "
+              + dest.getParentDirectory().getFileName() + "/" + dest.getFileName());
+        sawWaveformProgress = false;
+    }
+
     void ensureVideoWindow()
     {
         if (videoWindow != nullptr) return;
@@ -3908,7 +4142,17 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         owner->saveSetting(videoGeometryKey(), videoWindow->geometryString());
     }
 
-    void note(const juce::String& text) { if (panel != nullptr) panel->setStatus(text); }
+    // The canvas's own status line, plus a trace nobody has to be looking at the screen
+    // to read. MIRA_TRACE_VIDEO=1 follows the MIRA_TRACE_ROWS precedent: the status line
+    // is one line that anything else can overwrite, and "which route read this film, and
+    // why did the other one fail" is exactly the kind of answer that must not depend on
+    // having been watching at the right moment.
+    void note(const juce::String& text)
+    {
+        static const bool trace = juce::SystemStats::getEnvironmentVariable("MIRA_TRACE_VIDEO", {}).isNotEmpty();
+        if (trace) std::cerr << "[video] " << text << std::endl;
+        if (panel != nullptr) panel->setStatus(text);
+    }
 
     void timerCallback() override
     {
@@ -3944,6 +4188,25 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         // path to the same number.
         if (panel != nullptr) view.setGenerationProgress(panel->generationFraction());
 
+        pollExtractor();
+        // The waveform of a long film is the one part of loading that is O(length) --
+        // 0.3 measured 200 seconds for a 40-minute reel off an external drive. Reported
+        // while it runs, and said once when it lands, so a canvas that looks half-drawn
+        // has a reason on screen.
+        if (extractor == nullptr)
+        {
+            if (const double w = view.referenceWaveformProgress(); w >= 0.0)
+            {
+                sawWaveformProgress = true;
+                note("reading the film's waveform - " + juce::String(w * 100.0, 0) + "%");
+            }
+            else if (sawWaveformProgress)
+            {
+                sawWaveformProgress = false;
+                note("the film's waveform is drawn");
+            }
+        }
+
         // The generate pane appears and disappears with the first and last block, and
         // blocks arrive from a drop, a menu, an undo -- too many paths to notify from each
         // one. The count is already read here every tick; comparing it is free.
@@ -3966,7 +4229,34 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     float held = 0.0f;
 
     CanvasWindow* owner = nullptr;
+    juce::AudioFormatManager& formatManager;
     std::unique_ptr<VideoWindow> videoWindow;
+
+    // MIRA-VIDEO.md Phase 2.1's fallback route, on its own thread. A 40-minute reel off
+    // the drive it arrived on is minutes of work, and minutes of work on the message
+    // thread is a frozen app.
+    struct Extractor : juce::Thread
+    {
+        Extractor(juce::File s, juce::File d)
+            : juce::Thread("mira film audio"), source(std::move(s)), dest(std::move(d)) {}
+        ~Extractor() override { stopThread(4000); }
+        void run() override
+        {
+            juce::String err;
+            const bool result = video_native::extractAudio(source, dest, err,
+                [this](double p) { progress = p; return !threadShouldExit(); });
+            error = err;
+            ok = result;
+            done = true;
+        }
+        juce::File source, dest;
+        juce::String error;
+        std::atomic<double> progress { 0.0 };
+        std::atomic<bool> done { false }, ok { false };
+    };
+    std::unique_ptr<Extractor> extractor;
+    double extractStartMs = 0.0;
+    bool sawWaveformProgress = false;
     CanvasView view;
     GenerateContent* panel = nullptr;      // owned by the window, not by this
     // How much of the window the side panel takes. Dragged, not fixed -- a panel that is
