@@ -174,6 +174,9 @@ public:
     // Why an extend did NOT run. Without it the button simply did nothing, which is
     // indistinguishable from a generation that failed (convention 6).
     std::function<void(const juce::String&)> onExtendRefused;
+    // Something worth knowing about a take that just landed -- so far, that it stops
+    // sounding well before its length.
+    std::function<void(const juce::String&)> onTakeNote;
     void extendSelection(bool remix);
     // Length, tail and whether there is audio, for the single selection. What decides
     // whether Extend and Remix can do anything.

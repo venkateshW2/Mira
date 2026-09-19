@@ -330,6 +330,41 @@ CanvasView::Visual* CanvasView::singleSelection()
     return nullptr;
 }
 
+// Where a take actually STOPS SOUNDING, which is not the same as where the file ends.
+// SA3 pads to the requested duration whether or not it had that much music in it, and for
+// some LoRA pairs it stops well short -- measured across one project's takes, a gsl+ams
+// pair filled 55-79% of what was asked for while every single-LoRA take filled 96-100%.
+//
+// Silence at the end is not merely wasted block: it is what the NEXT extend continues
+// from, so an unnoticed early stop makes every extension after it continue from nothing.
+// Saying so is the whole point -- the canvas already has Cmd-E to cut where the audio
+// really ends, and this is what tells you to use it.
+//
+// -60 dBFS, on the mixed channels, scanning backwards: the first block that holds anything
+// audible ends the search, so a take that fills its length costs one block read.
+double audibleEndOf(juce::AudioFormatManager& formats, const juce::File& f)
+{
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor(f));
+    if (reader == nullptr || reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0) return 0.0;
+    const int block = (int) juce::jmin<juce::int64>(reader->sampleRate, reader->lengthInSamples);
+    juce::AudioBuffer<float> buffer ((int) juce::jmax (1u, reader->numChannels), block);
+    for (juce::int64 pos = reader->lengthInSamples; pos > 0;)
+    {
+        const int want = (int) juce::jmin<juce::int64>(block, pos);
+        pos -= want;
+        reader->read (&buffer, 0, want, pos, true, true);
+        for (int i = want; --i >= 0;)
+        {
+            float peak = 0.0f;
+            for (int c = 0; c < buffer.getNumChannels(); ++c)
+                peak = juce::jmax (peak, std::abs (buffer.getSample (c, i)));
+            if (peak > 0.001f)          // -60 dBFS
+                return (double) (pos + i) / reader->sampleRate;
+        }
+    }
+    return 0.0;
+}
+
 void CanvasView::setFileOn(Visual& v, const juce::File& f)
 {
     v.block.file = f;
@@ -819,6 +854,16 @@ void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
         {
             if (!pushed) { pushUndo(); pushed = true; }
             setFileOn(*i, take);
+            // Said the moment it lands, not discovered later by looking at a flat line.
+            if (onTakeNote != nullptr && i->audioSeconds > 0.0)
+            {
+                const double audible = audibleEndOf(formats, take);
+                if (audible < i->audioSeconds * 0.95 - 0.5)
+                    onTakeNote("audio ends at " + juce::String(audible, 1) + "s of "
+                               + juce::String(i->audioSeconds, 1)
+                               + "s - put the playhead there and Cmd-E to cut, then extend "
+                                 "from real audio rather than from the silence");
+            }
             rebuildAudio();
             markDirty();
             if (onBlockGeometry) onBlockGeometry(i->block.length, tailSecondsOf(*i), i->block.hasAudio());
@@ -2766,6 +2811,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         };
         view.onExtendRefused = [this](const juce::String& why) {
             if (panel != nullptr) panel->setStatus(why);
+        };
+        view.onTakeNote = [this](const juce::String& note) {
+            if (panel != nullptr) panel->setStatus(note);
         };
         view.onCaptureSettings = [this]() -> juce::var {
             return panel != nullptr ? panel->captureSettings() : juce::var();
