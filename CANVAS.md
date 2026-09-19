@@ -58,8 +58,24 @@ A block is not a rectangle that borrows everything from the track under it. It h
 | **a generator** | the real one, pointed at this block's folder, **with this block's settings** |
 | **fades** | dragged on the block, with a shape — linear, equal power, exponential |
 | **a mute** | per block, not just per track — an `M` on the block's own header |
+| **a gain** | dragged in the header beside the `M`; double-click for unity |
 | **a colour** | **its own**, kept when it moves to another track |
 | **a name** | which is also its folder, and so its generation target |
+| **its key and tempo** | read from its own prompt, drawn at the right of its header |
+
+The header is a small mixer strip: `M`, the gain, the block's name and the take inside it,
+and the key and tempo on the right. **Double-click the name to rename the block** — and
+because the name *is* the folder, the folder moves with it and the block's file is
+re-pointed. A rename that cannot move the folder does not happen: otherwise the next
+generation goes to the new name while every take it already has stays behind under the old
+one, which is the split-brain the folder-is-the-name rule exists to prevent.
+
+**The gain handle exists because the mixing already did.** `Block::gainDb` and its
+per-voice application were in the engine from the start with nothing on screen to move
+them. It is a drag rather than a slider because a block is small and a real fader would
+cost more of it than the waveform can spare, and it wins over trim and move on the hit test
+— a three-pixel miss that drags the whole block instead of nudging its level is what makes
+a small control not worth having.
 
 **The settings belong to the block too.** Selecting a block brings its prompt, its LoRAs
 and its numbers with it. The panel used to change only its *title*, so every block appeared
@@ -221,6 +237,16 @@ the real end with Cmd-E before extending.
 A block longer than the model will generate is **refused with the number**, not quietly
 truncated: audio that stopped short of the frame with nothing on screen explaining why is
 exactly the kind of silent failure convention 6 exists to prevent.
+
+### The generation bar is on the block
+
+The generation is happening *to that block*, so the progress is drawn along its bottom edge.
+It used to live only in the side panel's status line — the far side of the window from the
+thing being filled in, and invisible entirely when the panel was folded away.
+
+Polled from the timer that already runs rather than pushed through a callback, and it
+repaints only when it has moved enough to see: a progress indicator that costs more than the
+thing it is reporting on is a bad trade.
 
 ### Blocks that overlap on the same track crossfade
 
@@ -433,14 +459,54 @@ so there is nothing to keep in step with them: it lists the wavs under the proje
 newest first, and polls for the ones a generation drops in. Double-click places one as its
 own block on its own track — the same rule a dropped file follows.
 
-### Still open
+### Export
+
+Right-click a block, or the **Canvas** menu in the macOS menu bar:
+
+| | |
+|---|---|
+| **Export block** | just that block, over its own span |
+| **Export this track** | one lane, full length |
+| **Export every track** | every lane that has audio, as its own file |
+
+**Everything renders through the player**, at the timeline's 44,100. The take on disk knows
+nothing about the trim, the fades, the gain, the `Cmd-E` cut, or the crossfade with the
+block overlapping it — all of that lives on the canvas, so handing over the file would hand
+over something that is not the piece. One mixer for the speakers and the file is the only
+way the two cannot drift apart.
+
+**A track export is a solo**, using the lane mask the mixer already honours rather than a
+second filter written twice. The mask is restored by a scope guard on every exit path: a
+solo left latched after an export would silence the canvas and look like a playback bug.
+
+**Stems line up at zero.** Every track renders from `0` to the end of the canvas, so all the
+files are the same length and dropping them into a DAW at 0:00 reproduces the arrangement
+exactly — which is the point: rough out the shape here, finish it there.
+
+Names come from the document, the block, and the key and tempo in its prompt —
+`newtest_mira_block7_Eminor_75bpm.wav` — with **a missing field dropping its token** rather
+than guessing one (convention 1, the same rule [Export.h](src/mira_ui/Source/Export.h)
+follows for takes).
+
+### Clean up unused takes
+
+Every generation is kept, which is what makes "go back to the one before" possible at all —
+but nine takes in ten are never used, and at ~10 MB a minute a project fills a drive.
+**Canvas ▸ Clean Up Unused Takes** offers to remove the ones no block is pointing at.
+
+Conservative in three deliberate ways. It only looks inside folders belonging to blocks **on
+this canvas**, so a folder mira does not recognise is never touched. It compares paths
+through `pathsEquivalent` (convention 9) — an accented block name would otherwise read as
+unused and be deleted. And it moves to the **Trash**, not to oblivion: which audio you still
+want is not a judgement a program should make final. Sidecars go with their audio, or the
+folder fills with recipes for takes that no longer exist.
 
 ### Open, in rough order
 
 - [ ] **Levels, properly.** A real fader law and calibrated meters, not a bar and a number.
 - [ ] **Zoom controls** — buttons and a fit-to-selection, not only `cmd-wheel` and `F`.
-- [ ] Gain handle on a block.
 - [ ] Bars from mira's own analysis, per block — §1's point, still unbuilt.
+- [ ] A "save first?" prompt when switching projects with an unsaved canvas.
 
 ### Deliberately not doing
 
@@ -485,7 +551,7 @@ What undo does not cover: the audio device, and anything outside the document.
 | `Cmd-Z` / `Cmd-shift-Z` | undo / redo |
 | `Cmd-D` | duplicate |
 | `Cmd-E` | cut every block the playhead stands on, there |
-| `Cmd-N` / `Cmd-O` / `Cmd-S` | new / open / save |
+| `Cmd-N` / `Cmd-O` / `Cmd-S` | new / open / save — handled by the WINDOW, so they work whatever has focus |
 | `G` / `H` | zoom out / in, around the playhead |
 | `shift-G` / `shift-H` | track height, down / up (`+` / `-` too) |
 | `[` / `]` | waveform height inside the blocks (not the blocks) |
@@ -494,6 +560,12 @@ What undo does not cover: the audio device, and anything outside the document.
 | wheel | scroll the timeline |
 | alt-drag | pan |
 
+`Cmd-S` **is handled by the window, not the canvas.** It used to live in
+`CanvasView::keyPressed`, which only fires when the canvas itself has keyboard focus — so
+the moment you had clicked into the prompt field, which is most of the time you would want
+to save, the key went nowhere. A key travels up from whatever is focused through its
+parents, and everything in this window is a child of the window.
+
 **Zoom is on the keyboard because scroll gestures are not the same on every device.** A
 trackpad reports `deltaX` and `deltaY`; a mouse wheel reports only `deltaY`, so a pan that
 read `deltaX` did nothing at all with a mouse — and macOS turns a shift-held wheel into
@@ -501,10 +573,18 @@ read `deltaX` did nothing at all with a mouse — and macOS turns a shift-held w
 off whichever axis actually moved, proportionally when the gesture is smooth and in steps
 when it is notched. `G`/`H` do the same thing on every device and on a laptop with neither
 to hand.
-| double-click a track name | rename |
-| double-click a block | open its generator |
-| right-click a block | mute, fade shape, clear fades, restore full take, duplicate, cut, split in two, remove |
+
+### Mouse
+
+| | |
+|---|---|
+| double-click a track name | rename the track |
+| double-click a block's name | rename the block — **and its folder** |
+| double-click a block's gain | back to unity |
+| double-click a block elsewhere | open its generator |
+| right-click a block | mute, fade shape, clear fades, restore full take, duplicate, cut, split in two, remove, rename, export |
 | the `M` on a block | mute just that block |
+| drag the gain box | the block's level, up for louder |
 | drag a block's right edge | hide or show more of the take (never destructive) |
 | drag it out past the audio, or past a `Cmd-E` cut | make a tail for Extend / Remix |
 | drag a block's top corner | its fade in / out |

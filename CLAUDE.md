@@ -16,8 +16,8 @@ it analyses them and builds a searchable, captionable index. Everything runs loc
 Apple Silicon. No server, no cloud, no GPU assumption.
 
 **Built and in daily use.** A C++20/JUCE desktop app (`MIRA.app`) plus a `mira` CLI over
-one SQLite library. As of 2026-09-15 the library holds **2,257 scanned files, 666
-analysed**, and has produced the caption sets for seven trained SA3 LoRAs.
+one SQLite library. As of 2026-09-19 the library holds **3,228 scanned files, 1,390
+analysed**, and has produced the caption sets for a dozen trained SA3 LoRAs.
 
 `sa3-studio/` is a downstream consumer, not the point — it is the LoRA training rig that
 eats mira's captions.
@@ -49,6 +49,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | doc | what it is | state |
 |---|---|---|
 | **CLAUDE.md** | this file — the map, and the running log of recent work | current |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | **how mira is put together**: the two binaries and `mira_core`, the schema, the analysis pipeline, the app's windows, **the four audio paths**, the bridge to Python, the threads | current (2026-09-19) |
 | [README.md](README.md) | what mira is, for someone who has never seen it | current |
 | [ANALYSIS.md](ANALYSIS.md) | **what mira measures and what reaches the model.** Every caption field, what it means, how to edit it, what is deliberately not captioned | current (2026-09-15) |
 | [PRD.md](PRD.md) | the design: stack, models, phases, licence reasoning, every "why this and not that" | current as design; §-numbers are cited throughout the code |
@@ -100,6 +101,11 @@ src/mira/main.cpp     the CLI: scan / analyze / caption / tag / similar / search
 src/mira_ui/Source/   the JUCE app
                       TakeStack.h / InpaintStrip.h / LoraLibraryWindow.h — MIRA-GENERATE
 src/mira/db/          + PathNormalise.{h,cpp} — NFC/NFD path matching (convention 9)
+src/mira/export/      AudioWriter — the CLI's side of rendering
+src/mira_ui/Source/   CanvasEngine.{h,cpp}  — the canvas MIXER (see ARCHITECTURE.md §6.3)
+                      CanvasWindow.{h,cpp}  — the canvas: blocks, tracks, document, export
+                      Sa3Worker{,Hub}       — the bridge to sa3_worker.py
+                      Export.{h,cpp}        — the only code that renders a take to a file
 scripts/              retag-latents.py and friends
 taxonomy/             *.yaml label normalisation
 sa3-studio/           the LoRA training rig (underfit + stable-audio-3), plus latents/
@@ -151,12 +157,53 @@ These are not style preferences. Each one exists because breaking it caused a re
     screenshots. One `MIRA_TRACE_ROWS` pass over the real library answered it in a minute.
     A row showing a dash means `inDatabase && analyzedAt` is false; from the outside the
     two halves look identical, so only an instrument can tell them apart.
+11. **A claim verified by reading code is not verified.** "Everything outside an inpaint
+    range stays bit-exact" was true of the LATENTS and false of the AUDIO -- the whole
+    timeline is decoded and the source had to be encoded first -- and it sat in two
+    documents for two days because nobody measured the output. -21.9 dB relative error
+    after one extension, -14.5 dB after three. Convention 10 applies to reading, not just
+    to arguing.
+12. **State that outlives its action is a bug waiting to happen.** One Extend set an
+    `initAudio` field that nothing cleared, and every generation afterwards was silently
+    guided by the old block's audio -- invisible because the canvas hides that control,
+    the block switch never cleared it, and the recipe never recorded it. Scope state to
+    the action that wanted it, and record in the sidecar everything the request carried.
 
 ---
 
 ## Recent work
 
 Newest first. Keep this current — it is how the next session finds the thread.
+
+### 2026-09-19 (later) — the canvas becomes the project, and ARCHITECTURE.md
+
+[ARCHITECTURE.md](ARCHITECTURE.md) written: the two binaries over one `mira_core`, the
+schema and the three rules it encodes, the analysis pipeline stage by stage, the app's
+windows and their lifetimes, **the four separate paths audio takes** (analysis, take
+preview, the canvas mixer, export), the bridge to Python, and the thread map. It is the
+document to read before changing anything structural.
+
+The canvas is now the project. `File ▸ New/Open` opens it, a `.mira` document is what Open
+asks for, and the old project window survives as the take pool.
+
+- **Open Project asked for a FOLDER**, so the canvas took the first `.mira` it found inside
+  -- or, finding none, wrote an empty one over the folder. Saved blocks did not come back.
+- **Recents were stored and correct** but only the tray and the launch window showed them.
+  `File ▸ Open Recent` now does.
+- **A Canvas menu in the macOS menu bar** -- "the osx toolbar" meant the MENU bar. The
+  title-bar toolbar experiment lasted one commit: buttons across a full-size content view
+  leave nowhere to grab the window.
+- **No block, no generate pane.** A generator over an empty canvas is a Generate button
+  that cannot say where the audio would go.
+- **Export**, through the player rather than by copying takes -- one mixer for the speakers
+  and the file. Stems render `0 -> end` so they line up at zero in a DAW.
+- **Clean up unused takes**, to the Trash, only inside this canvas's block folders,
+  compared with `pathsEquivalent`.
+- **Block gain and rename in the header**, an on-block progress bar, per-track slabs,
+  track select/delete, per-tab panel widths, key and tempo from the prompt.
+- **Cmd-S did nothing** whenever focus was in the prompt field -- the document shortcuts
+  were on the view, which only receives keys when the canvas itself has focus. They belong
+  to the window.
 
 ### 2026-09-19 — four generation bugs, all found by measuring instead of reading
 
@@ -485,6 +532,14 @@ separate faults, each fixed and each re-measured against the same six.
 ---
 
 ## ⛔ Start here next session
+
+**Verify the canvas on screen.** Roughly a dozen commits on 2026-09-19 have not been seen
+running -- the tabs, the master strip, the file list, `[`/`]`, track select/delete, the
+title-bar colour, the Canvas menu, Open Recent, the block gain and rename, the on-block
+progress bar, cleanup and export. Convention 8 says compiling is not verifying, and this is
+the largest unverified stack this project has carried.
+
+
 
 **MIRA-GENERATE Phase 6 — export.** Render trim + fades to wav **at the take's native
 44,100 Hz** (SA3 generates at 44.1 and nothing else; the playback path resamples to the
