@@ -266,6 +266,12 @@ MyProject/
   block 2/
 ```
 
+A folder that is already a project but has **no document in it yet** — the shape the old
+generate-window "New Project" leaves behind, a bare `takes/` and nothing else — becomes one
+on open: the canvas adopts the folder and writes a `.mira` beside it. Without that there was
+no project folder, so a block had nowhere to put its audio, and the panel sat with Generate
+greyed out saying "no block selected" over a block that was plainly selected.
+
 Block paths are stored **relative** to the document, so the whole folder can be moved or
 renamed. Absolute paths are kept only for files outside it. Takes are not listed in the
 document — they are whatever is in the block's folder, so a take added or removed outside

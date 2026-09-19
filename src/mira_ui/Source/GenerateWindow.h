@@ -431,12 +431,16 @@ public:
     // from here" and "do this again, differently". Both run the prompt as it stands.
     bool generateRemix(const juce::File& source, double totalSeconds);
 
-    void setNoTarget()
+    // `reason` is what to say INSTEAD of "select a block" -- because sometimes a block is
+    // selected and the target is missing for a reason the user needs to hear, and a panel
+    // that says "select a block" while one is plainly selected is a panel lying about why
+    // its Generate button is grey.
+    void setNoTarget(const juce::String& reason = "select a block")
     {
         outputFolder = juce::File();
         if (takeStack != nullptr) takeStack->clear();
-        takesLabel.setText("select a block", juce::dontSendNotification);
-        statusLabel.setText("select a block", juce::dontSendNotification);
+        takesLabel.setText(reason, juce::dontSendNotification);
+        statusLabel.setText(reason, juce::dontSendNotification);
         preview.setFile({});
         resultTile.setFile({});
         keepButton.setEnabled(false);

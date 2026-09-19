@@ -56,7 +56,18 @@ void CanvasView::setProject(const juce::File& project)
         legacy.moveToTrash();
         dirty = false;
         if (onDocumentChanged) onDocumentChanged();
+        return;
     }
+
+    // A REAL FOLDER WITH NO DOCUMENT IN IT YET. It still becomes the project: a block has
+    // to have somewhere to put its audio, and without a project folder blockFolderFor
+    // returned nothing, pointPanelAt gave up silently, and the panel sat there saying "no
+    // block selected" with Generate greyed out over a block that was plainly selected.
+    projectFolder = project;
+    documentFile = project.getChildFile(project.getFileName() + kExtension);
+    writeTo(documentFile);
+    dirty = false;
+    if (onDocumentChanged) onDocumentChanged();
 }
 
 double CanvasView::contentEnd() const
@@ -653,7 +664,15 @@ void CanvasView::pointPanelAt(const Visual* v)
         return;
     }
     const auto folder = blockFolderFor(*v);
-    if (folder == juce::File()) return;
+    if (folder == juce::File())
+    {
+        // NEVER SILENTLY. A block with no project has nowhere to put audio, and the panel
+        // has to say that rather than leave Generate grey with no explanation.
+        panelBlockId = v->block.id;
+        onOpenGenerator(v->block.name + "  -  no project yet", {}, {});
+        if (onBlockGeometry) onBlockGeometry(0.0, 0.0, false);
+        return;
+    }
 
     // A block the document has never carried settings for gets them from ITS OWN TAKE --
     // the `.json` sidecar written beside every generated wav, which is the recipe that
@@ -2233,7 +2252,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             // No block means no target: an empty panel that says "select a block" rather
             // than 62 takes from a folder you never chose.
             if (folder != juce::File()) panel->setOutputFolder(folder);
-            else                        panel->setNoTarget();
+            // The label already says which block and why; the status says what to do.
+            else if (name.isNotEmpty())  panel->setNoTarget("New or Save the canvas first "
+                                                             "- a block needs a project to generate into");
+            else                         panel->setNoTarget();
             // The block's own recipe. Without this the panel changed its title and
             // nothing else, so every block appeared to share one prompt and one LoRA set.
             if (!settings.isVoid()) panel->applySettings(settings);
