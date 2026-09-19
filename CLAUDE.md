@@ -202,12 +202,22 @@ The second extrapolated the constant −292 ms offset into "12,635 ms per hour o
 a plausible number, confidently stated, measuring the wrong quantity. Offset and drift are
 different problems and the spike now reports them separately.
 
-Phase 1 is written and compiles: a floating always-on-top `VideoWindow` with no native
-controls, `Canvas ▸ Open Video...`, a PICTURE track above the tracks, start latency measured
-per machine at load, stop-parks and scrub-follows, and the window's geometry in
-`ui_settings` per project. The clip serialises into the `.mira` under a `video` array, and
-a document without one opens exactly as before. **None of it has been seen running** —
-see the top of MIRA-VIDEO.md Phase 1, and convention 8.
+Phase 1 is built **and seen running**: a floating always-on-top `VideoWindow` with no
+native controls, `Canvas ▸ Open Video...`, a PICTURE track above the tracks, stop-parks and
+scrub-follows, and the window's geometry in `ui_settings` per project. A 93 s mp4 measured
+**306.9 ms of start latency on this machine** (the spike's laptop said 290.3) and reported
+**93.0 s at 25.0 fps** from AVFoundation, against `getVideoDuration()`'s 0.00. The clip
+round-tripped through the `.mira`'s new `video` array. Still owed: the Done-when, which is a
+full 40-minute reel — 93 seconds proves it works, not that it holds.
+
+**And opening the UI found a bug that had nothing to do with video: the whole Canvas menu
+had been dead since the day it was added.** Play, Fit, Save Canvas — every item greyed out
+with a canvas plainly open, because the macOS menu bar bakes each item's enabled state in
+when the menu is BUILT and nothing told it the canvas had opened. `onMenuStateChanged`
+already existed for exactly this, carrying a comment about the identical failure in the
+Tags/Segments/View menus; `showCanvasWindow()` never called it. **The user saw it in the
+first five seconds of looking at the menu, in a menu I had shipped, tested and documented
+without once opening.** That is convention 8, stated as cheaply as it will ever be stated.
 
 ### 2026-09-19 (later) — the canvas becomes the project, and ARCHITECTURE.md
 

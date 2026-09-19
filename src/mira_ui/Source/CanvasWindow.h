@@ -481,6 +481,9 @@ public:
 
     // ui_settings, reached through the owner. The canvas has no database of its own, and
     // giving it one so a window could remember its size would be the wrong trade.
+    // A film arrived or went away. The macOS menu bar bakes each item's enabled state in
+    // when the menu is built, so Show Picture has to be told rather than asked.
+    std::function<void()> onVideoChanged;
     std::function<juce::String(const juce::String& key)> loadSetting;
     std::function<void(const juce::String& key, const juce::String& value)> saveSetting;
 

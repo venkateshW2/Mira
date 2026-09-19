@@ -3280,7 +3280,13 @@ public:
     // thing it shares with the rest of mira.
     void showCanvasWindow()
     {
-        if (canvasWindow != nullptr) { canvasWindow->toFront(true); return; }
+        // refreshMenuState() at every exit, not just on creation. The macOS menu bar bakes
+        // each item's enabled state in when the menu is BUILT (see onMenuStateChanged), so
+        // a Canvas menu built at launch -- when there was no canvas -- stays entirely
+        // greyed out for the rest of the session no matter how many canvases you open.
+        // Exactly the fault that comment already describes for Tags/Segments/View; the
+        // Canvas menu arrived later and never got the call.
+        if (canvasWindow != nullptr) { canvasWindow->toFront(true); refreshMenuState(); return; }
         canvasFormats.registerBasicFormats();   // idempotent
         // The canvas hosts the REAL generate pane in its side panel. Built here because it
         // needs the database, the studio root and the shared worker; the canvas owns its
@@ -3309,8 +3315,16 @@ public:
         canvasWindow->getView().attachTo(sharedAudioDevice);
         canvasWindow->getView().setProject(getCurrentProject());
         canvasWindow->onClosed = [this] {
-            juce::MessageManager::callAsync([this] { canvasWindow.reset(); canvasPanel.reset(); });
+            juce::MessageManager::callAsync([this] {
+                canvasWindow.reset();
+                canvasPanel.reset();
+                refreshMenuState();
+            });
         };
+        // Whether there is a film decides Show Picture, and a clip can arrive from a
+        // document as well as from the chooser.
+        canvasWindow->onVideoChanged = [this] { refreshMenuState(); };
+        refreshMenuState();
     }
 
     void showGenerateWindow()

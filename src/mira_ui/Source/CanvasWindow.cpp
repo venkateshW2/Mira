@@ -3504,8 +3504,15 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         };
         // Picture. The clip is the document's; the WINDOW is this session's, so opening
         // a project that carries a film opens the film with it.
-        view.onVideoClipChanged = [this](const VideoClip& c) { openPicture(c); };
-        view.onVideoCleared     = [this] { storeVideoGeometry(); videoWindow.reset(); };
+        view.onVideoClipChanged = [this](const VideoClip& c) {
+            openPicture(c);
+            if (owner != nullptr && owner->onVideoChanged) owner->onVideoChanged();
+        };
+        view.onVideoCleared = [this] {
+            storeVideoGeometry();
+            videoWindow.reset();
+            if (owner != nullptr && owner->onVideoChanged) owner->onVideoChanged();
+        };
         view.onTakeNote = [this](const juce::String& note) {
             if (panel != nullptr) panel->setStatus(note);
         };

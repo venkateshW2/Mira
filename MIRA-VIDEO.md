@@ -248,39 +248,56 @@ or the machine changes, and every number above has a date on it for that reason.
 
 ### Phase 1 — a video window that follows the playhead
 
-**Written 2026-09-19 and compiling. NOT YET SEEN RUNNING** — `[~]` below means the code is
-there and the build is clean, which convention 8 says is not the same as working. Every one
-of these needs a film opened on screen before it becomes `[x]`.
+**Built and SEEN RUNNING, 2026-09-19.** A 93 s mp4 opened on the KOAN-PHILP canvas: the
+PICTURE track drew it, the picture followed the playhead, two scrub positions gave two
+different frames, and the clip came back out of the `.mira`. The numbers below are from
+that run, not from the plan.
+
+The one thing the run did **not** prove is the Done-when: a 93-second clip says nothing
+about a 40-minute reel. Phase 0.2 measured 700 s with an instrument and found nothing
+accumulating; the reel itself is still owed.
 
 - [x] **1.1** `juce::juce_video` added to `src/mira_ui/CMakeLists.txt`, with
   `JUCE_USE_CAMERA=0` — the module also carries camera capture, and a music tool should not
   ask for the camera.
-- [~] **1.2** [`VideoWindow`](src/mira_ui/Source/VideoWindow.h) — a floating, always-on-top
+- [x] **1.2** [`VideoWindow`](src/mira_ui/Source/VideoWindow.h) — a floating, always-on-top
   window holding a `VideoComponent` constructed with `false` (no native controls: mira's
   transport is the only transport). Black surround, not mira's grey — everything around a
   frame changes how you read it.
-- [~] **1.3** `Canvas ▸ Open Video...`, and `Canvas ▸ Show Picture` for a clip the document
+- [x] **1.3** `Canvas ▸ Open Video...`, and `Canvas ▸ Show Picture` for a clip the document
   already holds. A PICTURE track appears above the tracks, with the clip and its length on
   it. It is in the **Canvas** menu rather than File: File belongs to the library window,
   and every other canvas action already lives here.
   The **waveform progress** of the original task moves to Phase 2 — there is no waveform
   until there is a reference track, and 0.3's 200 seconds is that read, not this one.
-- [~] **1.4** Start latency measured **at load, on this machine**: play muted from a known
+- [x] **1.4** Start latency measured **at load, on this machine**: play muted from a known
   position, and one second later ask how far the picture actually got. `elapsed − advanced`
   is the offset, added to every locate. If the picture never moves, the note says so and
   sync stays uncompensated rather than silently wrong (convention 6).
-- [~] **1.4b** Clip length and frame rate from an `AVURLAsset` query of our own
+  **Measured on this machine at load: 306.9 ms**, against the spike's 290.3 ms — close
+  enough to believe both, far enough apart to be glad it is not hardcoded.
+- [x] **1.4b** Clip length and frame rate from an `AVURLAsset` query of our own
   ([VideoNative.mm](src/mira_ui/Source/VideoNative.mm)) — **not** `getVideoDuration()`,
   which Phase 0.2 watched return 0.00 for 700 seconds of successful playback. A partial
   answer is kept and said out loud: a length with no frame rate is still a length.
-- [~] **1.5** Stop parks the picture at the transport position; moving the playhead with
+  **Measured: 93.0 s and 25.0 fps**, against `afinfo`'s 92.99 s. The frame rate is Phase
+  3's, arriving free.
+- [x] **1.5** Stop parks the picture at the transport position; moving the playhead with
   the transport stopped scrubs the picture. Clicking the PICTURE track scrubs too — over
   picture that is the gesture you actually want.
-- [~] **1.6** The window remembers its size and position in `ui_settings`, keyed
+- [x] **1.6** The window remembers its size and position in `ui_settings`, keyed
   `canvas_video_geometry:<document path>` — per project, because where the picture wants to
   sit depends on what you are scoring.
-- [ ] **1.7** **Verify on screen.** Open a film, play, stop, scrub, close and reopen the
-  project. Then the long one: the picture against the playhead over a full reel.
+- [x] **1.7** **Verified on screen**, and it found a bug that had nothing to do with video:
+  **the entire Canvas menu had been dead since the day it was added.** Every item — Play,
+  Fit, Save Canvas, all of them — greyed out with a canvas plainly open. The macOS menu
+  bar bakes each item's enabled state in when the menu is BUILT, and nothing told it the
+  canvas had opened. `MainComponent` already carries `onMenuStateChanged` for exactly this,
+  with a comment describing the identical failure in the Tags/Segments/View menus;
+  `showCanvasWindow()` simply never called it. **The user spotted it in the first five
+  seconds of looking at the menu** — which is the argument for convention 8 in one line.
+- [ ] **1.8** The Done-when: a **full 40-minute reel**, picture against playhead, drift at
+  the end under one frame. 93 seconds does not test this.
 
 **Done when** the picture follows the playhead over a full 40-minute reel and the drift at
 the end is under one frame.
