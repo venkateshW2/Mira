@@ -5081,6 +5081,15 @@ public:
         };
         tray->onQuit = [this] { systemRequestedQuit(); };
 
+        // THE LAUNCH WINDOW MEANS "NOTHING CHOSEN YET", so the library must not be sitting
+        // behind it. MainWindow's constructor has to setVisible(true) -- applyRoundedCorners
+        // needs the peer that creates -- so it is hidden here, at the point where the
+        // intent is actually expressed, rather than by weakening that.
+        //
+        // This is what "New Project opens the old project window" was: nothing opened it.
+        // The library had been showing behind the launch window the whole time, and
+        // dismissing the launch window simply revealed what was already there.
+        mainWindow->setVisible(false);
         showLaunchWindow();
     }
 
@@ -5094,7 +5103,10 @@ public:
             // deleting a component from its own message is how JUCE apps crash.
             juce::MessageManager::callAsync([this] { launchWindow.reset(); });
         };
-        launchWindow->onClosed = dismiss;
+        // CLOSING IT WITHOUT CHOOSING must not leave the app with no window at all. The
+        // tray glyph and the Dock are the way back, but an app that appears to have
+        // vanished because you dismissed a dialog is indistinguishable from a crash.
+        launchWindow->onClosed = [this, dismiss] { mainWindow->reveal(); dismiss(); };
         launchWindow->content->onOpenLibrary = [this, dismiss] { mainWindow->reveal(); dismiss(); };
         launchWindow->content->onNewProject = [this, dismiss] {
             mainWindow->getMainComponent().getFolderTree().promptNewProject(); dismiss();

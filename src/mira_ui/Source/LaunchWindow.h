@@ -53,12 +53,17 @@ public:
         recentLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::accent.withAlpha(0.85f));
         addAndMakeVisible(recentLabel);
 
-        recentList.setModel(this ? nullptr : nullptr); // set below, after the model exists
+        // OWNER FIRST, THEN THE MODEL. setModel() asks the model how many rows it has
+        // there and then; with owner still null getNumRows() answered 0, and nothing ever
+        // asked again -- so the list drew empty forever while the label above it correctly
+        // said "Recent". Ten real projects, an empty box, and no way to tell from the
+        // outside whether the data or the drawing was wrong.
+        model.owner = this;
         addAndMakeVisible(recentList);
         recentList.setRowHeight(24);
         recentList.setColour(juce::ListBox::backgroundColourId, MiraLookAndFeel::surface2);
         recentList.setModel(&model);
-        model.owner = this;
+        recentList.updateContent();
     }
 
     void paint(juce::Graphics& g) override { g.fillAll(MiraLookAndFeel::surface); }

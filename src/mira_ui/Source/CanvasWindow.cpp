@@ -2505,7 +2505,18 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
         if (key.getKeyCode() == 'S' && onSaveRequested) { onSaveRequested(); return true; }
         if (key.getKeyCode() == 'O' && onOpenRequested) { onOpenRequested(); return true; }
         if (key.getKeyCode() == 'N' && onNewRequested)  { onNewRequested();  return true; }
-        if (key.getKeyCode() == 'E') { cutAtPlayhead(); return true; }
+        // Cmd-E cuts where the playhead stands; Cmd-shift-E makes two blocks of it. Paired
+        // on purpose -- they are the same gesture with and without "and keep both halves".
+        //
+        // NOT plain `s`, which was asked for but is already solo (and `m` is mute) -- a
+        // documented key that quietly starts doing something else is worse than a slightly
+        // longer one. Say the word and they can swap.
+        if (key.getKeyCode() == 'E')
+        {
+            if (key.getModifiers().isShiftDown()) splitAtPlayhead();
+            else                                  cutAtPlayhead();
+            return true;
+        }
         // Cmd-Z / Cmd-shift-Z, the two every app has. Handled here rather than in the menu
         // bar because the canvas is the only thing in mira with a document to undo.
         if (key.getKeyCode() == 'Z')
