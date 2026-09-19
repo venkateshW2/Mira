@@ -801,6 +801,97 @@ juce::var GenerateContent::recipeFor(const juce::File& wav) const {
     return lastRecipe;
 }
 
+// ---- a block's generator settings ---------------------------------------------------
+//
+// The canvas needs the generator's whole state as one value, because a BLOCK owns its
+// generator: clicking another block has to bring its prompt, its LoRAs and its numbers
+// with it. The panel used to change only its TITLE, so every block appeared to share one
+// recipe -- the same confusion the take stack caused, one level up.
+
+juce::var GenerateContent::captureSettings() const
+{
+    auto* r = new juce::DynamicObject();
+    r->setProperty("prompt", promptEditor.getText());
+    r->setProperty("negative_prompt", negativeEditor.getText());
+    r->setProperty("seed", static_cast<int>(seedSlider.getValue()));
+    r->setProperty("cfg", cfgSlider.getValue());
+    r->setProperty("steps", static_cast<int>(stepsSlider.getValue()));
+    r->setProperty("seconds", secondsSlider.getValue());
+
+    // LoRAs by NAME, not by index or path: the index moves when the library gains an
+    // entry, and a path goes stale the moment the file does. The name is what the
+    // dropdown showed when the choice was made.
+    juce::Array<juce::var> used;
+    for (int i = 0; i < kLoraSlots; ++i) {
+        const auto& sl = slots[static_cast<size_t>(i)];
+        const int sel = sl.box.getSelectedId();
+        if (sel <= 1 || sel - 1 > loraFiles.size()) continue;
+        auto* u = new juce::DynamicObject();
+        u->setProperty("slot", i);
+        u->setProperty("name", loraFiles[sel - 2].getFileNameWithoutExtension());
+        u->setProperty("strength", sl.strength.getValue());
+        u->setProperty("gate", juce::var(juce::Array<juce::var>{ sl.stepLo, sl.stepHi }));
+        used.add(juce::var(u));
+    }
+    r->setProperty("loras", juce::var(used));
+    return juce::var(r);
+}
+
+void GenerateContent::applySettings(const juce::var& settings)
+{
+    if (!settings.isObject()) return;
+
+    promptEditor.setText(settings.getProperty("prompt", "").toString(),
+                          juce::dontSendNotification);
+    negativeEditor.setText(settings.getProperty("negative_prompt", "").toString(),
+                            juce::dontSendNotification);
+    seedSlider.setValue((double) settings.getProperty("seed", seedSlider.getValue()),
+                         juce::dontSendNotification);
+    cfgSlider.setValue((double) settings.getProperty("cfg", cfgSlider.getValue()),
+                        juce::dontSendNotification);
+    stepsSlider.setValue((double) settings.getProperty("steps", stepsSlider.getValue()),
+                          juce::dontSendNotification);
+    secondsSlider.setValue((double) settings.getProperty("seconds", secondsSlider.getValue()),
+                            juce::dontSendNotification);
+
+    // Every slot is cleared FIRST. Restoring only the slots the block names would leave
+    // whichever LoRA the previous block had loaded sitting in slot 2, quietly joining a
+    // generation nobody asked it to.
+    for (int i = 0; i < kLoraSlots; ++i) {
+        slots[static_cast<size_t>(i)].box.setSelectedId(1, juce::dontSendNotification);
+        slots[static_cast<size_t>(i)].stepLo = 1;
+        slots[static_cast<size_t>(i)].stepHi = static_cast<int>(stepsSlider.getValue());
+    }
+
+    if (auto* loras = settings.getProperty("loras", {}).getArray()) {
+        int slot = 0;
+        for (const auto& l : *loras) {
+            const int i = juce::jlimit(0, kLoraSlots - 1, (int) l.getProperty("slot", slot));
+            const auto name = l.getProperty("name", "").toString();
+            for (int k = 0; k < loraFiles.size(); ++k)
+                if (loraFiles[k].getFileNameWithoutExtension() == name) {
+                    auto& sl = slots[static_cast<size_t>(i)];
+                    sl.box.setSelectedId(k + 2, juce::dontSendNotification);
+                    sl.strength.setValue((double) l.getProperty("strength", 1.0),
+                                          juce::dontSendNotification);
+                    if (auto* gate = l.getProperty("gate", {}).getArray(); gate != nullptr
+                                                                            && gate->size() == 2) {
+                        sl.stepLo = (int) (*gate)[0];
+                        sl.stepHi = (int) (*gate)[1];
+                    }
+                    break;
+                }
+            ++slot;
+        }
+    }
+
+    // The lane editor reads the slots, so it has to be told they changed -- otherwise the
+    // step windows on screen belong to the block you just left.
+    syncLoraLanes();
+    resized();
+    repaint();
+}
+
 // ---- MIRA-GENERATE.md Phase 7: share -----------------------------------------------
 
 // Reads the child's stdout off the message thread, same shape as PrepareWindow's reader.

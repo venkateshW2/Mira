@@ -123,7 +123,19 @@ public:
     // from it -- different LoRA list, no prompt builder, no step gates. There is one
     // generator in mira and this points it at a block.
     // Which block the side panel should be showing, or an empty name for none.
-    std::function<void(const juce::String& name, const juce::File& folder)> onOpenGenerator;
+    // Name, folder AND the block's own generator settings. Settings are part of it
+    // because a block OWNS its generator: pointing the panel at another block without
+    // bringing its prompt and LoRAs along is what made every block look like it shared one
+    // recipe -- only the title ever changed.
+    std::function<void(const juce::String& name, const juce::File& folder,
+                       const juce::var& settings)> onOpenGenerator;
+    // Read the panel's current state back out, so the block you are leaving keeps what you
+    // typed into it.
+    std::function<juce::var()> onCaptureSettings;
+    // Fold the panel's current state into whichever block it belongs to. Called before a
+    // save and whenever the panel changes block, because otherwise a prompt typed and
+    // never switched away from would not be in the document.
+    void syncPanelSettings();
     // Double-click asks for the panel to be SHOWN, not just repointed -- a folded panel
     // that silently changed which block it was about would be a no-op you cannot see.
     std::function<void()> onRevealGenerator;
@@ -236,6 +248,8 @@ private:
     // the block you had just copied away from. Pass nullptr to point it at nothing.
     void pointPanelAt(const Visual* v);
     int zoomAnchorX() const;
+    // Which block the panel is currently showing, or 0 for none.
+    juce::int64 panelBlockId = 0;
     juce::Rectangle<int> boundsOf(const Visual&) const;
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();

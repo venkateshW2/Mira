@@ -53,11 +53,25 @@ A block is not a rectangle that borrows everything from the track under it. It h
 
 | | |
 |---|---|
-| **a generator** | the real one, pointed at this block's folder |
+| **a generator** | the real one, pointed at this block's folder, **with this block's settings** |
 | **fades** | dragged on the block, with a shape — linear, equal power, exponential |
 | **a mute** | per block, not just per track |
 | **a colour** | **its own**, kept when it moves to another track |
 | **a name** | which is also its folder, and so its generation target |
+
+**The settings belong to the block too.** Selecting a block brings its prompt, its LoRAs
+and its numbers with it. The panel used to change only its *title*, so every block appeared
+to share one recipe — the same confusion the take stack caused, one level up.
+
+A block the document has no settings for takes them from **its own take's `.json`
+sidecar**, the recipe that made exactly that sound. Falling back to whatever was on screen
+is what produced the illusion: on a freshly opened project no block had stored settings, so
+each one copied the last block looked at, and nothing ever changed but the name. The
+panel's current state is now the fallback of last resort — a block with no take and no
+sidecar, which is the "new block with the previous block's settings" case.
+
+The settings are captured back out of the panel when you click away from a block and before
+a save, so a prompt typed and never clicked away from still reaches the document.
 
 **Colour belongs to the block.** It used to come from whatever track the block sat on, so
 dragging a block to another track recoloured it — and the one thing you were following down

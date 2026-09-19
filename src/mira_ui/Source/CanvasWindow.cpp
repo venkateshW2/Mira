@@ -457,17 +457,54 @@ void CanvasView::showBlockMenu(Visual& v)
 
 void CanvasView::announceSelection() {}
 
+void CanvasView::syncPanelSettings()
+{
+    if (onCaptureSettings == nullptr || panelBlockId == 0) return;
+    for (auto& i : items)
+        if (i->block.id == panelBlockId) { i->settings = onCaptureSettings(); return; }
+}
+
 void CanvasView::pointPanelAt(const Visual* v)
 {
     if (onOpenGenerator == nullptr) return;
-    if (v == nullptr) { onOpenGenerator({}, {}); return; }
+
+    // Whatever is on screen belongs to the block we are LEAVING. Taken before anything is
+    // replaced, or a prompt typed and then clicked away from is simply lost.
+    syncPanelSettings();
+
+    if (v == nullptr) { panelBlockId = 0; onOpenGenerator({}, {}, {}); return; }
     const auto folder = blockFolderFor(*v);
     if (folder == juce::File()) return;
+
+    // A block the document has never carried settings for gets them from ITS OWN TAKE --
+    // the `.json` sidecar written beside every generated wav, which is the recipe that
+    // made exactly this sound. Inheriting whatever was on screen instead is what made two
+    // blocks with completely different audio show one identical prompt: every block on a
+    // freshly opened project had no stored settings, so every block copied the last one
+    // looked at, and nothing ever appeared to change but the title.
+    //
+    // Only when there is no take and no sidecar does the panel's current state carry over,
+    // which is the "a new block with the previous block's settings" case and the only one
+    // where there is nothing better to show.
+    auto* mutableV = const_cast<Visual*>(v);
+    if (mutableV->settings.isVoid() && v->block.hasAudio())
+    {
+        auto sidecar = v->block.file.withFileExtension("json");
+        if (sidecar.existsAsFile())
+        {
+            auto parsed = juce::JSON::parse(sidecar.loadFileAsString());
+            if (parsed.isObject()) mutableV->settings = parsed;
+        }
+    }
+    if (mutableV->settings.isVoid() && onCaptureSettings != nullptr)
+        mutableV->settings = onCaptureSettings();
+
+    panelBlockId = v->block.id;
     onOpenGenerator(v->block.name
                         + (v->block.hasAudio()
                                ? "  -  " + v->block.file.getFileNameWithoutExtension()
                                : juce::String("  -  empty")),
-                    folder);
+                    folder, v->settings);
 }
 
 void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
@@ -556,6 +593,7 @@ bool CanvasView::readFrom(const juce::File& miraFile)
 {
     items.clear();
     selected.clear();
+    panelBlockId = 0;      // the block it was showing no longer exists
     laneNames.clear();
     laneDb.clear();
     muteMask = soloMask = 0;
@@ -644,6 +682,8 @@ bool CanvasView::openDocument(const juce::File& miraFile)
 bool CanvasView::saveDocument()
 {
     if (documentFile == juce::File()) return false;   // caller has to ask where
+    // What is on screen has not reached its block until now if you never clicked away.
+    syncPanelSettings();
     writeTo(documentFile);
     dirty = false;
     if (onDocumentChanged) onDocumentChanged();
@@ -1672,7 +1712,11 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             blockLabel.setVisible(true);
             resized();
         };
-        view.onOpenGenerator = [this](const juce::String& name, const juce::File& folder) {
+        view.onCaptureSettings = [this]() -> juce::var {
+            return panel != nullptr ? panel->captureSettings() : juce::var();
+        };
+        view.onOpenGenerator = [this](const juce::String& name, const juce::File& folder,
+                                       const juce::var& settings) {
             if (panel == nullptr) return;
             // The same label the block carries on the canvas, so the panel and the track
             // cannot disagree about which block you are editing.
@@ -1682,6 +1726,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             // than 62 takes from a folder you never chose.
             if (folder != juce::File()) panel->setOutputFolder(folder);
             else                        panel->setNoTarget();
+            // The block's own recipe. Without this the panel changed its title and
+            // nothing else, so every block appeared to share one prompt and one LoRA set.
+            if (!settings.isVoid()) panel->applySettings(settings);
         };
 
         view.onStateChanged = [this] {

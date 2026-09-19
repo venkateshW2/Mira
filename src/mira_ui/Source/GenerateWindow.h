@@ -392,6 +392,18 @@ public:
     //
     // No target means no list and no Generate. An empty panel that says why is the honest
     // state; a full one pointing somewhere you did not choose is the dangerous one.
+    // ---- the generator's settings, as one value -------------------------------------
+    //
+    // The canvas needs these because a BLOCK owns its generator: selecting another block
+    // has to bring its prompt, its LoRAs and its numbers with it. Without this the panel
+    // only ever changed its title, so every block looked like it had the same recipe --
+    // which is the same confusion the take stack caused, one level up.
+    //
+    // Same shape as the recipe written beside a take, so a block's settings and a take's
+    // sidecar are the same thing and cannot drift into two formats.
+    juce::var captureSettings() const;
+    void applySettings(const juce::var& settings);
+
     void setNoTarget()
     {
         outputFolder = juce::File();
