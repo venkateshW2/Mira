@@ -377,14 +377,21 @@ your back.
 `shift-G` / `shift-H` change the **default** height, which every track follows until you
 say otherwise. To fix one track's height:
 
-- **click its padlock** in the header (under the M chip), or
+- **click its padlock**, in the header's top-right corner beside the name, or
 - **drag the bottom edge of its header**, which sets a height by hand and therefore locks
   it — you have said how tall you want it, so the zoom stops arguing, or
 - **right-click the header** for the same toggle.
 
-A locked track shows a filled padlock; an unlocked one shows the shackle lifted off the
-body. Lanes too short to hold a padlock get a coloured bar at their bottom edge instead —
-"why is this one not zooming" has to have an answer on screen at every height.
+A locked track shows a filled padlock in the track's colour; an unlocked one shows the
+shackle lifted clear of the body, faint. Lanes too short to hold one get a coloured bar at
+their bottom edge instead — "why is this one not zooming" has to have an answer on screen
+at every height.
+
+It sits **beside the name, not under the M and S chips**, and it has no chip background.
+M and S are pressed constantly and earn one; a height lock is set once and then read, so it
+is a glyph and a quiet one. Under the chips it landed on the gain readout and read as a
+third button you press often, which it is not — this is a property of the track, like its
+name, and it belongs up there with it.
 
 **The lock and the height are one thing, not two.** A lane either has a height of its own
 or it follows the default, and "locked" is exactly the first case. A separate boolean would

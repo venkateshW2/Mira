@@ -223,8 +223,9 @@ juce::Rectangle<int> CanvasView::meterBoxFor(int lane) const
 
 juce::Rectangle<int> CanvasView::nameBoxFor(int lane) const
 {
+    // The name stops short of the padlock rather than running under it.
     return laneHeightOf(lane) >= 46
-               ? juce::Rectangle<int>(8, laneToY(lane) + 2, kHeaderWidth - 18, 18)
+               ? juce::Rectangle<int>(8, laneToY(lane) + 2, kHeaderWidth - 36, 18)
                : juce::Rectangle<int>(8, laneToY(lane), kHeaderWidth - 84, laneHeightOf(lane));
 }
 
@@ -2199,28 +2200,27 @@ void CanvasView::paint(juce::Graphics& g)
             drawChip(soloBoxFor(lane), "S", soloed, MiraLookAndFeel::accent);
 
             // The padlock: this track's height is its own, and shift-G/H will not move it.
+            // NO chip behind it -- M and S are things you press constantly and earn a
+            // background; this is set once and then read, so it is a glyph, and a faint one
+            // until it means something.
             if (auto lock = lockBoxFor(lane); !lock.isEmpty())
             {
                 const bool held = laneHeightLocked(lane);
                 const auto tint = isReferenceLane(lane) ? kPictureColour : laneColour(lane);
-                g.setColour(held ? tint : MiraLookAndFeel::surface3);
-                g.fillRoundedRectangle(lock.toFloat(), 3.5f);
-
-                // Drawn rather than lettered. "L" next to M and S reads as loop, or left,
-                // and this control is rare enough that it has to explain itself.
                 const auto c = lock.getCentre();
-                const auto body = juce::Rectangle<float>(0, 0, 9.0f, 7.0f)
-                                      .withCentre({ (float) c.x, (float) c.y + 1.5f });
+                const auto body = juce::Rectangle<float>(0, 0, 8.0f, 6.0f)
+                                      .withCentre({ (float) c.x, (float) c.y + 2.0f });
                 juce::Path shackle;
-                const float r = 2.6f;
+                const float r = 2.4f;
                 shackle.addCentredArc((float) c.x, body.getY(), r, r, 0.0f,
                                        -juce::MathConstants<float>::halfPi,
                                        juce::MathConstants<float>::halfPi, true);
-                g.setColour(held ? MiraLookAndFeel::surface : MiraLookAndFeel::textDim);
-                g.strokePath(shackle, juce::PathStrokeType(1.4f));
-                // An OPEN padlock when it is not locked -- the shackle lifted off the body
-                // is the difference you can read at 9 pixels.
-                g.fillRoundedRectangle(held ? body : body.translated(0.0f, 1.0f), 1.5f);
+                // Drawn rather than lettered. "L" beside M and S reads as loop, or left.
+                g.setColour(held ? tint : MiraLookAndFeel::textFaint.withAlpha(0.55f));
+                g.strokePath(shackle, juce::PathStrokeType(1.3f));
+                // An OPEN padlock when it is not locked: the shackle lifted clear of the
+                // body is the difference you can read at eight pixels.
+                g.fillRoundedRectangle(held ? body : body.translated(0.0f, 1.0f), 1.3f);
             }
 
             // The reference lane says WHAT IT IS, not "track 4" -- and it is not a name
@@ -2896,10 +2896,12 @@ void CanvasView::setLaneHeightLocked(int lane, bool locked)
 
 juce::Rectangle<int> CanvasView::lockBoxFor(int lane) const
 {
-    // Under the M chip, on the row below it. Only when the lane is tall enough to hold a
-    // third control without crowding the two that are used far more often.
-    if (laneHeightOf(lane) < 70) return {};
-    return { kHeaderWidth - 62, laneToY(lane) + 46, 26, 16 };
+    // THE TOP-RIGHT CORNER, on the name's row -- not a third chip under M and S. Under
+    // them it landed on the gain readout and read as a third thing you press often, which
+    // it is not: this is a property of the track, like its name, and it belongs up there
+    // with it. Only when the lane is tall enough to have a name row of its own.
+    if (laneHeightOf(lane) < 46) return {};
+    return { kHeaderWidth - 21, laneToY(lane) + 4, 13, 13 };
 }
 
 void CanvasView::showLaneMenu(int lane, juce::Point<int> at)
