@@ -189,6 +189,29 @@ PromptBuilderContent::Field& PromptBuilderContent::addField(const juce::String& 
     return f;
 }
 
+juce::StringArray PromptBuilderContent::setTriggers(const juce::StringArray& triggers) {
+    juce::StringArray known, unknown;
+    for (const auto& t : triggers) {
+        const auto trimmed = t.trim();
+        if (trimmed.isEmpty()) continue;
+        // vocabByTrigger is keyed by the trigger the LATENT SIDECARS carried, so it is
+        // the only list that knows what was really encoded. A name that is not in it is
+        // still offered -- a LoRA can be trained elsewhere -- but it is handed back so
+        // the caller can say the vocabulary will not narrow to it.
+        (vocabByTrigger.count(trimmed) ? known : unknown).add(trimmed);
+    }
+    juce::StringArray all { known };
+    all.addArray(unknown);
+    all.removeDuplicates(false);
+    for (auto& f : fields)
+        if (f->key.isEmpty() && f->label.getText() == "trigger") {
+            f->value.setText(all.joinIntoString(", "), juce::dontSendNotification);
+            syncPicker(*f);
+            break;
+        }
+    return unknown;
+}
+
 void PromptBuilderContent::syncPicker(Field& f) {
     if (f.picker.getNumItems() == 0) return;   // free-text row (BPM, the tail): no picker
 

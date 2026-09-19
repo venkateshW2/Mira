@@ -32,6 +32,16 @@ public:
     // Fired by Construct. The Generate window drops the text into its prompt editor.
     std::function<void(const juce::String&)> onConstruct;
 
+    // The triggers of the LoRAs actually loaded, pushed in by the generate window when
+    // the builder opens. A trigger typed by hand against a different LoRA is the one
+    // mistake this window cannot catch on its own -- "loaded a koan lora but put a
+    // trigger of rsk, so the output is like koan with traces of rsk". The loaded LoRAs
+    // are known, so the trigger should not be something to remember correctly.
+    //
+    // Returns the ones it did NOT recognise, so the caller can say so rather than
+    // quietly setting a trigger no corpus was ever encoded under.
+    juce::StringArray setTriggers(const juce::StringArray& triggers);
+
 private:
     // value -> how many sidecars carry it, over every sa3-studio/latents/<film>/ folder.
     // Frequency only decides menu ORDER -- the most-used words sit at the top, where

@@ -97,6 +97,8 @@ private:
     void generate();
     // Puts the audio input back to nothing. See the definition for why this exists.
     void clearAudioIn();
+    // The triggers of the LoRAs currently in the slots, from their filenames.
+    juce::StringArray loadedLoraTriggers() const;
     void chooseEncodeFolder();
     // Writes one SA3 sidecar per analysed file under `folder`, in-process via
     // mira_core's CaptionFields + Sa3Renderer -- the same code `mira caption
@@ -437,6 +439,11 @@ public:
     // selected and the target is missing for a reason the user needs to hear, and a panel
     // that says "select a block" while one is plainly selected is a panel lying about why
     // its Generate button is grey.
+    // The panel's own status line, for an owner that needs to say why it did not act --
+    // the canvas refusing an extend, for instance. Public because the refusal happens in
+    // the view and the explanation belongs where every other outcome already appears.
+    void setStatus(const juce::String& text) { statusLabel.setText(text, juce::dontSendNotification); }
+
     void setNoTarget(const juce::String& reason = "select a block")
     {
         outputFolder = juce::File();

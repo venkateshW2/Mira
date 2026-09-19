@@ -678,9 +678,32 @@ CanvasView::Geometry CanvasView::selectionGeometry() const
 void CanvasView::extendSelection(bool remix)
 {
     auto* v = singleSelection();
-    if (v == nullptr || onExtendRequested == nullptr) return;
-    if (!v->block.hasAudio()) return;
-    if (!remix && tailSecondsOf(*v) <= 0.05) return;   // nothing to fill
+    if (onExtendRequested == nullptr) return;
+    // CONVENTION 6: NEVER SILENTLY FALL BACK. All three of these used to return with no
+    // message at all, so a button that did nothing looked identical to a generation that
+    // failed, and "extend does not work" had no way to become a reason. The panel's own
+    // status line is where a generation's outcome already appears, so refusals go there.
+    if (v == nullptr)
+    {
+        if (onExtendRefused) onExtendRefused("select one block to extend");
+        return;
+    }
+    if (!v->block.hasAudio())
+    {
+        if (onExtendRefused) onExtendRefused("this block has no audio yet - generate first");
+        return;
+    }
+    if (!remix && tailSecondsOf(*v) <= 0.05)
+    {
+        // The gesture, spelled out. The tail IS the range: without one there is nothing to
+        // fill, and after an extension lands the block is full again -- which is exactly
+        // the moment this fires and the moment it reads as "it stopped working".
+        if (onExtendRefused)
+            onExtendRefused("block is full at " + juce::String(v->block.length, 1)
+                            + "s - drag its right edge out past the audio, and the gap is "
+                              "what gets generated");
+        return;
+    }
 
     // THE PROMPT ON SCREEN IS THE PROMPT THAT RUNS. Extend used to re-apply the block's
     // stored recipe first, which overwrote whatever you had just typed -- you edited the
@@ -2740,6 +2763,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             // Neither one touches the prompt. What is on screen is what runs.
             if (remix) panel->generateRemix(take, totalSeconds);
             else       panel->generateExtension(take, rangeStart, totalSeconds);
+        };
+        view.onExtendRefused = [this](const juce::String& why) {
+            if (panel != nullptr) panel->setStatus(why);
         };
         view.onCaptureSettings = [this]() -> juce::var {
             return panel != nullptr ? panel->captureSettings() : juce::var();

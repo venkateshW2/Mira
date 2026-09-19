@@ -205,6 +205,17 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
                 juce::MessageManager::callAsync([this] { promptBuilder.reset(); });
             };
         }
+        // The builder opens knowing which LoRAs are loaded. Every other field's
+        // vocabulary is drawn from the trigger's own corpus, so getting this row wrong
+        // does not just mislabel the prompt -- it offers words the loaded LoRA was never
+        // trained on.
+        {
+            const auto triggers = loadedLoraTriggers();
+            const auto unknown = promptBuilderContent->setTriggers(triggers);
+            if (!unknown.isEmpty())
+                log("prompt builder: no encoded corpus for " + unknown.joinIntoString(", ")
+                    + " - its fields will draw from everything");
+        }
         promptBuilder = std::make_unique<PromptBuilderWindow>(promptBuilderContent.get());
         promptBuilder->onClosed = [this] {
             juce::MessageManager::callAsync([this] { promptBuilder.reset(); });
@@ -642,6 +653,17 @@ int loraStep(const juce::File& f) {
                .upToFirstOccurrenceOf("-", false, false).getIntValue();
 }
 
+// THE TRIGGER IS IN THE FILENAME. Every checkpoint this project trains is named
+// "<trigger>-step=N-epoch=M", and the trigger is the rare token the set was encoded
+// under -- so it never had to be remembered by hand. "amt-v2" and "xyr-short" are the
+// awkward ones: the suffix names the RUN, not the token, so the trigger is the part
+// before the first dash and the caller checks it against what was actually encoded.
+juce::String loraTrigger(const juce::File& f) {
+    const auto stem = f.getFileNameWithoutExtension();
+    const auto head = stem.upToFirstOccurrenceOf("-", false, false).trim();
+    return head.isNotEmpty() ? head : stem;
+}
+
 juce::String loraShortLabel(const juce::File& f) {
     const auto stem = f.getFileNameWithoutExtension();
     const int step = loraStep(f);
@@ -652,6 +674,16 @@ juce::String loraShortLabel(const juce::File& f) {
          + (epoch.isNotEmpty() ? "   (epoch " + epoch + ")" : juce::String());
 }
 } // namespace
+
+juce::StringArray GenerateContent::loadedLoraTriggers() const {
+    juce::StringArray out;
+    for (int i = 0; i < kLoraSlots; ++i) {
+        const int sel = slots[static_cast<size_t>(i)].box.getSelectedId();
+        if (sel <= 1 || sel - 1 > loraFiles.size()) continue;
+        out.addIfNotAlreadyThere(loraTrigger(loraFiles[sel - 2]));
+    }
+    return out;
+}
 
 void GenerateContent::refreshLoras() {
     loraFiles.clear();
@@ -1954,6 +1986,30 @@ void GenerateContent::generate() {
             req->setProperty("inpaint_range", juce::var(range));
         } else {
             req->setProperty("init_audio", initAudio.getFullPathName());
+        }
+    }
+
+    // THE MISMATCH, SAID OUT LOUD. "loaded a koan lora but put a trigger of rsk so the
+    // output is like koan but traces of rsk also" -- both halves do something, and the
+    // result is a blend nobody asked for. The prompt's leading colon-free tokens ARE the
+    // triggers (that is the caption convention), so the two lists can simply be compared.
+    // A warning, never a correction: a deliberate cross-trigger prompt is a real thing to
+    // try, and rewriting someone's prompt would be worse than the mistake.
+    {
+        const auto loaded = loadedLoraTriggers();
+        juce::StringArray missing;
+        for (const auto& t : loaded)
+            if (!triggers.contains(t)) missing.add(t);
+        juce::StringArray stray;
+        for (const auto& t : triggers)
+            if (!loaded.contains(t)) stray.add(t);
+        if (!missing.isEmpty() || !stray.isEmpty()) {
+            juce::String msg = "trigger check: ";
+            if (!missing.isEmpty()) msg += "loaded " + missing.joinIntoString(", ") + " but the prompt does not say it";
+            if (!missing.isEmpty() && !stray.isEmpty()) msg += "; ";
+            if (!stray.isEmpty()) msg += "prompt says " + stray.joinIntoString(", ") + " with no such LoRA loaded";
+            log(msg);
+            statusLabel.setText(msg, juce::dontSendNotification);
         }
     }
 

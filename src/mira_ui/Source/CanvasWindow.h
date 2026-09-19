@@ -171,6 +171,9 @@ public:
     // regenerates the whole block, guided by the take it already has.
     std::function<void(const juce::File& take, double rangeStart, double totalSeconds,
                        bool remix)> onExtendRequested;
+    // Why an extend did NOT run. Without it the button simply did nothing, which is
+    // indistinguishable from a generation that failed (convention 6).
+    std::function<void(const juce::String&)> onExtendRefused;
     void extendSelection(bool remix);
     // Length, tail and whether there is audio, for the single selection. What decides
     // whether Extend and Remix can do anything.
