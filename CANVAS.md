@@ -176,9 +176,47 @@ boundary (the two sides are the same music, corr 0.997, but not the same samples
 join is a click). Verified: the kept region is bit-exact afterwards, and the seam's largest
 sample-to-sample step is 0.0008 against 0.0005 in an ungapped generation.
 
-The cost is still the total, not the new part — extending a three-minute piece by ten
-seconds is a three-minute generation (80 s/34 s, 120 s/53 s, 180 s/111 s, 240 s/147 s,
-measured). A sliding context window would fix that; correctness no longer depends on it.
+### Extend sends a context window, not the whole piece
+
+Two facts from `sa3_mlx.py` decide how an extension must be asked for:
+
+1. **The total duration is a conditioning input.** `secs_embedder(args.seconds)` goes into
+   `cross_attn` *and* `global_cond` — the model is told "make a piece this long", it is not
+   merely allocating a buffer. And `apply_conditioner_lora` applies the LoRA's own delta to
+   that same seconds embedder, so a LoRA has opinions about duration too.
+2. **LoRAs are trained on crops.** At `SAMPLES_PER_LATENT = 4096` and 44.1 kHz, a
+   512-latent crop is **47.6 s** and a 320-latent crop is **29.7 s**.
+
+So asking for 166 s puts the seconds conditioner 3.5× outside anything a 512-crop LoRA saw,
+and 5.6× for a 320-crop one. Measured across one project's 20 takes, that is exactly the
+failure shape — the percentage of the requested length that actually sounds:
+
+| | asked | sounds | % |
+|---|---|---|---|
+| single LoRA, ≤ 111 s | 30–111 s | — | **96–100** |
+| `krn`+`kon` (both 512), 111 s | 111 s | 108.5 s | **98** |
+| `gsl`(512) + `ams`(320) | 84 s | 66.1 s | 79 |
+| | 136 s | 97.8 s | 72 |
+| | 166 s | 90.7 s | **55** |
+
+Not a quirk and not a bug in mira: **extrapolation**, worse the further out it goes. A take
+that quietly stops early is also what the *next* extend continues from, so one early stop
+poisons every extension after it.
+
+**So Extend asks for a short piece**: the last 30 s of what exists plus the part being
+added, and nothing else. The model sees a duration near what its LoRAs were trained on, the
+finished audio is never sent and never regenerated, and mira joins the new part on with a
+30 ms equal-power crossfade. Cost stops scaling with the piece — extending a three-minute
+work costs the same as extending a thirty-second one — and because `T_lat` is fixed by the
+asked-for length, repeated extensions of the same size reuse the cached DiT instead of
+reloading it (~44 s each time).
+
+**Remix is the opposite and stays that way**: it regenerates the whole block guided by the
+whole take, so the whole file is the init audio. Extend has a boundary to continue from;
+remix does not.
+
+A take that fills less than 95% of its length **says so** when it lands, and says to cut at
+the real end with Cmd-E before extending.
 
 A block longer than the model will generate is **refused with the number**, not quietly
 truncated: audio that stopped short of the frame with nothing on screen explaining why is

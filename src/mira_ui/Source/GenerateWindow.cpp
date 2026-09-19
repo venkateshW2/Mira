@@ -713,6 +713,120 @@ juce::StringArray GenerateContent::loadedLoraTriggers() const {
 //
 // Returns false and says why rather than half-doing it: a source that disagrees about
 // rate or channels is not something to paper over.
+// ---- the context window --------------------------------------------------------------
+//
+// READ OUT OF sa3_mlx.py, not guessed. Two facts decide how an extension should be asked
+// for, and mira was ignoring both:
+//
+// 1. THE TOTAL DURATION IS A CONDITIONING INPUT. `secs_embedder(args.seconds)` goes into
+//    cross_attn AND global_cond -- the model is told "make a piece this long", it is not
+//    merely allocating a buffer. Worse for us, `apply_conditioner_lora` applies the LoRA's
+//    delta to that same seconds embedder, so a LoRA has opinions about duration too.
+// 2. LoRAS ARE TRAINED ON CROPS. At SAMPLES_PER_LATENT=4096 and 44.1 kHz, a 512-latent
+//    crop is 47.6s and a 320-latent crop is 29.7s. Asking a 512-crop LoRA for 166s puts
+//    the seconds conditioner 3.5x outside anything it saw; a 320-crop LoRA, 5.6x. Two of
+//    them at once compound it.
+//
+// Which is exactly the shape of the failure: single LoRAs filled 96-100% of their length
+// up to 111s, while gsl(512) + ams(320) together filled 79% at 84s, 72% at 136s and 55%
+// at 166s. Not a bug in mira and not a quirk -- extrapolation, and it gets worse the
+// further out you go.
+//
+// So an extension asks for a SHORT piece: the last `kExtendContextSeconds` of what exists
+// plus the part being added, and nothing else. The model sees a duration near what its
+// LoRAs were trained on, the already-finished audio is never regenerated, and mira joins
+// the new part on afterwards. It is also much faster -- cost scaled with the TOTAL, so
+// extending a three-minute piece used to cost a three-minute generation -- and because
+// T_lat is fixed by the asked-for length, repeated extensions of the same size reuse the
+// same cached DiT instead of reloading it (~44s) every time.
+constexpr double kExtendContextSeconds = 30.0;
+
+// The last `toSec - fromSec` of a file, as its own wav. This is what the model is given
+// as context; nothing before it is sent at all.
+static bool writeSegmentWav(juce::AudioFormatManager& formats, const juce::File& src,
+                            double fromSec, double toSec, const juce::File& dest,
+                            juce::String& errorOut)
+{
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor(src));
+    if (reader == nullptr || reader->sampleRate <= 0.0) { errorOut = "could not read " + src.getFileName(); return false; }
+    const double rate = reader->sampleRate;
+    const auto from = (juce::int64) juce::jmax (0.0, std::floor (fromSec * rate));
+    const auto to   = juce::jmin (reader->lengthInSamples, (juce::int64) std::ceil (toSec * rate));
+    const int n = (int) juce::jmax<juce::int64> (0, to - from);
+    if (n <= 0) { errorOut = "the window is empty"; return false; }
+
+    juce::AudioBuffer<float> buffer ((int) juce::jmax (1u, reader->numChannels), n);
+    reader->read (&buffer, 0, n, from, true, true);
+    const auto channels = reader->numChannels;
+    reader.reset();
+
+    dest.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::FileOutputStream> stream (dest.createOutputStream());
+    if (stream == nullptr) { errorOut = "could not write " + dest.getFullPathName(); return false; }
+    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), rate, channels, 24, {}, 0));
+    if (writer == nullptr) { errorOut = "could not create a writer"; return false; }
+    stream.release();
+    writer->writeFromAudioSampleBuffer (buffer, 0, n);
+    return true;
+}
+
+// original[0 .. keepUntil] followed by generated[takeFrom .. end], joined with the same
+// 30 ms equal-power crossfade the canvas uses. The original samples are copied verbatim:
+// the model's version of the context window is heard only as the far side of the fade.
+static bool joinExtension(juce::AudioFormatManager& formats, const juce::File& original,
+                          double keepUntilSec, const juce::File& generated, double takeFromSec,
+                          juce::String& errorOut)
+{
+    std::unique_ptr<juce::AudioFormatReader> a (formats.createReaderFor(original));
+    std::unique_ptr<juce::AudioFormatReader> b (formats.createReaderFor(generated));
+    if (a == nullptr || b == nullptr) { errorOut = "could not read one of the files"; return false; }
+    if (std::abs (a->sampleRate - b->sampleRate) > 1.0) { errorOut = "sample rates differ"; return false; }
+
+    const double rate = a->sampleRate;
+    const int channels = (int) juce::jmin (a->numChannels, b->numChannels);
+    const int keep = (int) juce::jlimit<juce::int64> (0, a->lengthInSamples,
+                                                      (juce::int64) std::llround (keepUntilSec * rate));
+    const int skip = (int) juce::jlimit<juce::int64> (0, b->lengthInSamples,
+                                                      (juce::int64) std::llround (takeFromSec * rate));
+    const int added = (int) juce::jmax<juce::int64> (0, b->lengthInSamples - skip);
+    if (added <= 0) { errorOut = "the generation added nothing"; return false; }
+
+    juce::AudioBuffer<float> head (channels, keep), tail (channels, added);
+    if (keep > 0) a->read (&head, 0, keep, 0, true, true);
+    b->read (&tail, 0, added, skip, true, true);
+    a.reset(); b.reset();
+
+    juce::AudioBuffer<float> out (channels, keep + added);
+    for (int c = 0; c < channels; ++c)
+    {
+        if (keep > 0) out.copyFrom (c, 0, head, c, 0, keep);
+        out.copyFrom (c, keep, tail, c, 0, added);
+    }
+    const int fade = juce::jmin ((int) std::llround (0.030 * rate), juce::jmin (keep, added));
+    for (int c = 0; c < channels; ++c)
+        for (int i = 0; i < fade; ++i)
+        {
+            const float t = (float) i / (float) fade;
+            const int at = keep - fade + i;
+            out.setSample (c, at, out.getSample (c, at) * mira::canvas::fadeGain (1.0f - t, mira::canvas::FadeShape::EqualPower)
+                                  + tail.getSample (c, i) * mira::canvas::fadeGain (t, mira::canvas::FadeShape::EqualPower));
+        }
+
+    auto temp = generated.getSiblingFile (generated.getFileNameWithoutExtension() + "-join.wav");
+    temp.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::FileOutputStream> stream (temp.createOutputStream());
+    if (stream == nullptr) { errorOut = "could not write the join"; return false; }
+    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), rate, (unsigned) channels, 24, {}, 0));
+    if (writer == nullptr) { errorOut = "could not create a writer"; return false; }
+    stream.release();
+    writer->writeFromAudioSampleBuffer (out, 0, out.getNumSamples());
+    writer.reset();
+    if (!temp.moveFileTo (generated)) { errorOut = "could not replace " + generated.getFileName(); return false; }
+    return true;
+}
+
 static bool spliceKeptRegion(juce::AudioFormatManager& formats, const juce::File& source,
                       const juce::File& result, double rangeStart, double rangeEnd,
                       juce::String& errorOut)
@@ -1097,16 +1211,56 @@ bool GenerateContent::generateExtension(const juce::File& source, double rangeSt
         return false;
     }
 
-    initAudio = source;
-    secondsSlider.setValue(totalSeconds, juce::sendNotificationSync);
+    // ONLY THE LAST kExtendContextSeconds GO TO THE MODEL. See the note above
+    // writeSegmentWav: the total duration is a conditioning input and the LoRAs were
+    // trained on 30-48 second crops, so asking for the whole piece pushes the seconds
+    // conditioner far outside anything the adapters saw -- which is what made long
+    // extensions trail off into silence. A short ask keeps it in range, never regenerates
+    // the finished audio, and costs the same however long the piece already is.
+    const double added = totalSeconds - rangeStart;
+    const double context = juce::jlimit(0.0, rangeStart, kExtendContextSeconds);
+    const double ask = context + added;
+    if (ask > secondsSlider.getMaximum() + 0.001)
+    {
+        const auto msg = "adding " + juce::String(added, 1) + "s plus " + juce::String(context, 1)
+                       + "s of context is " + juce::String(ask, 1) + "s - the model tops out at "
+                       + juce::String(secondsSlider.getMaximum(), 0) + "s";
+        statusLabel.setText(msg, juce::dontSendNotification);
+        log(msg);
+        return false;
+    }
+
+    // The system temp dir, NOT the block folder: anything written beside the takes is a
+    // take as far as the canvas and the FILES tab are concerned, and a scratch file that
+    // can be adopted as a block's audio is a trap waiting to be stepped in.
+    auto window = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                      .getChildFile("mira-extend-context.wav");
+    juce::String why;
+    if (!writeSegmentWav(takeFormatManager, source, rangeStart - context, rangeStart, window, why))
+    {
+        // Convention 6: no falling back to sending the whole file. That is the behaviour
+        // being replaced, and doing it silently would hide the very failure this fixes.
+        const auto msg = "could not prepare the context window (" + why + ")";
+        statusLabel.setText(msg, juce::dontSendNotification);
+        log(msg);
+        return false;
+    }
+
+    pendingExtend = { source, rangeStart, context, true };
+
+    initAudio = window;
+    secondsSlider.setValue(ask, juce::sendNotificationSync);
     inpaintToggle.setToggleState(true, juce::sendNotificationSync);
-    inpaintStart.setValue(rangeStart, juce::sendNotificationSync);
-    inpaintEnd.setValue(totalSeconds, juce::sendNotificationSync);
+    inpaintStart.setValue(context, juce::sendNotificationSync);
+    inpaintEnd.setValue(ask, juce::sendNotificationSync);
     if (inpaintStrip != nullptr)
     {
-        inpaintStrip->setTimeline(totalSeconds);
-        inpaintStrip->setRange(rangeStart, totalSeconds);
+        inpaintStrip->setTimeline(ask);
+        inpaintStrip->setRange(context, ask);
     }
+    log("extend: " + juce::String(added, 1) + "s new, with the last "
+        + juce::String(context, 1) + "s as context (" + juce::String(ask, 1)
+        + "s asked of the model, not " + juce::String(totalSeconds, 1) + "s)");
     generate();
     clearAudioIn();
     return true;
@@ -1135,6 +1289,11 @@ bool GenerateContent::generateRemix(const juce::File& source, double totalSecond
     secondsSlider.setValue(totalSeconds, juce::sendNotificationSync);
     generate();
     clearAudioIn();
+    // generate() early-returns when the worker is busy or absent, BEFORE it takes the
+    // plan -- and a plan left standing would join the next unrelated generation onto this
+    // block's take. Exactly the shape of the initAudio bug below; cleared on both paths
+    // rather than trusted to one.
+    pendingExtend = {};
     return true;
 }
 
@@ -2071,6 +2230,13 @@ void GenerateContent::generate() {
         // a stale init_audio hid: regenerating from the recipe gave different audio and
         // the recipe could not say why. Measured on two takes with byte-identical
         // recipes that correlate 0.50.
+        if (pendingExtend.active) {
+            // What the file actually IS, so the recipe describes the take on disk rather
+            // than the request that produced only part of it.
+            r->setProperty("extend_from", pendingExtend.original.getFullPathName());
+            r->setProperty("extend_kept", pendingExtend.keepUntil);
+            r->setProperty("extend_context", pendingExtend.context);
+        }
         if (initAudio.existsAsFile()) {
             if (inpaintToggle.getToggleState()) {
                 r->setProperty("inpaint_audio", initAudio.getFullPathName());
@@ -2087,6 +2253,8 @@ void GenerateContent::generate() {
     // cannot drift from what was actually asked for.
     juce::File spliceSource;
     double spliceFrom = 0.0, spliceTo = 0.0;
+    const auto extend = pendingExtend;
+    pendingExtend = {};
     if (initAudio.existsAsFile()) {
         if (inpaintToggle.getToggleState()) {
             // Inpainting keeps everything OUTSIDE the range bit-exact and regenerates
@@ -2135,7 +2303,7 @@ void GenerateContent::generate() {
     juce::String sendError;
     auto* w = hub.get(sendError);
     if (w == nullptr) { statusLabel.setText("worker is not running", juce::dontSendNotification); return; }
-    w->send(req, [this, wav, spliceSource, spliceFrom, spliceTo](bool ok, juce::var payload) {
+    w->send(req, [this, wav, spliceSource, spliceFrom, spliceTo, extend](bool ok, juce::var payload) {
         const double took = genProgress.elapsedSeconds();
         setBusy(false, {});
         if (!ok) {
@@ -2146,9 +2314,22 @@ void GenerateContent::generate() {
         // The recipe beside the audio. It exists because this information otherwise
         // lives only in the log and dies with the session -- and a generation you cannot
         // reproduce is a generation you cannot learn from.
+        // A WINDOWED EXTENSION lands as a short file: the context window followed by the
+        // new part. The finished audio never went to the model at all, so it is joined
+        // back on here rather than spliced over.
+        if (extend.active) {
+            juce::String why;
+            if (joinExtension(takeFormatManager, extend.original, extend.keepUntil, wav,
+                              extend.context, why))
+                log("joined the new part onto the existing " + juce::String(extend.keepUntil, 1)
+                    + "s, which was never regenerated");
+            else
+                log("could not join the extension (" + why + ") - the take holds only the "
+                    "context window and the new part");
+        }
         // The kept region, put back from the original. See spliceKeptRegion above: the
         // model's "preserved" audio is a lossy round trip, and it compounds every time.
-        if (spliceSource.existsAsFile() && spliceFrom > 0.001) {
+        else if (spliceSource.existsAsFile() && spliceFrom > 0.001) {
             juce::String why;
             if (spliceKeptRegion(takeFormatManager, spliceSource, wav, spliceFrom, spliceTo, why))
                 log("kept the original audio before " + juce::String(spliceFrom, 1)

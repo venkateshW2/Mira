@@ -99,6 +99,16 @@ private:
     void clearAudioIn();
     // The triggers of the LoRAs currently in the slots, from their filenames.
     juce::StringArray loadedLoraTriggers() const;
+
+    // An extension in flight. The model is only ever sent the last `context` seconds, so
+    // the finished audio has to be joined back on when the take lands.
+    struct ExtendPlan {
+        juce::File original;      // the take the block already had
+        double keepUntil = 0.0;   // how much of it is real audio, and is kept verbatim
+        double context = 0.0;     // how much of it went to the model, and where the new part starts
+        bool active = false;
+    };
+    ExtendPlan pendingExtend;
     void chooseEncodeFolder();
     // Writes one SA3 sidecar per analysed file under `folder`, in-process via
     // mira_core's CaptionFields + Sa3Renderer -- the same code `mira caption
