@@ -55,7 +55,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | [PRD.md](PRD.md) | the design: stack, models, phases, licence reasoning, every "why this and not that" | current as design; §-numbers are cited throughout the code |
 | [TASKS.md](TASKS.md) | the build checklist, phase by phase. Phases 0–5 complete, **Phase 6 in progress** | live — tick items here |
 | [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — **phases 1–5 built**, 6–7 open (2026-09-17) |
-| [MIRA-VIDEO.md](MIRA-VIDEO.md) | **scoring to picture** — a video window slaved to the transport, a locked reference track, timecode. Its own 6-phase task list | live — **Phase 0 measured, Phase 1 built and unverified** (2026-09-19) |
+| [MIRA-VIDEO.md](MIRA-VIDEO.md) | **scoring to picture** — a video window slaved to the transport, a locked reference track, timecode, markers, a cue sheet | live — **Phases 0–5 built**; 1–2 verified on screen, 3–5 not yet (2026-09-19) |
 | [CANVAS.md](CANVAS.md) | **the block canvas** — the Blockhead-shaped experiment: blocks that own their generator, tracks that sum, and the `.mira` document | live — experimental, 2026-09-19 |
 
 ### Captioning and training
@@ -175,6 +175,41 @@ These are not style preferences. Each one exists because breaking it caused a re
 ## Recent work
 
 Newest first. Keep this current — it is how the next session finds the thread.
+
+### 2026-09-19 (latest) — timecode, several reels, and the spotting notes
+
+[MIRA-VIDEO.md](MIRA-VIDEO.md) Phases 3, 4 and 5. **Built and compiling; not yet seen
+running** — the user tests these themselves now, so convention 8 is satisfied by them, not
+by me, and until they say so these are unverified.
+
+- **Timecode** ([Timecode.h](src/mira_ui/Source/Timecode.h), header-only and UI-free). The
+  ruler, the transport clock and every block header read the same way. **The two rates are
+  separate**: a 23.976 file is numbered in 24 fps timecode — the frame COUNT comes from the
+  real rate, the display divides by the NOMINAL one, and collapsing them drifts 3.6 seconds
+  an hour against the editor's clock. Drop-frame is offered only where it exists.
+  Checked against SMPTE facts rather than against itself, 9 of 9; **two of the first run's
+  failures were wrong expectations of mine, not wrong code**, which is worth recording
+  because a test trusted more than the thing it tests is how a correct implementation gets
+  "fixed" into a broken one.
+- **Several reels on the one video track**, with TWO `VideoComponent`s: the one you watch
+  and one parked on the next clip's first frame, swapped at the boundary. A jump into a reel
+  that was not pre-loaded loads there and then and **says so** — knowing when the pre-load
+  missed is how six seconds of lead gets tuned rather than guessed. The gap between clips is
+  black, not the last frame held.
+- **`audioBlockId` is deliberately not serialised.** Ids are handed out fresh on every load,
+  so a saved one would point at whatever block took that number next time; the clip-to-
+  reference link is rebuilt from the geometry.
+- **Markers, and `Cmd-shift-M`: a block from the playhead to the next marker.** That is the
+  whole gesture of scoring to picture — the start and the out-point are what you know, and
+  the length follows. Snapping is by PIXELS, not seconds: a snap a second wide zoomed out
+  and a frame wide zoomed in is one nobody can predict.
+- **A cue sheet**, in timecode, sorted by start — the canvas's own list is in the order
+  blocks were made, and an out-of-order cue sheet cannot be read against picture.
+
+Also this session: **tracks reorder** (drag a header, or `Cmd-↑`/`Cmd-↓`) with ONE
+permutation applied to every per-lane list, and **per-track height with a padlock**, the
+reference locked by default — one concept, since a lane with a height of its own is exactly
+a lane the zoom leaves alone.
 
 ### 2026-09-19 (latest) — the reference track, and two bugs the UI found
 
