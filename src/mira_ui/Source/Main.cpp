@@ -1199,7 +1199,8 @@ namespace CanvasMenu {
         kExportTracks, kCleanup,
         // MIRA-VIDEO.md Phase 1.3
         kOpenVideo, kShowPicture,
-        kFirst = kPlay, kLast = kShowPicture
+        kRulerSeconds, kRulerTimecode,
+        kFirst = kPlay, kLast = kRulerTimecode
     };
 }
 
@@ -3250,6 +3251,11 @@ public:
     // learns the position of.
     bool hasCanvasWindow() const { return canvasWindow != nullptr; }
     bool hasCanvasVideo() const { return canvasWindow != nullptr && canvasWindow->hasVideo(); }
+    bool canvasRulerIsTimecode() const
+    {
+        return canvasWindow != nullptr
+            && canvasWindow->getView().getRulerMode() == mira::canvas::CanvasView::Ruler::Timecode;
+    }
 
     void performCanvasAction(int id)
     {
@@ -3272,6 +3278,10 @@ public:
             case CanvasMenu::kCleanup:      v.promptCleanup(); break;
             case CanvasMenu::kOpenVideo:    canvasWindow->openVideo(); return;
             case CanvasMenu::kShowPicture:  canvasWindow->showPicture(); return;
+            case CanvasMenu::kRulerSeconds:
+                v.setRulerMode(mira::canvas::CanvasView::Ruler::Seconds); break;
+            case CanvasMenu::kRulerTimecode:
+                v.setRulerMode(mira::canvas::CanvasView::Ruler::Timecode); break;
             case CanvasMenu::kSave:      canvasWindow->saveProject(); break;
             default: break;
         }
@@ -4864,6 +4874,8 @@ public:
     std::function<bool()> hasCanvas;
     // Whether the canvas holds a video clip -- Show Picture is meaningless without one.
     std::function<bool()> hasCanvasVideo;
+    // Which way the canvas ruler reads, so the menu can tick the one that is on.
+    std::function<bool()> canvasRulerIsTimecode;
     std::function<void(int)> onCanvasAction;
 
     std::function<juce::StringArray()> getRecent;
@@ -4970,6 +4982,10 @@ public:
             menu.addItem(CanvasMenu::kOpenVideo, "Open Video...", live, false);
             menu.addItem(CanvasMenu::kShowPicture, "Show Picture",
                           live && hasCanvasVideo && hasCanvasVideo(), false);
+            menu.addSeparator();
+            const bool onTimecode = live && canvasRulerIsTimecode && canvasRulerIsTimecode();
+            menu.addItem(CanvasMenu::kRulerSeconds, "Ruler: Seconds", live, live && !onTimecode);
+            menu.addItem(CanvasMenu::kRulerTimecode, "Ruler: Timecode", live, onTimecode);
         }
         else if (topLevelMenuIndex == 8)
         {
@@ -5094,6 +5110,9 @@ public:
         };
         menuModel.hasCanvas = [this] { return mainWindow->getMainComponent().hasCanvasWindow(); };
         menuModel.hasCanvasVideo = [this] { return mainWindow->getMainComponent().hasCanvasVideo(); };
+        menuModel.canvasRulerIsTimecode = [this] {
+            return mainWindow->getMainComponent().canvasRulerIsTimecode();
+        };
         menuModel.onCanvasAction = [this](int id) { mainWindow->getMainComponent().performCanvasAction(id); };
         mainWindow->getMainComponent().onMenuStateChanged = [this] { menuModel.menuItemsChanged(); };
         menuModel.getAnalyzeOptions = [this] { return mainWindow->getMainComponent().getAnalyzeOptions(); };

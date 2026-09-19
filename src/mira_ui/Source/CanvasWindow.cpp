@@ -1575,6 +1575,12 @@ juce::String CanvasView::toJson(const juce::File& base) const
         root->setProperty("laneHeights", juce::var(heights));
     }
     root->setProperty("waveZoom", (double) waveZoom);
+    root->setProperty("ruler", rulerMode == Ruler::Timecode ? "timecode" : "seconds");
+    // Kept even with no clip: a canvas laid out against a timecode an editor read down the
+    // phone should not lose it the moment the film is detached.
+    root->setProperty("tcFps", fallbackFps);
+    root->setProperty("tcDrop", fallbackDrop);
+    root->setProperty("tcStart", fallbackStart);
     root->setProperty("muteMask", juce::String(muteMask));
 
     // A document with no `video` array opens exactly as it does today -- that is what
@@ -1650,6 +1656,11 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
     referenceLane = (int) root.getProperty("referenceLane", -1);
     if (referenceLane >= laneCount) referenceLane = -1;   // a document that lost its film
     waveZoom = juce::jlimit(0.15f, 16.0f, (float) (double) root.getProperty("waveZoom", 1.0));
+    rulerMode = root.getProperty("ruler", "seconds").toString() == "timecode" ? Ruler::Timecode
+                                                                              : Ruler::Seconds;
+    fallbackFps = juce::jlimit(1.0, 240.0, (double) root.getProperty("tcFps", 25.0));
+    fallbackDrop = (bool) root.getProperty("tcDrop", false);
+    fallbackStart = juce::jmax(0.0, (double) root.getProperty("tcStart", 0.0));
 
     if (auto* blocks = root.getProperty("blocks", {}).getArray())
         for (const auto& b : *blocks)
@@ -1933,8 +1944,12 @@ void CanvasView::paint(juce::Graphics& g)
         // A tick spacing that stays legible at any zoom, chosen from the 1-2-5 ladder
         // rather than a fixed number of seconds.
         static const double steps[] = { 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600 };
+        const bool asTimecode = rulerMode == Ruler::Timecode;
+        // A timecode label is 11 characters against five, so it needs more room before the
+        // labels start colliding. Same ladder, a wider gate.
+        const double minGap = asTimecode ? 108.0 : 64.0;
         double step = 600.0;
-        for (double s : steps) if (s * pixelsPerSecond >= 64.0) { step = s; break; }
+        for (double s : steps) if (s * pixelsPerSecond >= minGap) { step = s; break; }
 
         g.setFont(laf.monoRegular(MiraLookAndFeel::textSize(9.5f)));
         const double first = std::floor(viewStart / step) * step;
@@ -1944,8 +1959,9 @@ void CanvasView::paint(juce::Graphics& g)
             if (x < kHeaderWidth) continue;
             g.setColour(MiraLookAndFeel::border);
             g.drawVerticalLine(x, 0.0f, static_cast<float>(topRuler));
-            g.setColour(MiraLookAndFeel::textDim);
-            g.drawText(formatTime(t), x + 3, 0, 60, topRuler, juce::Justification::centredLeft, false);
+            g.setColour(asTimecode ? MiraLookAndFeel::textDim.brighter(0.15f) : MiraLookAndFeel::textDim);
+            g.drawText(formatPosition(t), x + 3, 0, asTimecode ? 96 : 60, topRuler,
+                        juce::Justification::centredLeft, false);
         }
     }
 
@@ -2136,7 +2152,13 @@ void CanvasView::paint(juce::Graphics& g)
             // "block1 _ name of the file": the block's own name AND what is in it. The
             // block name alone says nothing about which take you chose, and the filename
             // alone loses which part of the piece this is.
-            const auto label = item->block.name
+            // 3.6 -- in TIMECODE, when that is what the ruler reads. A cue's in-point is
+            // the number you say out loud about it, so it belongs on the block itself and
+            // not only under the playhead.
+            const auto label = (rulerMode == Ruler::Timecode
+                                    ? formatPosition(item->block.start) + "   "
+                                    : juce::String())
+                             + item->block.name
                              + (item->block.hasAudio()
                                     ? "  -  " + item->block.file.getFileNameWithoutExtension()
                                     : juce::String());
@@ -2562,6 +2584,9 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
 
     if (e.y < topRuler)
     {
+        // Right-click the ruler for what the ruler IS -- seconds or timecode, the frame
+        // rate, drop-frame, the start. Settings about a clock belong on the clock.
+        if (e.mods.isPopupMenu()) { showRulerMenu(e.getPosition()); return; }
         drag = Drag::Playhead;
         player.setPositionSeconds(juce::jmax(0.0, xToSeconds(e.x)));
         repaint();
@@ -3718,6 +3743,155 @@ private:
     juce::Time lastStamp;
 };
 
+// ---- timecode (MIRA-VIDEO.md Phase 3) -----------------------------------------------
+
+tc::Format CanvasView::timecodeFormat() const
+{
+    tc::Format f;
+    if (!videoClips.empty())
+    {
+        const auto& c = videoClips.front();
+        // A clip whose frame rate AVFoundation would not report falls back to the
+        // canvas's own -- and the ruler menu says which one is in force, because a
+        // timecode counted at the wrong rate is wrong in a way you cannot see.
+        f.fps = c.fps > 0.0 ? c.fps : fallbackFps;
+        f.dropFrame = c.dropFrame && tc::dropFrameIsPossible(f.fps);
+        f.startSeconds = c.startTimecode;
+    }
+    else
+    {
+        f.fps = fallbackFps;
+        f.dropFrame = fallbackDrop && tc::dropFrameIsPossible(f.fps);
+        f.startSeconds = fallbackStart;
+    }
+    return f;
+}
+
+void CanvasView::setRulerMode(Ruler r)
+{
+    if (rulerMode == r) return;
+    rulerMode = r;
+    markDirty();
+    if (onStateChanged) onStateChanged();
+    repaint();
+}
+
+void CanvasView::setTimecodeFps(double fps)
+{
+    fps = juce::jlimit(1.0, 240.0, fps);
+    if (!videoClips.empty()) videoClips.front().fps = fps;
+    fallbackFps = fps;
+    // Drop-frame only exists at 29.97 and 59.94. Leaving it set through a rate change
+    // would leave a flag on that quietly renumbers a clock it has no business touching.
+    if (!tc::dropFrameIsPossible(fps))
+    {
+        fallbackDrop = false;
+        if (!videoClips.empty()) videoClips.front().dropFrame = false;
+    }
+    markDirty();
+    if (onStateChanged) onStateChanged();
+    repaint();
+}
+
+void CanvasView::setTimecodeDropFrame(bool drop)
+{
+    if (!videoClips.empty()) videoClips.front().dropFrame = drop;
+    fallbackDrop = drop;
+    markDirty();
+    repaint();
+}
+
+void CanvasView::setTimecodeStart(double timecodeSeconds)
+{
+    timecodeSeconds = juce::jmax(0.0, timecodeSeconds);
+    if (!videoClips.empty()) videoClips.front().startTimecode = timecodeSeconds;
+    fallbackStart = timecodeSeconds;
+    markDirty();
+    repaint();
+}
+
+juce::String CanvasView::formatPosition(double seconds) const
+{
+    if (rulerMode == Ruler::Timecode) return tc::format(seconds, timecodeFormat());
+    return formatTime(seconds);
+}
+
+void CanvasView::showRulerMenu(juce::Point<int> at)
+{
+    const auto f = timecodeFormat();
+    const bool haveClip = !videoClips.empty() && videoClips.front().fps > 0.0;
+
+    juce::PopupMenu rates;
+    // The rates that exist in delivery, and nothing else. A free-text frame rate is a
+    // field in which to make a typing mistake that then silently renumbers every cue.
+    const double choices[] = { 23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0 };
+    for (int i = 0; i < (int) (sizeof(choices) / sizeof(choices[0])); ++i)
+        rates.addItem(100 + i, juce::String(choices[i], choices[i] == std::floor(choices[i]) ? 0 : 3)
+                                 + " fps", true, std::abs(f.fps - choices[i]) < 0.005);
+
+    juce::PopupMenu m;
+    m.addItem(1, "Seconds", true, rulerMode == Ruler::Seconds);
+    m.addItem(2, "Timecode", true, rulerMode == Ruler::Timecode);
+    m.addSeparator();
+    m.addSectionHeader(haveClip ? "Frame rate - from the film" : "Frame rate - no film loaded");
+    m.addSubMenu("Frame rate", rates);
+    // Offered ONLY where it exists. A drop-frame tick at 25 fps is a setting that can only
+    // ever be wrong, and the fact that it is greyed out is itself the explanation.
+    m.addItem(3, "Drop frame", tc::dropFrameIsPossible(f.fps), f.dropFrame);
+    m.addSeparator();
+    m.addItem(4, "Start timecode: " + tc::formatFrames((juce::int64) std::llround(
+                     f.startSeconds * tc::nominalRate(f.fps)), tc::nominalRate(f.fps), f.dropFrame)
+                     + "...", true, false);
+
+    juce::Component::SafePointer<CanvasView> safe (this);
+    const auto onScreen = localPointToGlobal(at);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({ onScreen.x, onScreen.y, 1, 1 }),
+                     [safe, choices](int id) {
+        if (safe == nullptr || id == 0) return;
+        auto& self = *safe;
+        if (id >= 100 && id < 100 + (int) (sizeof(choices) / sizeof(choices[0])))
+        { self.setTimecodeFps(choices[id - 100]); return; }
+        switch (id)
+        {
+            case 1: self.setRulerMode(Ruler::Seconds); break;
+            case 2: self.setRulerMode(Ruler::Timecode); break;
+            case 3: self.setTimecodeDropFrame(!self.timecodeFormat().dropFrame); break;
+            case 4: self.promptStartTimecode(); break;
+            default: break;
+        }
+    });
+}
+
+void CanvasView::promptStartTimecode()
+{
+    const auto f = timecodeFormat();
+    const int nominal = tc::nominalRate(f.fps);
+    auto* window = new juce::AlertWindow("Start timecode",
+                                          "The timecode of the film's first frame.",
+                                          juce::MessageBoxIconType::NoIcon);
+    window->addTextEditor("tc", tc::formatFrames((juce::int64) std::llround(f.startSeconds * nominal),
+                                                  nominal, f.dropFrame));
+    window->addButton("Set", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<CanvasView> safe (this);
+    window->enterModalState(true, juce::ModalCallbackFunction::create([safe, window, nominal](int r) {
+        std::unique_ptr<juce::AlertWindow> owned (window);
+        if (safe == nullptr || r != 1) return;
+        const auto typed = window->getTextEditorContents("tc");
+        const double seconds = tc::parse(typed, nominal);
+        // Convention 6 again: a timecode that will not parse says so. Silently keeping the
+        // old one would leave every cue numbered from a start nobody chose.
+        if (seconds < 0.0)
+        {
+            if (safe->onTakeNote) safe->onTakeNote("\"" + typed + "\" is not a timecode - try 01:00:00:00");
+            return;
+        }
+        safe->setTimecodeStart(seconds);
+        if (safe->onTakeNote) safe->onTakeNote("start timecode " + typed);
+    }), false);
+}
+
 // ---- picture on the timeline (MIRA-VIDEO.md Phase 1) --------------------------------
 
 // (kPictureColour is defined near the top of this file -- paint() needs it.)
@@ -4562,7 +4736,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         // one. The count is already read here every tick; comparing it is free.
         if (view.getBlockCount() != lastBlockCount) { applyTab(); resized(); }
 
-        clock.setText(formatTime(view.getPositionSeconds()) + " / " + formatTime(view.getLengthSeconds())
+        // 3.5 -- the transport clock reads what the RULER reads. The number you say out
+        // loud and the number on the screen have to be the same number.
+        clock.setText(view.formatPosition(view.getPositionSeconds()) + " / "
+                       + view.formatPosition(view.getLengthSeconds())
                        + "   " + juce::String(view.getBlockCount()) + " blocks   " + rates,
                       juce::dontSendNotification);
         meter.setText(held > 1.0f ? "CLIP +" + juce::String(dB, 1) + " dB"

@@ -369,15 +369,37 @@ the right moment. It is how both bugs above were found.
 
 ### Phase 3 — timecode
 
-- [ ] **3.1** `hh:mm:ss:ff` ruler mode, radio-paired with seconds and bars.
-- [ ] **3.2** fps read from the asset; a menu to override it.
-- [ ] **3.3** Drop-frame for 29.97 and 59.94, off elsewhere and not offered there.
-- [ ] **3.4** Start-offset field, defaulting to `00:00:00:00`, stored per clip.
-- [ ] **3.5** The transport clock reads timecode when the ruler does, so the number you say
-  out loud and the number on the ruler are the same number.
-- [ ] **3.6** A block's header shows its **in** timecode.
+**Built 2026-09-19.** The arithmetic is in [Timecode.h](src/mira_ui/Source/Timecode.h),
+header-only and free of any UI, because it is the one number in this feature someone else
+will read back to you down a phone line.
 
-**Done when** a hit called at `10:04:12:08` can be found without arithmetic.
+- [x] **3.1** `hh:mm:ss:ff` ruler, paired with seconds. Right-click the ruler to switch, or
+  `Canvas ▸ Ruler`. Timecode labels are eleven characters against five, so the tick ladder
+  gates on 108 px instead of 64 before labels would collide.
+- [x] **3.2** fps read from the asset (Phase 1.4b already gets 23.995 and 25.0), with an
+  override in the ruler menu — the eight rates that exist in delivery and no free-text
+  field, which is only somewhere to make a typing mistake that silently renumbers every cue.
+- [x] **3.3** Drop-frame offered **only** at 29.97 and 59.94, and cleared when the rate
+  changes away from them: a drop-frame tick at 25 fps is a setting that can only be wrong.
+- [x] **3.4** Start timecode per clip, typed as `01:00:00:00`, defaulting to zero. A
+  timecode that will not parse **says so** rather than leaving every cue numbered from a
+  start nobody chose. Colons, semicolons and full stops all parse — an editor's paperwork
+  uses all three — and fields are read from the right, so `12:18` is twelve seconds and
+  eighteen frames.
+- [x] **3.5** The transport clock reads whatever the ruler reads.
+- [x] **3.6** A block's header shows its **in** timecode when the ruler is in timecode.
+
+**The two rates are separate on purpose.** A 23.976 file is numbered in 24 fps timecode:
+the frame COUNT comes from the real rate, the display divides by the NOMINAL one. Collapsing
+them would drift 3.6 seconds an hour against the editor's clock.
+
+**The drop-frame renumbering was checked against facts, not against itself** — frame 1799 is
+`00:00:59;29`, 1800 is `00:01:00;02`, 17982 is `00:10:00;00`, and one hour is 107892 frames:
+9 of 9. It tracks wall time exactly at 10, 30 and 60 minutes where non-drop has drifted to
+`00:59:56:12`, which is the entire reason drop-frame exists. Two of the first "failures"
+turned out to be wrong expectations of mine rather than wrong code — worth saying, because
+a test you trust more than the thing it tests is how a correct implementation gets
+"fixed" into a broken one.
 
 ### Phase 4 — several clips on the one video track
 

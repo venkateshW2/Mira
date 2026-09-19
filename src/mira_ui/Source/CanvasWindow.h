@@ -5,6 +5,7 @@
 #include "MiraLookAndFeel.h"
 #include "CanvasEngine.h"
 #include "GenerateWindow.h"
+#include "Timecode.h"
 
 #include <array>
 
@@ -238,6 +239,25 @@ public:
     // ONE video track, with clips on it -- Phase 1 loads one, Phase 4 makes it several.
     // One track keeps the picture unambiguous: there is only ever one thing to look at.
     void setVideoClip(const juce::File& file, double lengthSeconds, double framesPerSecond);
+    // ---- timecode (MIRA-VIDEO.md Phase 3) ---------------------------------------------
+    //
+    // SECONDS or TIMECODE, everywhere at once: the ruler, the transport clock and the
+    // block headers all read the same way, because the number you say out loud and the
+    // number on the screen have to be the same number.
+    enum class Ruler { Seconds, Timecode };
+    void setRulerMode(Ruler r);
+    Ruler getRulerMode() const { return rulerMode; }
+    // The format the picture is in. With no clip loaded it is 25 fps at 00:00:00:00 --
+    // said out loud in the ruler menu rather than silently assumed.
+    tc::Format timecodeFormat() const;
+    void setTimecodeFps(double fps);
+    void setTimecodeDropFrame(bool drop);
+    void setTimecodeStart(double timecodeSeconds);
+    // Timeline seconds as the ruler currently reads them.
+    juce::String formatPosition(double seconds) const;
+    // Right-click the ruler: seconds or timecode, the frame rate, drop-frame, the start.
+    void showRulerMenu(juce::Point<int> at);
+    void promptStartTimecode();
     void clearVideo();
     bool hasVideo() const { return !videoClips.empty(); }
     const std::vector<VideoClip>& getVideoClips() const { return videoClips; }
@@ -449,6 +469,11 @@ private:
     // 100+i shows take i, 200+i moves it to the Trash.
     void chooseTake(juce::int64 blockId, int menuId);
     std::vector<VideoClip> videoClips;
+    Ruler rulerMode = Ruler::Seconds;
+    // Used only when there is no clip to take them from. A canvas with no picture can
+    // still be laid out against a timecode an editor gave you over the phone.
+    double fallbackFps = 25.0, fallbackStart = 0.0;
+    bool fallbackDrop = false;
     // Which lane is the film's audio, or -1. One lane, because there is one video track.
     int referenceLane = -1;
     void paintVideoStrip(juce::Graphics&);
