@@ -57,6 +57,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — **phases 1–5 built**, 6–7 open (2026-09-17) |
 | [MIRA-VIDEO.md](MIRA-VIDEO.md) | **scoring to picture** — a video window slaved to the transport, a locked reference track, timecode, markers, a cue sheet | live — **Phases 0–5 built and verified on screen** (2026-09-19) |
 | [CANVAS.md](CANVAS.md) | **the block canvas** — the Blockhead-shaped experiment: blocks that own their generator, tracks that sum, and the `.mira` document | live — experimental, 2026-09-19 |
+| [MIRA-BLOCKS.md](MIRA-BLOCKS.md) | **the block as a musical object** — tempo and key on the BLOCK not the track, blocks that follow other blocks, stretch as a take, and the block-as-sampler. Its own 5-step task list | **plan only, nothing built** (2026-09-20) |
 
 ### Captioning and training
 
@@ -654,6 +655,26 @@ separate faults, each fixed and each re-measured against the same six.
 ---
 
 ## ⛔ Start here next session
+
+### 2026-09-20 — start with [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 1
+
+**The plan is written and the first task is small.** `Block` gains a musical half — tempo,
+meter, bar-1 position, key, where the tempo came from, and an empty slice list — and the
+prompt's `Keyscale` and `BPM` land in it when a take arrives. Then the footer that draws the
+grid, which is the first thing you can look at.
+
+The idea in one line: **musical time belongs to the BLOCK, not the track** — because a block
+moves between tracks, so anything musical on a track is positional. Blocks can then *follow*
+other blocks, which makes the grid a property of a relationship between two pieces of audio
+rather than of the session. Read MIRA-BLOCKS.md §2 and §3 before touching anything; the
+decisions are made and several of them are load-bearing (stretch is a FILE not an effect;
+bar 1 is stored in SOURCE time; a block has ONE tempo).
+
+**Nothing needs new analysis code.** `enqueueAnalyze` already shells to the `mira` CLI, and
+every number needed is already written into `files.machine` — the exact JSON keys are
+tabulated in MIRA-BLOCKS.md §5.
+
+---
 
 **Verify the canvas on screen.** Roughly a dozen commits on 2026-09-19 have not been seen
 running -- the tabs, the master strip, the file list, `[`/`]`, track select/delete, the
