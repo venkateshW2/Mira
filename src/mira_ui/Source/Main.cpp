@@ -1231,6 +1231,7 @@ public:
         folderTree->onFolderAdded = [this](const juce::File& f) { enqueueScan(f.getFullPathName()); };
         // MIRA-GENERATE.md Phase 1: a project is just a folder root, so the tree already
         // knows how to make and file one -- all that is "current" about it lives here.
+        pointChoosersAtRecent();   // before the first chooser can be opened
         folderTree->onProjectOpened = [this](const juce::File& f, const juce::File& document) {
             setCurrentProject(f);
             rememberRecentProject(f);
@@ -1660,6 +1661,16 @@ public:
         return out;
     }
 
+    // The folder the most recent project lives IN, so the next New/Open chooser opens
+    // there. A project on an external drive meant navigating out of ~/Music every time.
+    void pointChoosersAtRecent()
+    {
+        if (folderTree == nullptr) return;
+        const auto recent = getRecentProjects();
+        if (recent.isEmpty()) return;
+        folderTree->setProjectHome(juce::File(recent[0]).getParentDirectory());
+    }
+
     void rememberRecentProject(const juce::File& project)
     {
         if (!project.isDirectory()) return;
@@ -1668,6 +1679,7 @@ public:
         list.insert(0, project.getFullPathName());
         while (list.size() > kMaxRecentProjects) list.remove(list.size() - 1);
         database->setSetting(kRecentProjectsKey, list.joinIntoString("\n").toStdString());
+        pointChoosersAtRecent();
     }
 
     juce::File getCurrentProject() const

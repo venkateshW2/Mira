@@ -347,6 +347,12 @@ private:
     // them has ever had a button.
     juce::Rectangle<int> blockMuteBox(const Visual& v) const;
     juce::Rectangle<int> blockGainBox(const Visual& v) const;
+    void paintGenerationStrip(juce::Graphics&, const Visual&, juce::Rectangle<int>) const;
+    // Every wav in a block's folder, newest first -- the folder IS the take list, so
+    // there is no index to keep in step with it.
+    juce::Array<juce::File> takesOf(const Visual& v) const;
+    // 100+i shows take i, 200+i moves it to the Trash.
+    void chooseTake(juce::int64 blockId, int menuId);
     double genFraction = -1.0;   // <0 = nothing generating
     std::unique_ptr<juce::TextEditor> blockRenameEditor;
     juce::int64 renamingBlock = 0;

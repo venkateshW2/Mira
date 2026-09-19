@@ -616,8 +616,7 @@ void FolderTreeView::promptNewProject()
         name = name.trim();
         if (name.isEmpty()) return; // cancelled, or nothing typed -- no silent "Untitled"
         folderChooser = std::make_unique<juce::FileChooser>(
-            "Where should \"" + name + "\" live?",
-            juce::File::getSpecialLocation(juce::File::userMusicDirectory));
+            "Where should \"" + name + "\" live?", projectStartFolder());
         auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
         folderChooser->launchAsync(flags, [this, name](const juce::FileChooser& chooser) {
             auto parent = chooser.getResult();
@@ -648,8 +647,7 @@ void FolderTreeView::promptOpenProject()
     // ".mira" spelled out rather than reached for from CanvasView::kExtension: the folder
     // tree has no business including the canvas, and this is the one string they share.
     folderChooser = std::make_unique<juce::FileChooser>(
-        "Open a mira project", juce::File::getSpecialLocation(juce::File::userMusicDirectory),
-        "*.mira");
+        "Open a mira project", projectStartFolder(), "*.mira");
     auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
     folderChooser->launchAsync(flags, [this](const juce::FileChooser& chooser) {
         auto document = chooser.getResult();

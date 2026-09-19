@@ -156,6 +156,10 @@ public:
     // flows end in the same registerProject() below; New also creates the directory.
     void promptNewProject();
     void promptOpenProject();
+    // Where the New/Open choosers should START. The macOS file dialog has no recent-items
+    // list mira can fill in, so the only thing that helps is opening it where the work
+    // already is -- set by MainComponent from the most recent project.
+    void setProjectHome(const juce::File& folder) { projectHome = folder; }
 
     // Fires once a project has been created or opened, with its folder. MainComponent
     // stores it as the current project (window title, and the generate window's output
@@ -228,6 +232,12 @@ private:
     // addFolderRoot is idempotent, so opening a project already in the library is a
     // no-op plus a regrouping, never a duplicate row.
     void registerProject(const juce::File& folder, const juce::File& document = {});
+    juce::File projectHome;
+    juce::File projectStartFolder() const
+    {
+        return projectHome.isDirectory() ? projectHome
+                                         : juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+    }
     void newGroupClicked();
     void promptRenameRoot(const juce::File& folder);
     void promptMoveToGroup(const juce::File& folder);

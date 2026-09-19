@@ -370,6 +370,94 @@ void CanvasView::promptExport(int what, juce::int64 id)
     });
 }
 
+// Every wav in the block's own folder, newest first. The folder IS the take list -- there
+// is no index to keep in step with it, so a take dropped in or removed from outside mira
+// is simply seen next time.
+juce::Array<juce::File> CanvasView::takesOf(const Visual& v) const
+{
+    juce::Array<juce::File> out;
+    const auto folder = blockFolderFor(v);
+    if (!folder.isDirectory()) return out;
+    out = folder.findChildFiles(juce::File::findFiles, false, "*.wav");
+    std::sort(out.begin(), out.end(), [](const juce::File& a, const juce::File& b) {
+        return a.getLastModificationTime() > b.getLastModificationTime();
+    });
+    return out;
+}
+
+// 100+i shows take i; 200+i trashes it. One menu, two verbs.
+void CanvasView::chooseTake(juce::int64 blockId, int menuId)
+{
+    Visual* v = nullptr;
+    for (auto& i : items) if (i->block.id == blockId) { v = i.get(); break; }
+    if (v == nullptr) return;
+
+    const auto takes = takesOf(*v);
+    const bool trash = menuId >= 200;
+    const int index = menuId - (trash ? 200 : 100);
+    if (!juce::isPositiveAndBelow(index, takes.size())) return;
+    const auto file = takes[index];
+
+    if (!trash)
+    {
+        // Switching take is an EDIT, so it undoes. setFileOn clears contentSeconds -- a
+        // cut made against the old take described where a DIFFERENT file went quiet.
+        pushUndo();
+        setFileOn(*v, file);
+        rebuildAudio();
+        markDirty();
+        if (panelBlockId == blockId) pointPanelAt(v);
+        announceSelection();
+        repaint();
+        return;
+    }
+
+    // Trashing the take a block is SHOWING would leave it pointing at nothing. Move to the
+    // next one down the list first, so the block always holds something real.
+    const bool isCurrent = v->block.hasAudio()
+        && mira::pathsEquivalent(file.getFullPathName().toStdString(),
+                                  v->block.file.getFullPathName().toStdString());
+
+    juce::Component::SafePointer<CanvasView> safe (this);
+    juce::AlertWindow::showOkCancelBox(
+        juce::AlertWindow::QuestionIcon, "Move take to Trash",
+        file.getFileName() + (isCurrent ? "\n\nThis is the take the block is showing."
+                                        : juce::String())
+            + "\n\nIt goes to the Trash, not away for good.",
+        "Move to Trash", "Cancel", nullptr,
+        juce::ModalCallbackFunction::create([safe, blockId, file, isCurrent](int result) {
+            if (safe == nullptr || result == 0) return;
+            auto& self = *safe;
+            Visual* target = nullptr;
+            for (auto& i : self.items) if (i->block.id == blockId) { target = i.get(); break; }
+            if (target == nullptr) return;
+
+            self.pushUndo();
+            if (isCurrent)
+            {
+                juce::File next;
+                for (const auto& t : self.takesOf(*target))
+                    if (!mira::pathsEquivalent(t.getFullPathName().toStdString(),
+                                               file.getFullPathName().toStdString()))
+                        { next = t; break; }
+                // No other take means the block goes back to being an empty frame, which
+                // is a real state it already knows how to be -- not an error.
+                if (next != juce::File()) self.setFileOn(*target, next);
+                else { target->block.file = juce::File(); target->thumb.reset(); target->audioSeconds = 0.0; }
+            }
+            file.withFileExtension("json").moveToTrash();   // the recipe goes with its audio
+            const bool gone = file.moveToTrash();
+            self.rebuildAudio();
+            self.markDirty();
+            if (self.panelBlockId == blockId) self.pointPanelAt(target);
+            self.announceSelection();
+            self.repaint();
+            if (self.onTakeNote)
+                self.onTakeNote(gone ? "moved " + file.getFileName() + " to the Trash"
+                                     : "could not move " + file.getFileName() + " to the Trash");
+        }));
+}
+
 // ---- cleanup --------------------------------------------------------------------------
 //
 // A block keeps every take it ever generated -- that is deliberate, it is what makes
@@ -523,6 +611,24 @@ void CanvasView::commitBlockRename()
     rebuildAudio();
     markDirty();
     repaint();
+}
+
+// THE GENERATION HAPPENS ON THIS BLOCK, so the progress belongs on it -- not in the side
+// panel's status line, which is the far side of the window from the thing being filled in
+// and invisible entirely when the panel is folded away.
+//
+// Taller and inset rather than a hairline at the very bottom edge: at three pixels under
+// the block's own border it was easy to miss even when it did draw.
+void CanvasView::paintGenerationStrip(juce::Graphics& g, const Visual& v,
+                                      juce::Rectangle<int> r) const
+{
+    if (genFraction < 0.0 || v.block.id != panelBlockId || r.getWidth() < 24) return;
+    auto strip = r.reduced(6, 0).removeFromBottom(10).withTrimmedBottom(4);
+    g.setColour(MiraLookAndFeel::surface.withAlpha(0.8f));
+    g.fillRoundedRectangle(strip.toFloat(), 3.0f);
+    g.setColour(MiraLookAndFeel::accent);
+    g.fillRoundedRectangle(strip.toFloat().withWidth(
+        juce::jmax(6.0f, (float) strip.getWidth() * (float) genFraction)), 3.0f);
 }
 
 void CanvasView::setGenerationProgress(double fraction)
@@ -978,6 +1084,33 @@ void CanvasView::showBlockMenu(Visual& v)
     m.addItem(7, "Cut at playhead");
     m.addItem(4, "Split into two at playhead");
     m.addItem(5, "Remove");
+    // EVERY TAKE THIS BLOCK EVER MADE. The block keeps them all -- that is what makes
+    // "go back to the one before" possible -- and until now there was no way to see them,
+    // switch between them, or bin a bad one. The canvas showed you one file and silently
+    // held the rest.
+    //
+    // Newest first, the current one ticked. Alt held turns the list into a trash list:
+    // one menu, two verbs, rather than a submenu per take.
+    auto takes = takesOf(v);
+    if (!takes.isEmpty())
+    {
+        juce::PopupMenu takeMenu;
+        for (int i = 0; i < takes.size() && i < 40; ++i)
+        {
+            const bool current = v.block.hasAudio()
+                && mira::pathsEquivalent(takes[i].getFullPathName().toStdString(),
+                                          v.block.file.getFullPathName().toStdString());
+            takeMenu.addItem(100 + i, takes[i].getFileNameWithoutExtension(), true, current);
+        }
+        takeMenu.addSeparator();
+        juce::PopupMenu trashMenu;
+        for (int i = 0; i < takes.size() && i < 40; ++i)
+            trashMenu.addItem(200 + i, takes[i].getFileNameWithoutExtension());
+        takeMenu.addSubMenu("Move a take to the Trash", trashMenu);
+        m.addSeparator();
+        m.addSubMenu("Takes (" + juce::String(takes.size()) + ")", takeMenu);
+    }
+
     m.addSeparator();
     m.addItem(8, "Rename block...");
     // EXPORT WHAT YOU HEAR. The take on disk is the raw generation -- it knows nothing
@@ -1022,6 +1155,7 @@ void CanvasView::showBlockMenu(Visual& v)
                              self.announceSelection(); self.repaint();
                              return;
                          }
+                         if (result >= 100 && result < 300) { self.chooseTake(id, result); return; }
                          if (result == 8) { self.beginRenameBlock(id); return; }
                          if (result >= 20 && result <= 22) { self.promptExport(result - 20, id); return; }
                          if (result == 3) { self.duplicateSelection(); return; }
@@ -1611,6 +1745,12 @@ void CanvasView::paint(juce::Graphics& g)
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
             g.drawText(item->block.name + "  -  empty, generate into it",
                         r.reduced(8, 2), juce::Justification::centredLeft, true);
+            // THE BAR HAS TO BE DRAWN HERE TOO, and this is the case that matters. An
+            // empty block returns early -- it is a frame, not a slab -- so the strip at
+            // the end of this loop was unreachable for the whole time a block was being
+            // generated into, which is the only time anyone wants to see it. It appeared
+            // only on a block that ALREADY had audio, i.e. an extend or a re-generate.
+            paintGenerationStrip(g, *item, r);
             continue;
         }
 
@@ -1787,18 +1927,7 @@ void CanvasView::paint(juce::Graphics& g)
             g.drawText(label, headerRow, juce::Justification::centredLeft, true);
         }
 
-        // THE GENERATION HAPPENS ON THIS BLOCK, so the progress belongs on it. It used to
-        // live only in the side panel's status line -- the far side of the window from the
-        // thing being filled in, and invisible entirely when the panel was folded away.
-        if (genFraction >= 0.0 && item->block.id == panelBlockId)
-        {
-            auto strip = r.reduced(4, 0).removeFromBottom(5).withTrimmedBottom(2);
-            g.setColour(MiraLookAndFeel::surface.withAlpha(0.65f));
-            g.fillRoundedRectangle(strip.toFloat(), 2.0f);
-            g.setColour(MiraLookAndFeel::accent.withAlpha(0.9f));
-            g.fillRoundedRectangle(strip.toFloat().withWidth(
-                juce::jmax(4.0f, (float) strip.getWidth() * (float) genFraction)), 2.0f);
-        }
+        paintGenerationStrip(g, *item, r);
     }
 
     if (!marquee.isEmpty())
