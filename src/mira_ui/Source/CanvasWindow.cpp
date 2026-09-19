@@ -2464,6 +2464,8 @@ void CanvasView::paint(juce::Graphics& g)
         g.fillRect(0, edge, getWidth(), 2);
     }
 
+    paintMarkers(g);
+
     // --- playhead, over everything
     {
         const int x = secondsToX(player.getPositionSeconds());
@@ -3065,15 +3067,6 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
             else                                  cutAtPlayhead();
             return true;
         }
-        // Cmd-M drops a marker, Cmd-shift-M makes the block that runs to the next one.
-        // Not plain M, which is mute -- a documented key that quietly starts doing
-        // something else is worse than a slightly longer one.
-        if (key.getKeyCode() == 'M')
-        {
-            if (key.getModifiers().isShiftDown()) addBlockToNextMarker();
-            else                                  addMarkerAtPlayhead();
-            return true;
-        }
         // Cmd-up / Cmd-down move the SELECTED TRACK, which is what those keys move in
         // every arrangement window there has ever been. Plain up/down are left alone:
         // they are the obvious home for moving a BLOCK between tracks, later.
@@ -3118,6 +3111,11 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
         repaint();
         return true;
     }
+    // K for a marK. NOT cmd-M, which is what this was first written as and which macOS
+    // takes for Minimise before the app ever sees it -- the window shrank to the dock and
+    // no marker appeared. And not plain M or S, which are mute and solo.
+    if (key.getTextCharacter() == 'k')         { addMarkerAtPlayhead(); return true; }
+    if (key.getTextCharacter() == 'K')         { addBlockToNextMarker(); return true; }
     if (key.getTextCharacter() == 'l')         { setLoopFromSelection(); return true; }
     if (key.getModifiers().isCommandDown() && key.getKeyCode() == 'D')
         { duplicateSelection(); return true; }
@@ -4096,17 +4094,24 @@ void CanvasView::paintMarkers(juce::Graphics& g)
     {
         const int x = secondsToX(m.seconds);
         if (x < kHeaderWidth || x > getWidth()) continue;
-        // The line runs the whole height, faint: a marker is a place on the TIMELINE, not
-        // a mark on the ruler, and you need to see what it cuts through.
-        g.setColour(MiraLookAndFeel::active.withAlpha(0.22f));
+
+        // The line runs the full height, faint: a marker is a place on the TIMELINE, not a
+        // tick on the ruler, and you need to see what it cuts through.
+        g.setColour(MiraLookAndFeel::active.withAlpha(0.25f));
         g.drawVerticalLine(x, (float) topRuler, (float) getHeight());
+
+        // The label sits ON the ruler with a plate behind it. Without the plate it lands
+        // among the time ticks and neither can be read -- and the ruler is the one strip
+        // where every feature so far has wanted to put something.
+        const auto text = m.name;
+        const int width = juce::jmin(180, 12 + juce::roundToInt(
+                              juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), text)));
+        auto plate = juce::Rectangle<int>(x + 1, 2, width, topRuler - 5);
+        g.setColour(MiraLookAndFeel::active.withAlpha(0.22f));
+        g.fillRoundedRectangle(plate.toFloat(), 2.5f);
         g.setColour(MiraLookAndFeel::active);
-        juce::Path flag;
-        flag.addTriangle((float) x, (float) topRuler - 9.0f,
-                          (float) x + 8.0f, (float) topRuler - 5.0f,
-                          (float) x, (float) topRuler - 1.0f);
-        g.fillPath(flag);
-        g.drawText(m.name, x + 10, topRuler - 12, 160, 12, juce::Justification::centredLeft, false);
+        g.fillRect(x - 1, 2, 2, topRuler - 4);
+        g.drawText(text, plate.reduced(6, 0), juce::Justification::centredLeft, true);
     }
 }
 

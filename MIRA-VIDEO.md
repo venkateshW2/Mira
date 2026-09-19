@@ -436,11 +436,11 @@ lane starting where the clip does.
 
 **Built 2026-09-19.**
 
-- [x] **5.1** **Markers** with names — the spotting notes. `Cmd-M` at the playhead, or the
+- [x] **5.1** **Markers** with names — the spotting notes. `K` at the playhead, or the
   ruler's right-click menu, which shows the marker you clicked ON when there is one. A
   faint line runs the full height, because a marker is a place on the TIMELINE and you need
   to see what it cuts through, not a tick on the ruler.
-- [x] **5.2** **`Cmd-shift-M`: a block from the playhead to the next marker.** This is the
+- [x] **5.2** **`shift-K`: a block from the playhead to the next marker.** This is the
   whole gesture of scoring to picture — you know where the cue starts and where it has to
   be out by, and the length follows from those two. No marker after the playhead says so
   rather than doing nothing.
@@ -455,6 +455,17 @@ lane starting where the clip does.
   else and the someone else counts in timecode. Sorted by start, which the canvas's own
   list is not. The reference track is excluded; the markers are appended as their own rows,
   because a spotting note with no cue against it yet is exactly the row you want to see.
+
+**Two faults on the first pass, both found in seconds of use:**
+
+- **The markers were never drawn.** `paintMarkers` was written, compiled and never called —
+  the edit meant to add the call was made conditional on the call already being there, so
+  it silently did nothing. Same failure as the 2026-09-19 canvas entry in
+  [CLAUDE.md](CLAUDE.md): *assert that an edit applied*, and this is the second time it has
+  cost a whole feature.
+- **`Cmd-M` is Minimise on macOS.** The key never reaches the app; the window shrinks to the
+  dock. It is `K` for a marK now, and `shift-K` for the block to the next one — plain keys,
+  because the modified ones belong to the system.
 
 ---
 
