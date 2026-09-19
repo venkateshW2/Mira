@@ -436,10 +436,18 @@ lane starting where the clip does.
 
 **Built 2026-09-19.**
 
-- [x] **5.1** **Markers** with names — the spotting notes. `K` at the playhead, or the
-  ruler's right-click menu, which shows the marker you clicked ON when there is one. A
-  faint line runs the full height, because a marker is a place on the TIMELINE and you need
-  to see what it cuts through, not a tick on the ruler.
+- [x] **5.1** **Markers** with names, in their OWN row between the ruler and the tracks.
+  `K` at the playhead, the ruler's menu, or the marker window. A faint line runs the full
+  height, because a marker is a place on the TIMELINE and you need to see what it cuts
+  through. **Drag a marker to move it** — a marker you cannot move is a spotting note you
+  have to delete and re-make every time the cut changes by a frame — and double-click it to
+  rename it. The whole label is the grab handle: an eight-pixel line is not something to
+  ask anyone to hit.
+- [x] **5.1b** **A marker window** (`Canvas ▸ Markers...`), the same shape as the LoRA
+  library: the list with its timecodes, add / rename / remove, and **double-click to put
+  the playhead on it** — bringing it on screen if it is not, because a "go to" you have to
+  follow with a scroll has not gone anywhere. A spotting session makes twenty or thirty
+  notes, and a list is not something you read off a timeline one screen at a time.
 - [x] **5.2** **`shift-K`: a block from the playhead to the next marker.** This is the
   whole gesture of scoring to picture — you know where the cue starts and where it has to
   be out by, and the length follows from those two. No marker after the playhead says so
@@ -466,6 +474,9 @@ lane starting where the clip does.
 - **`Cmd-M` is Minimise on macOS.** The key never reaches the app; the window shrinks to the
   dock. It is `K` for a marK now, and `shift-K` for the block to the next one — plain keys,
   because the modified ones belong to the system.
+- **And then the labels collided with the ruler's time ticks**, which is what putting them
+  on the ruler was always going to do. They have their own row now — the third thing this
+  canvas has had to give a row of its own, after the picture and the reference.
 
 ---
 

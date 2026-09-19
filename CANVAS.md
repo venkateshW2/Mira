@@ -372,6 +372,17 @@ mira is simply seen next time.
 Editing marks the document **dirty** (a `*` in the title) rather than writing to disk behind
 your back.
 
+### Markers
+
+`K` drops one at the playhead. They live in **their own row** between the ruler and the
+tracks — drawn on the ruler first, where they collided with its time labels and neither
+could be read. Drag one to move it, double-click to rename it, right-click for the list.
+
+`Canvas ▸ Markers...` opens the list beside the work, the same shape as the LoRA library:
+timecodes, add, rename, remove, and double-click to put the playhead on one. `shift-K`
+makes a block from the playhead to the next marker, which is the whole gesture of scoring
+to picture — you know where the cue starts and where it has to be out by.
+
 ### The height of a track
 
 `shift-G` / `shift-H` change the **default** height, which every track follows until you

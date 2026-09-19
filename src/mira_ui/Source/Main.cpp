@@ -1201,8 +1201,8 @@ namespace CanvasMenu {
         kOpenVideo, kShowPicture,
         kRulerSeconds, kRulerTimecode,
         // MIRA-VIDEO.md Phase 5
-        kAddMarker, kBlockToMarker, kExportCues,
-        kFirst = kPlay, kLast = kExportCues
+        kAddMarker, kBlockToMarker, kExportCues, kMarkerList,
+        kFirst = kPlay, kLast = kMarkerList
     };
 }
 
@@ -3284,6 +3284,7 @@ public:
                 v.setRulerMode(mira::canvas::CanvasView::Ruler::Seconds); break;
             case CanvasMenu::kRulerTimecode:
                 v.setRulerMode(mira::canvas::CanvasView::Ruler::Timecode); break;
+            case CanvasMenu::kMarkerList:    canvasWindow->showMarkers(); return;
             case CanvasMenu::kAddMarker:     v.addMarkerAtPlayhead(); break;
             case CanvasMenu::kBlockToMarker: v.addBlockToNextMarker(); break;
             case CanvasMenu::kExportCues:    v.promptExportCueSheet(); break;
@@ -4992,6 +4993,7 @@ public:
             menu.addItem(CanvasMenu::kRulerSeconds, "Ruler: Seconds", live, live && !onTimecode);
             menu.addItem(CanvasMenu::kRulerTimecode, "Ruler: Timecode", live, onTimecode);
             menu.addSeparator();
+            menu.addItem(CanvasMenu::kMarkerList, "Markers...", live, false);
             menu.addItem(CanvasMenu::kAddMarker, "Add Marker at Playhead", live, false);
             menu.addItem(CanvasMenu::kBlockToMarker, "Block to Next Marker", live, false);
             menu.addItem(CanvasMenu::kExportCues, "Export Cue Sheet...", live, false);

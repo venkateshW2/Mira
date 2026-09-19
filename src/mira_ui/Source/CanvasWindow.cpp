@@ -714,6 +714,11 @@ void CanvasView::commitRename()
 
 void CanvasView::mouseDoubleClick(const juce::MouseEvent& e)
 {
+    if (e.y >= topRuler && e.y < videoStripTop())
+    {
+        if (const int hit = markerAtStripX(e.x); hit >= 0) renameMarker(hit);
+        return;
+    }
     // Double-click a lane's NAME to rename it. "takes / 3" says what the file was called,
     // not what the lane is for, and a lane you cannot name is one you have to identify by
     // its waveform every time.
@@ -2636,6 +2641,29 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
         repaint();
         return;
     }
+    // The MARKERS row. Grab one to move it; double-click to rename; right-click for the
+    // list. A marker you cannot drag is a spotting note you have to delete and re-make
+    // every time the cut changes by a frame.
+    if (e.y < videoStripTop())
+    {
+        const int hit = markerAtStripX(e.x);
+        if (e.mods.isPopupMenu()) { showRulerMenu(e.getPosition()); return; }
+        if (hit >= 0)
+        {
+            drag = Drag::MarkerMove;
+            dragTargetMarker = hit;
+            dragGrabSeconds = markers[(size_t) hit].seconds - xToSeconds(e.x);
+            pushUndo();
+            repaint();
+            return;
+        }
+        // Empty space in the row scrubs, like the ruler above it.
+        drag = Drag::Playhead;
+        player.setPositionSeconds(juce::jmax(0.0, xToSeconds(e.x)));
+        repaint();
+        return;
+    }
+
     // The video track. Scrubs the playhead like the ruler does -- which is the gesture
     // you actually want over picture -- and is not a lane, so yToLane never sees it.
     if (e.y < lanesTop())
@@ -2731,6 +2759,13 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
 
 void CanvasView::mouseDrag(const juce::MouseEvent& e)
 {
+    if (drag == Drag::MarkerMove)
+    {
+        // No snapping to anything: a marker IS the thing other things snap to.
+        setMarkerTime(dragTargetMarker, juce::jmax(0.0, xToSeconds(e.x) + dragGrabSeconds));
+        return;
+    }
+
     if (drag == Drag::LaneResize)
     {
         setLaneHeight(resizingLane, resizeOriginH + (e.y - dragStart.y));
@@ -2850,6 +2885,21 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
 void CanvasView::mouseUp(const juce::MouseEvent&)
 {
     faderLane = -1;
+    if (drag == Drag::MarkerMove)
+    {
+        drag = Drag::None;
+        dragTargetMarker = -1;
+        // markerAfter, the cue sheet and the label truncation all read this list in time
+        // order. Sorting on mouse-up rather than on every drag event keeps the marker you
+        // are holding from changing index under your own hand.
+        std::sort(markers.begin(), markers.end(),
+                   [](const Marker& a, const Marker& b) { return a.seconds < b.seconds; });
+        markDirty();
+        if (onMarkersChanged) onMarkersChanged();
+        repaint();
+        return;
+    }
+
     if (drag == Drag::LaneResize)
     {
         drag = Drag::None;
@@ -3992,7 +4042,9 @@ void CanvasView::addMarkerAtPlayhead()
     std::sort(markers.begin(), markers.end(),
                [](const Marker& a, const Marker& b) { return a.seconds < b.seconds; });
     markDirty();
+    if (onMarkersChanged) onMarkersChanged();
     if (onTakeNote) onTakeNote("marker at " + formatPosition(at));
+    resized();
     repaint();
 }
 
@@ -4003,6 +4055,8 @@ void CanvasView::removeMarker(int index)
     UndoGuard oneEdit (*this);
     markers.erase(markers.begin() + index);
     markDirty();
+    if (onMarkersChanged) onMarkersChanged();
+    resized();
     repaint();
 }
 
@@ -4022,10 +4076,7 @@ void CanvasView::renameMarker(int index)
         const auto name = window->getTextEditorContents("name").trim();
         if (name.isEmpty()) return;
         if (!juce::isPositiveAndBelow(index, (int) safe->markers.size())) return;
-        safe->pushUndo();
-        safe->markers[(size_t) index].name = name;
-        safe->markDirty();
-        safe->repaint();
+        safe->setMarkerName(index, name);
     }), false);
 }
 
@@ -4036,6 +4087,18 @@ int CanvasView::markerNear(int x) const
     {
         const int distance = std::abs(secondsToX(markers[(size_t) i].seconds) - x);
         if (distance <= bestDistance) { bestDistance = distance; best = i; }
+    }
+    return best;
+}
+
+int CanvasView::markerAtStripX(int x) const
+{
+    if (x < kHeaderWidth) return -1;
+    int best = -1;
+    for (int i = 0; i < (int) markers.size(); ++i)
+    {
+        const int mx = secondsToX(markers[(size_t) i].seconds);
+        if (mx <= x + 2 && (best < 0 || mx > secondsToX(markers[(size_t) best].seconds))) best = i;
     }
     return best;
 }
@@ -4089,30 +4152,88 @@ void CanvasView::addBlockToNextMarker()
 void CanvasView::paintMarkers(juce::Graphics& g)
 {
     if (markers.empty()) return;
+    const int top = topRuler, h = markerStripH();
+
+    // ITS OWN ROW. The first version drew the labels on the ruler, where they landed among
+    // the time ticks and neither could be read.
+    g.setColour(MiraLookAndFeel::surface);
+    g.fillRect(0, top, getWidth(), h);
+    g.setColour(MiraLookAndFeel::border);
+    g.drawHorizontalLine(top + h - 1, 0.0f, (float) getWidth());
+
     g.setFont(laf.sansMedium(MiraLookAndFeel::textSize(9.5f)));
-    for (const auto& m : markers)
+    for (int i = 0; i < (int) markers.size(); ++i)
     {
+        const auto& m = markers[(size_t) i];
         const int x = secondsToX(m.seconds);
-        if (x < kHeaderWidth || x > getWidth()) continue;
+        if (x > getWidth()) continue;
 
-        // The line runs the full height, faint: a marker is a place on the TIMELINE, not a
-        // tick on the ruler, and you need to see what it cuts through.
-        g.setColour(MiraLookAndFeel::active.withAlpha(0.25f));
-        g.drawVerticalLine(x, (float) topRuler, (float) getHeight());
+        // The line still runs the full height, faint: a marker is a place on the TIMELINE,
+        // and you need to see what it cuts through.
+        if (x >= kHeaderWidth)
+        {
+            g.setColour(MiraLookAndFeel::active.withAlpha(0.22f));
+            g.drawVerticalLine(x, (float) (top + h), (float) getHeight());
+        }
 
-        // The label sits ON the ruler with a plate behind it. Without the plate it lands
-        // among the time ticks and neither can be read -- and the ruler is the one strip
-        // where every feature so far has wanted to put something.
-        const auto text = m.name;
-        const int width = juce::jmin(180, 12 + juce::roundToInt(
-                              juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), text)));
-        auto plate = juce::Rectangle<int>(x + 1, 2, width, topRuler - 5);
-        g.setColour(MiraLookAndFeel::active.withAlpha(0.22f));
+        // The label runs to the NEXT marker and no further, so two close together truncate
+        // instead of printing over each other.
+        int until = getWidth();
+        for (int j = 0; j < (int) markers.size(); ++j)
+            if (markers[(size_t) j].seconds > m.seconds)
+                until = juce::jmin(until, secondsToX(markers[(size_t) j].seconds));
+        auto plate = juce::Rectangle<int>(x, top + 2, juce::jmax(14, until - x - 3), h - 5);
+
+        juce::Graphics::ScopedSaveState clipped(g);
+        g.reduceClipRegion(juce::Rectangle<int>(kHeaderWidth, top, getWidth() - kHeaderWidth, h));
+        const bool dragging = drag == Drag::MarkerMove && i == dragTargetMarker;
+        g.setColour(MiraLookAndFeel::active.withAlpha(dragging ? 0.42f : 0.22f));
         g.fillRoundedRectangle(plate.toFloat(), 2.5f);
         g.setColour(MiraLookAndFeel::active);
-        g.fillRect(x - 1, 2, 2, topRuler - 4);
-        g.drawText(text, plate.reduced(6, 0), juce::Justification::centredLeft, true);
+        g.fillRect(x - 1, top + 1, 2, h - 3);
+        g.drawText(m.name, plate.reduced(6, 0), juce::Justification::centredLeft, true);
     }
+
+    // The header says what the row is, like every other row on this canvas.
+    g.setColour(MiraLookAndFeel::surface2);
+    g.fillRect(0, top, kHeaderWidth, h);
+    g.setColour(MiraLookAndFeel::border);
+    g.drawVerticalLine(kHeaderWidth - 1, (float) top, (float) (top + h));
+    g.setColour(MiraLookAndFeel::textFaint);
+    g.setFont(laf.monoRegular(MiraLookAndFeel::textSize(9.0f)));
+    g.drawText("MARKERS", juce::Rectangle<int>(12, top, kHeaderWidth - 18, h),
+                juce::Justification::centredLeft, false);
+}
+
+void CanvasView::setMarkerName(int index, const juce::String& name)
+{
+    if (!juce::isPositiveAndBelow(index, (int) markers.size()) || name.trim().isEmpty()) return;
+    pushUndo();
+    markers[(size_t) index].name = name.trim();
+    markDirty();
+    if (onMarkersChanged) onMarkersChanged();
+    repaint();
+}
+
+void CanvasView::setMarkerTime(int index, double seconds)
+{
+    if (!juce::isPositiveAndBelow(index, (int) markers.size())) return;
+    markers[(size_t) index].seconds = juce::jmax(0.0, seconds);
+    markDirty();
+    repaint();
+}
+
+void CanvasView::gotoMarker(int index)
+{
+    if (!juce::isPositiveAndBelow(index, (int) markers.size())) return;
+    const double at = markers[(size_t) index].seconds;
+    player.setPositionSeconds(at);
+    // Bring it on screen if it is not. A "go to" that leaves you looking somewhere else is
+    // a go-to you have to follow up with a scroll.
+    const double visible = (getWidth() - kHeaderWidth) / pixelsPerSecond;
+    if (at < viewStart || at > viewStart + visible)
+        viewStart = juce::jmax(0.0, at - visible * 0.35);
+    repaint();
 }
 
 void CanvasView::promptExportCueSheet()
@@ -4208,7 +4329,7 @@ void CanvasView::paintVideoStrip(juce::Graphics& g)
 {
     if (videoClips.empty()) return;
 
-    const auto band = juce::Rectangle<int>(0, topRuler, getWidth(), videoStripH());
+    const auto band = juce::Rectangle<int>(0, videoStripTop(), getWidth(), videoStripH());
     g.setColour(MiraLookAndFeel::surface);
     g.fillRect(band);
 
@@ -4221,7 +4342,7 @@ void CanvasView::paintVideoStrip(juce::Graphics& g)
         {
             const int x0 = secondsToX(c.start);
             const int x1 = secondsToX(c.start + juce::jmax(0.5, c.length));
-            auto r = juce::Rectangle<int>(x0, topRuler + 3, juce::jmax(2, x1 - x0), videoStripH() - 6);
+            auto r = juce::Rectangle<int>(x0, videoStripTop() + 3, juce::jmax(2, x1 - x0), videoStripH() - 6);
             g.setColour(kPictureColour.withAlpha(0.18f));
             g.fillRoundedRectangle(r.toFloat(), 3.0f);
             g.setColour(kPictureColour.withAlpha(0.75f));
@@ -4242,18 +4363,18 @@ void CanvasView::paintVideoStrip(juce::Graphics& g)
     // header colour and take their identity from a stripe, so a tinted header is itself
     // the signal that this row is not one of them.
     g.setColour(MiraLookAndFeel::surface2);
-    g.fillRect(0, topRuler, kHeaderWidth, videoStripH());
+    g.fillRect(0, videoStripTop(), kHeaderWidth, videoStripH());
     g.setColour(kPictureColour.withAlpha(0.12f));
-    g.fillRect(0, topRuler, kHeaderWidth, videoStripH());
+    g.fillRect(0, videoStripTop(), kHeaderWidth, videoStripH());
     // A solid edge of the colour down the left, the way a track's colour stripe runs.
     g.setColour(kPictureColour);
-    g.fillRect(0, topRuler, 3, videoStripH());
+    g.fillRect(0, videoStripTop(), 3, videoStripH());
     g.setColour(MiraLookAndFeel::border);
-    g.drawVerticalLine(kHeaderWidth - 1, static_cast<float>(topRuler), static_cast<float>(lanesTop()));
+    g.drawVerticalLine(kHeaderWidth - 1, static_cast<float>(videoStripTop()), static_cast<float>(lanesTop()));
     g.drawHorizontalLine(lanesTop() - 1, 0.0f, static_cast<float>(getWidth()));
     g.setColour(kPictureColour);
     g.setFont(laf.monoMedium(MiraLookAndFeel::textSize(10.0f)));
-    g.drawText("PICTURE", juce::Rectangle<int>(12, topRuler, kHeaderWidth - 18, videoStripH()),
+    g.drawText("PICTURE", juce::Rectangle<int>(12, videoStripTop(), kHeaderWidth - 18, videoStripH()),
                juce::Justification::centredLeft, false);
 }
 
@@ -4452,11 +4573,120 @@ void CanvasView::clearVideo()
     repaint();
 }
 
+// ---- the marker list (MIRA-VIDEO.md Phase 5) ----------------------------------------
+//
+// A spotting session produces a LIST -- twenty or thirty notes with timecodes -- and a
+// list is not something you read off a timeline one screen at a time. This is the same
+// shape as the LoRA library window: a table you keep open beside the work, where a
+// double-click takes you to the thing.
+class MarkerListWindow : public juce::DocumentWindow
+{
+public:
+    MarkerListWindow(const MiraLookAndFeel& laf, CanvasView& viewIn)
+        : juce::DocumentWindow("Markers", MiraLookAndFeel::surface, juce::DocumentWindow::closeButton)
+    {
+        content = std::make_unique<Content>(laf, viewIn);
+        setUsingNativeTitleBar(true);
+        setContentNonOwned(content.get(), false);
+        setResizable(true, false);
+        centreWithSize(360, 420);
+        setVisible(true);
+        mira_ui::chrome::applyDarkTitleBar(*this, MiraLookAndFeel::surface2);
+    }
+    ~MarkerListWindow() override { setContentNonOwned(nullptr, false); }
+
+    void closeButtonPressed() override { if (onClosed) onClosed(); }
+    std::function<void()> onClosed;
+    void refresh() { content->refresh(); }
+    juce::String geometryString() { return getWindowStateAsString(); }
+    void restoreGeometry(const juce::String& s) { if (s.isNotEmpty()) restoreWindowStateFromString(s); }
+
+private:
+    struct Content : juce::Component, juce::ListBoxModel
+    {
+        Content(const MiraLookAndFeel& lafIn, CanvasView& viewIn) : laf(lafIn), view(viewIn)
+        {
+            // OWNER FIRST, THEN THE MODEL -- the launch window's recents list was empty for
+            // a day because setModel ran before the thing the model reads was set.
+            addAndMakeVisible(list);
+            list.setRowHeight(24);
+            list.setColour(juce::ListBox::backgroundColourId, MiraLookAndFeel::surface2);
+            list.setModel(this);
+
+            auto button = [this](juce::TextButton& b, const juce::String& text) {
+                b.setButtonText(text);
+                addAndMakeVisible(b);
+            };
+            button(addButton, "+ At Playhead");
+            button(renameButton, "Rename");
+            button(deleteButton, "Remove");
+            addButton.onClick    = [this] { view.addMarkerAtPlayhead(); refresh(); };
+            renameButton.onClick = [this] { if (selected() >= 0) view.renameMarker(selected()); };
+            deleteButton.onClick = [this] { if (selected() >= 0) { view.removeMarker(selected()); refresh(); } };
+
+            hint.setText("double-click a marker to put the playhead on it",
+                          juce::dontSendNotification);
+            hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
+            hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
+            addAndMakeVisible(hint);
+            refresh();
+        }
+
+        int selected() const { return list.getSelectedRow(); }
+        void refresh() { list.updateContent(); list.repaint(); }
+
+        void paint(juce::Graphics& g) override { g.fillAll(MiraLookAndFeel::surface); }
+        void resized() override
+        {
+            auto r = getLocalBounds().reduced(10);
+            auto bar = r.removeFromBottom(30);
+            addButton.setBounds(bar.removeFromLeft(110).reduced(2));
+            renameButton.setBounds(bar.removeFromLeft(90).reduced(2));
+            deleteButton.setBounds(bar.removeFromLeft(90).reduced(2));
+            hint.setBounds(r.removeFromBottom(20));
+            list.setBounds(r);
+        }
+
+        int getNumRows() override { return (int) view.getMarkers().size(); }
+
+        void paintListBoxItem(int row, juce::Graphics& g, int width, int height, bool selectedRow) override
+        {
+            const auto& markers = view.getMarkers();
+            if (!juce::isPositiveAndBelow(row, (int) markers.size())) return;
+            if (selectedRow) { g.setColour(MiraLookAndFeel::accent.withAlpha(0.18f)); g.fillRect(0, 0, width, height); }
+
+            // The time reads the way the RULER reads. A marker list in seconds beside a
+            // timeline in timecode is two numbers for one place.
+            g.setColour(MiraLookAndFeel::active);
+            g.setFont(laf.monoRegular(MiraLookAndFeel::textSize(10.5f)));
+            const auto when = view.formatPosition(markers[(size_t) row].seconds);
+            g.drawText(when, 8, 0, 96, height, juce::Justification::centredLeft, false);
+
+            g.setColour(MiraLookAndFeel::text);
+            g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(11.5f)));
+            g.drawText(markers[(size_t) row].name, 110, 0, width - 118, height,
+                        juce::Justification::centredLeft, true);
+        }
+
+        void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override
+        {
+            view.gotoMarker(row);
+        }
+
+        const MiraLookAndFeel& laf;
+        CanvasView& view;
+        juce::ListBox list;
+        juce::TextButton addButton, renameButton, deleteButton;
+        juce::Label hint;
+    };
+    std::unique_ptr<Content> content;
+};
+
 struct CanvasWindow::Content : juce::Component, private juce::Timer
 {
     Content(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
             juce::AudioThumbnailCache& cache, GenerateContent* panelIn)
-        : view(laf, formats, cache), panel(panelIn), tabs(laf), formatManager(formats)
+        : view(laf, formats, cache), panel(panelIn), tabs(laf), formatManager(formats), look(laf)
     {
         auto button = [this](juce::TextButton& b, const juce::String& text) {
             b.setButtonText(text);
@@ -4573,6 +4803,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         // Picture. The clip is the document's; the WINDOW is this session's, so opening
         // a project that carries a film opens the film with it.
         view.onVideoClipsChanged = [this] { syncPicture(); };
+        // The list window, when there is one, follows the canvas rather than being told
+        // by each of the five places that can change a marker.
+        view.onMarkersChanged = [this] { if (markerWindow != nullptr) markerWindow->refresh(); };
         view.onVideoCleared = [this] {
             storeVideoGeometry();
             videoWindow.reset();
@@ -4916,6 +5149,21 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         if (owner != nullptr && owner->onVideoChanged) owner->onVideoChanged();
     }
 
+    void showMarkerList()
+    {
+        if (markerWindow != nullptr) { markerWindow->toFront(true); markerWindow->refresh(); return; }
+        markerWindow = std::make_unique<MarkerListWindow>(look, view);
+        if (owner != nullptr && owner->loadSetting)
+            markerWindow->restoreGeometry(owner->loadSetting("canvas_marker_geometry"));
+        markerWindow->onClosed = [this] {
+            if (owner != nullptr && owner->saveSetting && markerWindow != nullptr)
+                owner->saveSetting("canvas_marker_geometry", markerWindow->geometryString());
+            juce::MessageManager::callAsync([safe = juce::Component::SafePointer<Content>(this)] {
+                if (safe != nullptr) safe->markerWindow.reset();
+            });
+        };
+    }
+
     void promptOpenVideo()
     {
         auto chooser = std::make_shared<juce::FileChooser>(
@@ -5160,7 +5408,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
     CanvasWindow* owner = nullptr;
     juce::AudioFormatManager& formatManager;
+    const MiraLookAndFeel& look;
     std::unique_ptr<VideoWindow> videoWindow;
+    std::unique_ptr<MarkerListWindow> markerWindow;
 
     // MIRA-VIDEO.md Phase 2.1's fallback route, on its own thread. A 40-minute reel off
     // the drive it arrived on is minutes of work, and minutes of work on the message
@@ -5238,6 +5488,8 @@ CanvasWindow::~CanvasWindow() = default;
 void CanvasWindow::saveProject() { if (content != nullptr) content->saveOrAsk(); }
 
 void CanvasWindow::openVideo() { if (content != nullptr) content->promptOpenVideo(); }
+
+void CanvasWindow::showMarkers() { if (content != nullptr) content->showMarkerList(); }
 
 void CanvasWindow::showPicture()
 {

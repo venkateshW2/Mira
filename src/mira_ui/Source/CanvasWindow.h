@@ -157,6 +157,11 @@ public:
     void removeLane(int lane);
     int getSelectedLane() const { return selectedLane; }
     juce::String nextBlockName() const;
+    // Markers get their OWN strip between the ruler and the tracks. They were drawn on the
+    // ruler first and collided with its time labels -- neither readable, on the one strip
+    // every feature so far has wanted to put something on.
+    int markerStripH() const { return markers.empty() ? 0 : 19; }
+    int videoStripTop() const { return topRuler + markerStripH(); }
     // A COPY, not another version. The trim, the fades, the gain, the generator settings
     // and the same chosen take -- so four bars you like can become four bars you like
     // twice, which is arranging rather than generating.
@@ -258,6 +263,16 @@ public:
     void renameMarker(int index);
     // The marker nearest this x, within a few pixels, or -1.
     int markerNear(int x) const;
+    // Which marker's LABEL is under this x in the markers row. The label runs from its
+    // marker to the next one, so the whole plate is the grab handle -- an 8-pixel line is
+    // not something to ask anyone to hit.
+    int markerAtStripX(int x) const;
+    void setMarkerName(int index, const juce::String& name);
+    void setMarkerTime(int index, double seconds);
+    // Put the playhead on it, and bring it into view if it is off screen.
+    void gotoMarker(int index);
+    // The list changed -- added, removed, renamed, moved. What the marker window listens to.
+    std::function<void()> onMarkersChanged;
     // The first marker strictly after this position, or -1.
     int markerAfter(double seconds) const;
     const std::vector<Marker>& getMarkers() const { return markers; }
@@ -340,7 +355,7 @@ private:
         double audioSeconds = 0.0;
     };
 
-    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain, LaneMove, LaneResize };
+    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain, LaneMove, LaneResize, MarkerMove };
 
     const MiraLookAndFeel& laf;
     juce::AudioFormatManager& formats;
@@ -431,6 +446,7 @@ private:
     // Where a dragged lane header would land, or -1. The move happens on mouse-UP, not as
     // you cross: one undo step for one gesture, and an insertion line you can aim.
     int laneDropTarget = -1;
+    int dragTargetMarker = -1;   // which marker is being dragged, or -1
     // Which TRACK is selected, or -1. Separate from the block selection because deleting a
     // track and deleting the blocks on it are different things to want.
     int selectedLane = -1;
@@ -531,7 +547,7 @@ private:
     // clip -- an empty video track is a promise nobody made, the same reasoning that
     // stops the canvas opening with fifteen empty audio tracks.
     int videoStripH() const { return videoClips.empty() ? 0 : 34; }
-    int lanesTop() const { return topRuler + videoStripH(); }
+    int lanesTop() const { return videoStripTop() + videoStripH(); }
     // Cumulative now that lanes can differ in height. Both walk the same list, so a lane
     // found by y and the y of that lane can never disagree.
     int laneToY(int lane) const;
@@ -611,6 +627,8 @@ public:
     // window does not throw the clip away: the film is still in the session, you have
     // just stopped looking at it.
     void showPicture();
+    // The marker list, beside the work -- the same shape as the LoRA library window.
+    void showMarkers();
     bool hasVideo() const;
 
     // ui_settings, reached through the owner. The canvas has no database of its own, and
