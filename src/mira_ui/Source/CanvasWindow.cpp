@@ -241,6 +241,9 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
         if (reader != nullptr && reader->sampleRate > 0.0)
         {
             v.audioSeconds = reader->lengthInSamples / reader->sampleRate;
+            // A new take is new audio, so a cut made against the old one is meaningless --
+            // it described where a different file went quiet.
+            v.block.contentSeconds = 0.0;
             // THE BLOCK'S LENGTH IS WHAT YOU ASKED FOR, and a take fills it. Only a block
             // that has never had a length takes it from the file.
             //
@@ -281,6 +284,7 @@ juce::String CanvasView::nextBlockName() const
 void CanvasView::addLane()
 {
     if (laneCount >= CanvasAudioSource::kMaxLanes) return;
+    pushUndo();
     ++laneCount;
     if (laneNames[laneCount - 1].isEmpty()) laneNames.set(laneCount - 1, "track " + juce::String(laneCount));
     markDirty();
@@ -299,6 +303,8 @@ void CanvasView::addEmptyBlock()
     // IS the duration now: a new block is a 30 second frame you will resize, and resizing
     // it is how you ask for a different length.
     constexpr double kNewBlockSeconds = 30.0;
+    pushUndo();
+    UndoGuard oneEdit (*this);
     // A NEW BLOCK ALWAYS OPENS ON A NEW TRACK. Hunting for a free gap on an existing
     // track put two unrelated blocks on one fader, and a track is the thing you mix with
     // -- so a block that arrives sharing one arrives already mixed into something else.
@@ -327,6 +333,7 @@ void CanvasView::addEmptyBlock()
 void CanvasView::duplicateSelection()
 {
     if (selected.empty()) return;
+    pushUndo();
 
     // Placed after the rightmost of what was copied, on the same lanes, so a duplicate
     // lands where you would have dragged it rather than on top of the original.
@@ -389,6 +396,7 @@ void CanvasView::chooseTakeForSelection(const juce::File& take)
 {
     if (auto* v = singleSelection())
     {
+        pushUndo();
         setFileOn(*v, take);
         rebuildAudio();
         markDirty();
@@ -399,6 +407,7 @@ void CanvasView::chooseTakeForSelection(const juce::File& take)
 void CanvasView::setSelectionMuted(bool muted)
 {
     if (selected.empty()) return;
+    pushUndo();
     for (auto& i : items)
         if (selected.count(i->block.id)) i->block.muted = muted;
     // A rebuild rather than an atomic bit, unlike the TRACK mute. A muted block is left
@@ -435,6 +444,7 @@ void CanvasView::showBlockMenu(Visual& v)
     m.addItem(1, muted ? "Unmute block" : "Mute block");
     m.addSubMenu("Fade shape", fades);
     m.addItem(2, "Clear fades", hasFades);
+    m.addItem(6, "Restore full take", v.block.contentSeconds > 0.0 && v.block.hasAudio());
     m.addSeparator();
     m.addItem(3, "Duplicate");
     m.addItem(4, "Split at playhead");
@@ -452,10 +462,27 @@ void CanvasView::showBlockMenu(Visual& v)
                          if (result == 1) { self.setSelectionMuted(!muted); return; }
                          if (result == 2)
                          {
+                             self.pushUndo();
                              for (auto& i : self.items)
                                  if (self.selected.count(i->block.id))
                                      i->block.fadeIn = i->block.fadeOut = 0.0;
                              self.rebuildAudio(); self.markDirty(); self.repaint();
+                             return;
+                         }
+                         if (result == 6)
+                         {
+                             self.pushUndo();
+                             // Undoing a CUT, not an edit to the file: the take never
+                             // changed, only the block's claim about where it ended.
+                             for (auto& i : self.items)
+                                 if (self.selected.count(i->block.id))
+                                 {
+                                     i->block.contentSeconds = 0.0;
+                                     i->block.length = juce::jmax(i->block.length,
+                                                                   self.soundingSecondsOf(*i));
+                                 }
+                             self.rebuildAudio(); self.markDirty();
+                             self.announceSelection(); self.repaint();
                              return;
                          }
                          if (result == 3) { self.duplicateSelection(); return; }
@@ -463,6 +490,7 @@ void CanvasView::showBlockMenu(Visual& v)
                          if (result == 5) { self.removeSelected();    return; }
                          if (result >= 10 && result <= 12)
                          {
+                             self.pushUndo();
                              for (auto& i : self.items)
                                  if (self.selected.count(i->block.id))
                                      i->block.fadeShape = (FadeShape) (result - 10);
@@ -471,11 +499,20 @@ void CanvasView::showBlockMenu(Visual& v)
                      });
 }
 
-double CanvasView::tailSecondsOf(const Visual& v) const
+// How much of this block actually sounds: the cut length if one was made, otherwise
+// whatever the file has left after the block's offset into it.
+double CanvasView::soundingSecondsOf(const Visual& v) const
 {
     if (!v.block.hasAudio() || v.audioSeconds <= 0.0) return 0.0;
-    const double sounding = juce::jmax(0.0, v.audioSeconds - v.block.sourceOffset);
-    return juce::jmax(0.0, v.block.length - sounding);
+    const double available = juce::jmax(0.0, v.audioSeconds - v.block.sourceOffset);
+    if (v.block.contentSeconds > 0.0) return juce::jmin(v.block.contentSeconds, available);
+    return available;
+}
+
+double CanvasView::tailSecondsOf(const Visual& v) const
+{
+    if (!v.block.hasAudio()) return 0.0;
+    return juce::jmax(0.0, v.block.length - soundingSecondsOf(v));
 }
 
 std::pair<double, double> CanvasView::selectionGeometry() const
@@ -496,7 +533,10 @@ void CanvasView::extendSelection(bool remix)
     // rather than the audio, so the sounding part is shorter than the file by exactly that
     // offset -- and the range has to start where you can hear it stop, not where the file
     // does.
-    const double sounding = juce::jmax(0.0, v->audioSeconds - v->block.sourceOffset);
+    // Where the audio ends INSIDE the block -- the cut, when you made one. A take that
+    // ended in ten seconds of silence used to hand the inpainter a range starting after
+    // the silence, so the silence stayed baked in and the continuation began late.
+    const double sounding = soundingSecondsOf(*v);
     // Whatever you typed for a remix; the block's own recipe for an extend, so a
     // continuation continues in the voice that made the thing it continues.
     onExtendRequested(v->block.file, sounding, v->block.length,
@@ -575,12 +615,17 @@ void CanvasView::pointPanelAt(const Visual* v)
 
 void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
 {
+    // A generation IS an edit. The wav stays on disk whatever happens, so undo here means
+    // "put the block back on the take it was showing" -- which is exactly the answer to
+    // "I tried an extend and I do not want to keep it".
+    bool pushed = false;
     for (auto& i : items)
         // Convention 9: never `==` on paths. A block named with an accent in it produces
         // one byte sequence here and another from whatever handed us `folder`.
         if (mira::pathsEquivalent(blockFolderFor(*i).getFullPathName().toStdString(),
                                   folder.getFullPathName().toStdString()))
         {
+            if (!pushed) { pushUndo(); pushed = true; }
             setFileOn(*i, take);
             rebuildAudio();
             markDirty();
@@ -611,7 +656,11 @@ void CanvasView::markDirty()
 
 void CanvasView::writeTo(const juce::File& miraFile) const
 {
-    const auto base = miraFile.getParentDirectory();
+    miraFile.replaceWithText(toJson(miraFile.getParentDirectory()));
+}
+
+juce::String CanvasView::toJson(const juce::File& base) const
+{
     juce::Array<juce::var> blocks;
     for (const auto& i : items)
     {
@@ -621,6 +670,7 @@ void CanvasView::writeTo(const juce::File& miraFile) const
         o->setProperty("start", i->block.start);
         o->setProperty("length", i->block.length);
         o->setProperty("offset", i->block.sourceOffset);
+        o->setProperty("content", i->block.contentSeconds);
         o->setProperty("fadeIn", i->block.fadeIn);
         o->setProperty("fadeOut", i->block.fadeOut);
         o->setProperty("gainDb", i->block.gainDb);
@@ -653,10 +703,15 @@ void CanvasView::writeTo(const juce::File& miraFile) const
     root->setProperty("laneGainDb", juce::var(gains));
     root->setProperty("laneCount", laneCount);
     root->setProperty("muteMask", juce::String(muteMask));
-    miraFile.replaceWithText(juce::JSON::toString(juce::var(root), false));
+    return juce::JSON::toString(juce::var(root), false);
 }
 
 bool CanvasView::readFrom(const juce::File& miraFile)
+{
+    return fromJson(miraFile.loadFileAsString(), miraFile.getParentDirectory(), true);
+}
+
+bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool refit)
 {
     items.clear();
     selected.clear();
@@ -666,9 +721,8 @@ bool CanvasView::readFrom(const juce::File& miraFile)
     muteMask = soloMask = 0;
     laneCount = 1;
 
-    const auto root = juce::JSON::parse(miraFile.loadFileAsString());
+    const auto root = juce::JSON::parse(json);
     if (!root.isObject()) return false;
-    const auto base = miraFile.getParentDirectory();
 
     if (auto* names = root.getProperty("laneNames", {}).getArray())
         for (int i = 0; i < names->size(); ++i) laneNames.set(i, (*names)[i].toString());
@@ -686,6 +740,7 @@ bool CanvasView::readFrom(const juce::File& miraFile)
             v->block.start = (double) b.getProperty("start", 0.0);
             v->block.length = (double) b.getProperty("length", 8.0);
             v->block.sourceOffset = (double) b.getProperty("offset", 0.0);
+            v->block.contentSeconds = (double) b.getProperty("content", 0.0);
             v->block.fadeIn = (double) b.getProperty("fadeIn", 0.0);
             v->block.fadeOut = (double) b.getProperty("fadeOut", 0.0);
             v->block.gainDb = (double) b.getProperty("gainDb", 0.0);
@@ -708,10 +763,85 @@ bool CanvasView::readFrom(const juce::File& miraFile)
         }
 
     applyMasks();
-    if (!items.empty()) fit();
+    // An UNDO must not move the view. Refitting after every undone edit would answer a
+    // question nobody asked -- you undid a trim, not a zoom -- and lose the place you were
+    // looking at, which is the one thing undo is supposed to give back.
+    if (refit && !items.empty()) fit();
     rebuildAudio();
     repaint();
     return true;
+}
+
+// ---- undo ---------------------------------------------------------------------------
+//
+// Snapshots, not a command log. The document already serialises to JSON and back, so the
+// cheapest correct undo is to keep the JSON: no per-edit inverse to write, and no edit
+// that can be added later and forgotten about here. A canvas of a few dozen blocks is a
+// few kilobytes, which is nothing next to the audio it points at.
+//
+// What it CANNOT undo is a generation -- the wav is on disk and stays there. What it does
+// instead is exactly what you want after a bad extend: the block goes back to the take it
+// was showing, and the new one is still in the folder if you change your mind.
+
+void CanvasView::pushUndo()
+{
+    if (undoSuppressed) return;
+
+    // Selection by NAME. Ids are handed out fresh on every load, so an id snapshotted now
+    // means nothing after a restore; names are what the document actually carries.
+    Snapshot snap;
+    snap.json = toJson(projectFolder);
+    for (const auto& i : items)
+        if (selected.count(i->block.id)) snap.selection.add(i->block.name);
+
+    undoStack.push_back(std::move(snap));
+    if ((int) undoStack.size() > kUndoDepth) undoStack.erase(undoStack.begin());
+    redoStack.clear();      // a new edit is a new branch
+}
+
+void CanvasView::restore(const Snapshot& snap)
+{
+    fromJson(snap.json, projectFolder, false);
+    selected.clear();
+    for (auto& i : items)
+        if (snap.selection.contains(i->block.name)) selected.insert(i->block.id);
+
+    // The panel has to be repointed: every Visual is new, so the id it was holding is
+    // gone. Pointing it at the restored selection keeps "undo, then look at what came
+    // back" from needing a click.
+    panelBlockId = 0;
+    pointPanelAt(singleSelection());
+    announceSelection();
+    markDirty();
+    repaint();
+}
+
+void CanvasView::undo()
+{
+    if (undoStack.empty()) return;
+    Snapshot now;
+    now.json = toJson(projectFolder);
+    for (const auto& i : items)
+        if (selected.count(i->block.id)) now.selection.add(i->block.name);
+    redoStack.push_back(std::move(now));
+
+    auto snap = undoStack.back();
+    undoStack.pop_back();
+    restore(snap);
+}
+
+void CanvasView::redo()
+{
+    if (redoStack.empty()) return;
+    Snapshot now;
+    now.json = toJson(projectFolder);
+    for (const auto& i : items)
+        if (selected.count(i->block.id)) now.selection.add(i->block.name);
+    undoStack.push_back(std::move(now));
+
+    auto snap = redoStack.back();
+    redoStack.pop_back();
+    restore(snap);
 }
 
 bool CanvasView::newDocument(const juce::File& folder, const juce::String& name)
@@ -885,7 +1015,7 @@ void CanvasView::paint(juce::Graphics& g)
             // rest is the TAIL, and drawing the thumbnail across it would show empty space
             // as if it were silence someone recorded.
             const double tail = tailSecondsOf(*item);
-            const double sounding = juce::jmax(0.0, item->block.length - tail);
+            const double sounding = soundingSecondsOf(*item);
             if (tail > 0.0)
                 wave = wave.withWidth(juce::jmax(2, juce::roundToInt(sounding * pixelsPerSecond)));
             g.setColour(MiraLookAndFeel::text.withAlpha(laneMuted ? 0.18f
@@ -1278,6 +1408,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
                                        && !e.mods.isPopupMenu())
     {
         drag = Drag::None;
+        pushUndo();
         hit->block.muted = !hit->block.muted;
         rebuildAudio();
         markDirty();
@@ -1292,6 +1423,11 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
         showBlockMenu(*hit);
         return;
     }
+
+    // ONE snapshot per gesture, taken as the drag begins -- not per mouse event, or
+    // undoing a slow drag would take fifty presses to get back where you started.
+    if (what == Drag::Move || what == Drag::TrimLeft || what == Drag::TrimRight
+        || what == Drag::FadeIn || what == Drag::FadeOut) pushUndo();
 
     drag = what;
     dragTarget = hit->block.id;
@@ -1380,6 +1516,25 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
         else if (drag == Drag::TrimRight && b.id == dragTarget)
         {
             b.length = juce::jmax(0.05, dragOriginLength + deltaSeconds);
+            // PULLING IN IS A CUT, and it is remembered. Dragging back out then grows the
+            // empty tail rather than revealing what you just cut off -- which is what
+            // makes "the take ends in silence, cut it and continue from there" one gesture
+            // instead of a split, a delete and a re-drag.
+            //
+            // The full take is not lost: "Restore full take" is on the right-click menu.
+            if (b.hasAudio())
+            {
+                for (const auto& other : items)
+                    if (other->block.id == b.id)
+                    {
+                        const double available = juce::jmax(0.0, other->audioSeconds - b.sourceOffset);
+                        const double was = b.contentSeconds > 0.0
+                                               ? juce::jmin(b.contentSeconds, available)
+                                               : available;
+                        if (b.length < was) b.contentSeconds = b.length;
+                        break;
+                    }
+            }
         }
         else if (drag == Drag::FadeIn && b.id == dragTarget)
         {
@@ -1495,6 +1650,13 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
         if (key.getKeyCode() == 'O' && onOpenRequested) { onOpenRequested(); return true; }
         if (key.getKeyCode() == 'N' && onNewRequested)  { onNewRequested();  return true; }
         if (key.getKeyCode() == 'E') { splitAtPlayhead(); return true; }
+        // Cmd-Z / Cmd-shift-Z, the two every app has. Handled here rather than in the menu
+        // bar because the canvas is the only thing in mira with a document to undo.
+        if (key.getKeyCode() == 'Z')
+        {
+            if (key.getModifiers().isShiftDown()) redo(); else undo();
+            return true;
+        }
     }
 
     // ZOOM FROM THE KEYBOARD. G and H horizontally, shift-G and shift-H vertically --
@@ -1553,6 +1715,7 @@ void CanvasView::splitAtPlayhead()
         if (selected.empty() || selected.count(i->block.id)) victims.push_back(i.get());
     }
     if (victims.empty()) return;
+    pushUndo();
 
     selected.clear();
     for (auto* v : victims)
@@ -1572,6 +1735,10 @@ void CanvasView::splitAtPlayhead()
         // bug where generating on one put the audio on the other.
         right->block.name = nextBlockName();
         right->settings = v->settings;
+        // A cut is a statement about where the audio ends, on both halves. Without it the
+        // left half still claims the whole file, and dragging its right edge out would
+        // reveal exactly the audio the cut was meant to remove.
+        right->block.contentSeconds = v->block.length - leftLength;
         // The fade-out belongs to the piece that still has the end of the sound; the
         // fade-in to the piece that still has the start. Splitting in the middle of a fade
         // would otherwise leave both halves fading the wrong way.
@@ -1584,6 +1751,7 @@ void CanvasView::splitAtPlayhead()
         right->block.sourceOffset = v->block.sourceOffset + leftLength;
 
         v->block.length = leftLength;
+        v->block.contentSeconds = leftLength;
         v->block.fadeIn = juce::jmin (v->block.fadeIn, leftLength);
 
         selected.insert (right->block.id);
@@ -1615,6 +1783,7 @@ void CanvasView::togglePlay()
 void CanvasView::removeSelected()
 {
     if (selected.empty()) return;
+    pushUndo();
     items.erase(std::remove_if(items.begin(), items.end(),
                                 [this](const std::unique_ptr<Visual>& v) {
                                     return selected.count(v->block.id) > 0;
@@ -1677,6 +1846,8 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
     // Now: the block is named "block N" like the rest, its folder is created, and the file
     // is COPIED into it as that block's first take. Drop it, and it is a take you can hear,
     // re-generate against, and keep beside alternatives -- the same object in every case.
+    pushUndo();
+    UndoGuard oneEdit (*this);
     double at = atSeconds;
     for (const auto& f : files)
     {
@@ -1795,7 +1966,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         fitButton.onClick    = [this] { view.fit(); };
         deleteButton.onClick = [this] { view.removeSelected(); };
 
-        hint.setText("space play - L loop - M/S mute solo - F fit - G/H zoom - shift-G/H lane height - cmd-E split - alt-drag pan",
+        hint.setText("space play - L loop - M/S mute solo - F fit - G/H zoom - cmd-E split - cmd-Z undo - alt-drag pan",
                       juce::dontSendNotification);
         hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);

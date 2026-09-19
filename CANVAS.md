@@ -89,6 +89,22 @@ A new block is a **30 second frame** — the generator's default — and **resiz
 you ask for a different length**. There is no duration to set somewhere else and keep in
 step with the picture; the picture *is* the number.
 
+### Cutting is remembered, so you can continue from where the audio really ends
+
+A generated take often ends in silence. Drag the block's right edge **in** to cut it off,
+and that cut is kept: dragging back **out** grows the empty tail instead of revealing the
+silence you just removed. So "the take trails off, end it there and carry on" is two drags
+and a button, not a split, a delete and a re-drag.
+
+`contentSeconds` on the block is what holds this — how much of the *file* the block uses,
+as against `length`, how long the block is on the *timeline*. The difference between them
+is the tail. A split sets it on both halves, since a cut is a statement about where the
+audio ends. **Restore full take** on the right-click menu puts it back; the file was never
+touched, only the block's claim about where it ended.
+
+The mixer honours it too: a block is only as long as it sounds, so a fade-out sits at the
+end of the audio rather than out in the empty tail fading nothing.
+
 ### Extend and remix: inpainting by dragging the block out
 
 Drag a block's right edge **past the end of its audio** and the empty tail is drawn dashed,
@@ -265,7 +281,6 @@ replacement rather than be handed it.
       transport's resampler; export already does the right thing per take
       ([Export.cpp](src/mira_ui/Source/Export.cpp)) and the canvas should match it.
 - [ ] **Zoom controls** — buttons and a fit-to-selection, not only `cmd-wheel` and `F`.
-- [ ] Undo. There is none, and `ValueTree` + `UndoManager` is the JUCE answer.
 - [ ] Gain handle on a block.
 - [ ] Bars from mira's own analysis, per block — §1's point, still unbuilt.
 
@@ -282,7 +297,26 @@ replacement rather than be handed it.
 
 ---
 
-## 6. Keys
+## 6. Undo
+
+**Snapshots, not a command log.** The document already serialises to JSON and back, so the
+cheapest correct undo is to keep the JSON: there is no per-edit inverse to write, and no
+edit that can be added later and quietly forgotten about here. A canvas of a few dozen
+blocks is a few kilobytes — nothing beside the audio it points at. Depth 64.
+
+One snapshot per *gesture*, taken as a drag begins rather than per mouse event, or undoing
+a slow drag would take fifty presses to get back where you started. Selection is snapshotted
+**by name**, because ids are handed out fresh on every load. Undo deliberately does **not**
+refit the view: you undid a trim, not a zoom.
+
+**A generation is an edit too.** The wav stays on disk whatever happens, so undo after an
+extend means *the block goes back to the take it was showing* — and the new one is still in
+the folder if you change your mind. That is the honest answer to "I tried it and I do not
+want to keep it"; nothing is deleted, and the arrangement is where it was.
+
+What undo does not cover: the audio device, and anything outside the document.
+
+## 7. Keys
 
 | | |
 |---|---|
@@ -290,6 +324,7 @@ replacement rather than be handed it.
 | `L` | loop the selection |
 | `F` | fit |
 | `M` / `S` | mute / solo the selection's tracks |
+| `Cmd-Z` / `Cmd-shift-Z` | undo / redo |
 | `Cmd-D` | duplicate |
 | `Cmd-E` | split every block the playhead stands on |
 | `Cmd-N` / `Cmd-O` / `Cmd-S` | new / open / save |
@@ -311,5 +346,6 @@ to hand.
 | double-click a block | open its generator |
 | right-click a block | mute, fade shape, clear fades, duplicate, split, remove |
 | the `M` on a block | mute just that block |
-| drag a block's right edge past its audio | make a tail for Extend / Remix |
+| drag a block's right edge in | cut the audio short, and remember it |
+| drag it back out | make a tail for Extend / Remix |
 | drag a block's top corner | its fade in / out |

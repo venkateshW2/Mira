@@ -60,6 +60,17 @@ struct Block
     double start = 0.0;          // where it sits on the canvas
     double length = 0.0;         // how much of it sounds
     double sourceOffset = 0.0;   // where in the file `start` corresponds to
+    // How much of the FILE this block uses, from `sourceOffset`. Not the same as `length`:
+    // length is how long the block is on the timeline, and the difference between them is
+    // the empty tail an extend fills in.
+    //
+    // It exists because a generated take often ends in silence. Cutting that silence off
+    // has to be REMEMBERED -- otherwise dragging the right edge back out just reveals the
+    // silence again, and there is no way to say "the audio ends here, now continue from
+    // there", which is the whole point of extending.
+    //
+    // Zero means "all of it", so a block written before this existed still reads right.
+    double contentSeconds = 0.0;
     double gainDb = 0.0;
     double fadeIn = 0.0;
     double fadeOut = 0.0;

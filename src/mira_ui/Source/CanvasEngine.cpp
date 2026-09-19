@@ -280,8 +280,38 @@ void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatMa
     // Computed, not written back: the block keeps the fade YOU drew, and dragging the
     // overlap apart restores it instead of leaving a fade you never asked for.
     std::vector<Block> laid;
+    std::vector<std::shared_ptr<juce::AudioFormatReader>> readers;
     for (const auto& b : blocks)
-        if (!b.muted) laid.push_back (b);     // a muted block crossfades with nothing
+    {
+        if (b.muted) continue;                // a muted block crossfades with nothing
+        if (!b.file.existsAsFile() || b.length <= 0.0) continue;
+
+        const auto key = b.file.getFullPathName();
+        std::shared_ptr<juce::AudioFormatReader> reader;
+        if (auto hit = readerCache.find (key); hit != readerCache.end()) reader = hit->second;
+        else if (auto* made = formats.createReaderFor (b.file)) reader.reset (made);
+        if (reader == nullptr || reader->sampleRate <= 0.0) continue;
+        stillUsed[key] = reader;
+
+        // A BLOCK IS ONLY AS LONG AS IT SOUNDS. The empty tail you drag out past the audio
+        // is a request to generate, not silence to play -- and a fade-out placed at the
+        // end of the BLOCK would sit in that emptiness, fading nothing, while the real end
+        // of the audio arrived at full level. The same goes for a crossfade: what overlaps
+        // the next block is the audible part, not the frame.
+        auto trimmed = b;
+        const double fileSeconds = reader->lengthInSamples / reader->sampleRate;
+        const double available = juce::jmax (0.0, fileSeconds - b.sourceOffset);
+        const double sounding = b.contentSeconds > 0.0
+                                    ? juce::jmin (b.contentSeconds, available)
+                                    : available;
+        trimmed.length = juce::jmin (b.length, sounding);
+        if (trimmed.length <= 0.0) continue;
+        trimmed.fadeIn  = juce::jmin (trimmed.fadeIn,  trimmed.length);
+        trimmed.fadeOut = juce::jmin (trimmed.fadeOut, trimmed.length);
+
+        laid.push_back (trimmed);
+        readers.push_back (std::move (reader));
+    }
 
     std::vector<FadeShape> inShape (laid.size()), outShape (laid.size());
     for (size_t i = 0; i < laid.size(); ++i)
@@ -319,14 +349,7 @@ void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatMa
     for (size_t bi = 0; bi < laid.size(); ++bi)
     {
         const auto& b = laid[bi];
-        if (!b.file.existsAsFile() || b.length <= 0.0) continue;
-
-        const auto key = b.file.getFullPathName();
-        std::shared_ptr<juce::AudioFormatReader> reader;
-        if (auto hit = readerCache.find(key); hit != readerCache.end()) reader = hit->second;
-        else if (auto* made = formats.createReaderFor(b.file)) reader.reset(made);
-        if (reader == nullptr) continue;
-        stillUsed[key] = reader;
+        auto reader = readers[bi];
 
         Arrangement::Voice v;
         v.rateRatio      = reader->sampleRate > 0.0 ? reader->sampleRate / rate : 1.0;

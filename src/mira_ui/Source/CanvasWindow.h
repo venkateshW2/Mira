@@ -112,6 +112,15 @@ public:
     int getLaneCount() const { return laneCount; }
     void writeTo(const juce::File& miraFile) const;
     bool readFrom(const juce::File& miraFile);
+    // The document as text, and back. Split out of writeTo/readFrom because undo keeps
+    // snapshots of exactly this -- one serialisation, so an edit cannot be undoable and
+    // unsaveable at the same time.
+    juce::String toJson(const juce::File& base) const;
+    bool fromJson(const juce::String& json, const juce::File& base, bool refit);
+    void undo();
+    void redo();
+    bool canUndo() const { return !undoStack.empty(); }
+    bool canRedo() const { return !redoStack.empty(); }
     void markDirty();
     void applySettingsToSelection(const juce::var& settings);
     void chooseTakeForSelection(const juce::File& take);
@@ -249,6 +258,8 @@ private:
     // Seconds of empty block past the end of its audio: what "extend" would fill. Zero
     // when the audio reaches the end of the block, or when there is no audio at all.
     double tailSecondsOf(const Visual& v) const;
+    // How much of the block actually sounds -- the cut, when one was made.
+    double soundingSecondsOf(const Visual& v) const;
     // Right-click on a block: mute it, change its fade shape, split or remove it. The
     // things a block IS, in one place, rather than five shortcuts to remember.
     void showBlockMenu(Visual& v);
@@ -273,6 +284,24 @@ private:
     int zoomAnchorX() const;
     // Which block the panel is currently showing, or 0 for none.
     juce::int64 panelBlockId = 0;
+
+    // A snapshot of the whole document plus which blocks were selected, by name.
+    struct Snapshot { juce::String json; juce::StringArray selection; };
+    std::vector<Snapshot> undoStack, redoStack;
+    static constexpr int kUndoDepth = 64;
+    // Taken BEFORE a change, so undo returns to the state you were in when you started it.
+    void pushUndo();
+    void restore(const Snapshot&);
+    // One action, one snapshot. addEmptyBlock and a file drop both go through addLane,
+    // which records its own -- so without this, adding a block took two undos to remove
+    // and dropping four stems took five.
+    bool undoSuppressed = false;
+    struct UndoGuard
+    {
+        CanvasView& v;
+        explicit UndoGuard(CanvasView& view) : v(view) { v.undoSuppressed = true; }
+        ~UndoGuard() { v.undoSuppressed = false; }
+    };
     juce::Rectangle<int> boundsOf(const Visual&) const;
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();
