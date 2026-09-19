@@ -213,6 +213,10 @@ private:
     // Tall enough for the channel strip to BE one. At 64 the fader had 34 pixels of
     // travel, which is a control you aim at rather than set.
     int laneHeight = 104;
+    // How tall the WAVEFORM is drawn inside its block, independent of the block. Quiet
+    // takes are a flat line at 1.0 and you cannot see where the peaks are; loud ones fill
+    // the block and you cannot see anything else. AudioThumbnail takes this directly.
+    float waveZoom = 1.0f;
     int topRuler = 26;
     // Mute and solo live on the LANE, not the block: a lane is one take, and muting "this
     // take" is the whole point of stacking them. Bitmasks because that is what the audio
@@ -265,6 +269,8 @@ private:
     void applyMasks() { player.setLaneMasks(muteMask, soloMask); }
     juce::Rectangle<int> muteBoxFor(int lane) const;
     juce::Rectangle<int> soloBoxFor(int lane) const;
+    // The whole mixer widget -- meter and fader in one, on one scale.
+    juce::Rectangle<int> stripBoxFor(int lane) const;
     juce::Rectangle<int> faderBoxFor(int lane) const;
     juce::Rectangle<int> meterBoxFor(int lane) const;
     // ONE SCALE for the fader and the meter. That is what makes a channel strip readable:

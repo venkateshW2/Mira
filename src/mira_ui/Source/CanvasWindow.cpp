@@ -124,13 +124,21 @@ double CanvasView::normToDb(double n)
     return -60.0 + n / 0.25 * 30.0;
 }
 
-// The strip runs the full height of the lane under the name row, so the fader and the
-// meter are the same height and the scale between them reads for both.
-juce::Rectangle<int> CanvasView::faderBoxFor(int lane) const
+// ONE CONTROL, the way a DAW mixer has it: the meter and the fader are a single tall
+// widget on one scale, not two things side by side that happen to line up. The cap spans
+// the whole width, so it reads as the handle of the thing the meter is part of.
+juce::Rectangle<int> CanvasView::stripBoxFor(int lane) const
 {
     if (laneHeight < 46) return {};
     const int top = laneToY(lane) + 22;
-    return { 10, top, 16, juce::jmax(16, laneHeight - top + laneToY(lane) - 8) };
+    return { 10, top, 30, juce::jmax(16, laneHeight - 30) };
+}
+
+juce::Rectangle<int> CanvasView::faderBoxFor(int lane) const
+{
+    auto strip = stripBoxFor(lane);
+    if (strip.isEmpty()) return {};
+    return { strip.getX() + 15, strip.getY(), 13, strip.getHeight() };
 }
 
 // Muted and deliberately NOT the accent: the accent means "selected" and "playing"
@@ -151,14 +159,14 @@ juce::Colour CanvasView::laneColour(int lane)
     return palette[(size_t) juce::jmax(0, lane) % (sizeof(palette) / sizeof(palette[0]))];
 }
 
-// IMMEDIATELY BESIDE THE FADER and exactly as tall, because they share a scale. Two
-// stereo bars: a mono meter cannot show the fault it exists to catch.
+// The meter half of the same widget: two stereo bars down its left side. A mono meter
+// cannot show the fault a meter exists to catch -- a take with a dead side.
 juce::Rectangle<int> CanvasView::meterBoxFor(int lane) const
 {
     if (laneHeight < 46)
         return { kHeaderWidth - 16, laneToY(lane) + 4, 9, juce::jmax(10, laneHeight - 8) };
-    auto f = faderBoxFor(lane);
-    return { f.getRight() + 6, f.getY(), 14, f.getHeight() };
+    auto strip = stripBoxFor(lane);
+    return { strip.getX() + 2, strip.getY(), 11, strip.getHeight() };
 }
 
 juce::Rectangle<int> CanvasView::nameBoxFor(int lane) const
@@ -772,6 +780,7 @@ juce::String CanvasView::toJson(const juce::File& base) const
     root->setProperty("laneNames", juce::var(names));
     root->setProperty("laneGainDb", juce::var(gains));
     root->setProperty("laneCount", laneCount);
+    root->setProperty("waveZoom", (double) waveZoom);
     root->setProperty("muteMask", juce::String(muteMask));
     return juce::JSON::toString(juce::var(root), false);
 }
@@ -800,6 +809,7 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
         for (int i = 0; i < gains->size(); ++i) setLaneDb(i, (double) (*gains)[i]);
     muteMask = (juce::uint64) root.getProperty("muteMask", "0").toString().getLargeIntValue();
     laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, (int) root.getProperty("laneCount", 1));
+    waveZoom = juce::jlimit(0.15f, 16.0f, (float) (double) root.getProperty("waveZoom", 1.0));
 
     if (auto* blocks = root.getProperty("blocks", {}).getArray())
         for (const auto& b : *blocks)
@@ -1091,7 +1101,7 @@ void CanvasView::paint(juce::Graphics& g)
             g.setColour(MiraLookAndFeel::text.withAlpha(laneMuted ? 0.18f
                                                                   : (isSelected ? 0.85f : 0.6f)));
             item->thumb->drawChannels(g, wave, item->block.sourceOffset,
-                                       item->block.sourceOffset + sounding, 1.0f);
+                                       item->block.sourceOffset + sounding, waveZoom);
 
             // The empty tail: what Extend or Remix would fill in. Dashed, because it is a
             // frame with nothing in it -- the same language an empty block speaks.
@@ -1253,7 +1263,19 @@ void CanvasView::paint(juce::Graphics& g)
 
             auto fader = faderBoxFor(lane);
             auto meterBox = meterBoxFor(lane);
+            auto stripBox = stripBoxFor(lane);
             const bool strip = !fader.isEmpty();
+
+            // One well, containing both. This is what makes it read as a single mixer
+            // control rather than as two neighbours: the meter is INSIDE the fader's
+            // widget, on the fader's scale.
+            if (strip)
+            {
+                g.setColour(MiraLookAndFeel::surface.darker(0.5f));
+                g.fillRoundedRectangle(stripBox.toFloat(), 3.5f);
+                g.setColour(MiraLookAndFeel::border.withAlpha(0.5f));
+                g.drawRoundedRectangle(stripBox.toFloat().reduced(0.5f), 3.5f, 1.0f);
+            }
 
             // ONE mapping, used by both. `norm` is 0 at -60 dB and 1 at +6, warped so the
             // working range gets the travel -- see dbToNorm.
@@ -1269,7 +1291,7 @@ void CanvasView::paint(juce::Graphics& g)
                 // that matter -- unity and -12 -- when the lane is short, and label them
                 // only when there is width to the right of the meter to label them in.
                 const bool roomy = fader.getHeight() >= 70;
-                const bool labels = kHeaderWidth - meterBox.getRight() >= 26;
+                const bool labels = kHeaderWidth - stripBox.getRight() >= 26;
                 for (double tick : roomy ? std::vector<double>{ 6.0, 0.0, -6.0, -12.0, -24.0, -40.0 }
                                          : std::vector<double>{ 0.0, -12.0 })
                 {
@@ -1279,11 +1301,11 @@ void CanvasView::paint(juce::Graphics& g)
                     // one scale: you can see where the fader is against where the signal
                     // is, in one look, without reading two numbers.
                     g.setColour(MiraLookAndFeel::border.withAlpha(tick == 0.0 ? 0.9f : 0.45f));
-                    g.fillRect((float) fader.getX(), y, (float) (meterBox.getRight() - fader.getX()), 1.0f);
+                    g.fillRect((float) stripBox.getX() + 1.0f, y, (float) stripBox.getWidth() - 2.0f, 1.0f);
                     if (!labels) continue;
                     g.setColour(MiraLookAndFeel::textFaint.withAlpha(tick == 0.0 ? 0.9f : 0.6f));
                     g.drawText(tick > 0 ? "+" + juce::String((int) tick) : juce::String((int) tick),
-                                juce::Rectangle<int>(meterBox.getRight() + 3, (int) y - 5, 22, 10),
+                                juce::Rectangle<int>(stripBox.getRight() + 3, (int) y - 5, 22, 10),
                                 juce::Justification::centredLeft, false);
                 }
             }
@@ -1295,9 +1317,6 @@ void CanvasView::paint(juce::Graphics& g)
                                                               : std::array<float, 2>{ 0.0f, 0.0f };
                 const auto hd = lane < (int) laneHold.size()  ? laneHold[(size_t) lane]
                                                               : std::array<float, 2>{ 0.0f, 0.0f };
-                g.setColour(MiraLookAndFeel::surface.darker(0.45f));
-                g.fillRoundedRectangle(meterBox.toFloat(), 2.0f);
-
                 const float barW = (meterBox.getWidth() - 3.0f) * 0.5f;
                 for (int ch = 0; ch < 2; ++ch)
                 {
@@ -1334,8 +1353,8 @@ void CanvasView::paint(juce::Graphics& g)
                 if (lane < (int) laneClipped.size() && laneClipped[(size_t) lane])
                 {
                     g.setColour(MiraLookAndFeel::warn);
-                    g.fillRect((float) meterBox.getX(), (float) meterBox.getY() - 4.0f,
-                                (float) meterBox.getWidth(), 3.0f);
+                    g.fillRect((float) stripBox.getX(), (float) stripBox.getY() - 4.0f,
+                                (float) stripBox.getWidth(), 3.0f);
                 }
             }
 
@@ -1351,11 +1370,12 @@ void CanvasView::paint(juce::Graphics& g)
                 g.setColour(muted ? MiraLookAndFeel::textFaint : laneColour(lane).withAlpha(0.75f));
                 g.fillRoundedRectangle(groove.withTop(capY), 1.5f);
 
-                // A CAP with a centre line, which is what a fader looks like and what makes
-                // its exact position readable against a scale. A filled bar cannot say
+                // The cap spans the WHOLE widget, meter included -- that is what makes the
+                // two halves one control rather than two. A centre line so its exact
+                // position is readable against the scale; a filled bar alone cannot say
                 // where the control is when the value is at the bottom.
-                auto cap = juce::Rectangle<float>((float) fader.getX(), capY - 5.0f,
-                                                   (float) fader.getWidth(), 10.0f);
+                auto cap = juce::Rectangle<float>((float) stripBox.getX() + 1.0f, capY - 4.5f,
+                                                   (float) stripBox.getWidth() - 2.0f, 9.0f);
                 g.setColour(muted ? MiraLookAndFeel::surface3 : laneColour(lane).brighter(0.3f));
                 g.fillRoundedRectangle(cap, 2.5f);
                 g.setColour(MiraLookAndFeel::surface.darker(0.6f));
@@ -1798,6 +1818,13 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
     if (key.getModifiers().isCommandDown() && key.getKeyCode() == 'D')
         { duplicateSelection(); return true; }
     if (key.getTextCharacter() == 'f')         { fit(); return true; }
+    // WAVEFORM height, which is not block height. A quiet take is a flat line you cannot
+    // edit against and a loud one fills the block and shows nothing; the peaks you are
+    // looking for are in neither. Drawn taller or shorter without moving anything.
+    if (key.getTextCharacter() == ']')
+        { waveZoom = juce::jmin(16.0f, waveZoom * 1.35f); repaint(); return true; }
+    if (key.getTextCharacter() == '[')
+        { waveZoom = juce::jmax(0.15f, waveZoom / 1.35f); repaint(); return true; }
     if (key.getTextCharacter() == '=' || key.getTextCharacter() == '+')
         { laneHeight = juce::jmin(320, laneHeight + 8); repaint(); return true; }
     if (key.getTextCharacter() == '-')
@@ -2118,7 +2145,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         fitButton.onClick    = [this] { view.fit(); };
         deleteButton.onClick = [this] { view.removeSelected(); };
 
-        hint.setText("space play - L loop - M/S mute solo - F fit - G/H zoom - cmd-E cut - cmd-Z undo - alt-drag pan",
+        hint.setText("space play - L loop - M/S mute solo - F fit - G/H zoom - [ ] wave height - cmd-E cut - cmd-Z undo",
                       juce::dontSendNotification);
         hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);

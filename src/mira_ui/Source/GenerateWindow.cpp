@@ -261,8 +261,11 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
     tip(generateButton, "Generate with the settings above.");
     generateButton.onClick = [this] { generate(); };
-    addChildComponent(extendButton);
-    addChildComponent(remixButton);
+    // rightPane, NOT this. Every control laid out by layoutRightPane is a child of the
+    // pane, and bounds from it are pane-relative -- added to the content instead, these
+    // two were positioned in the wrong coordinate space and simply never appeared.
+    rightPane.addChildComponent(extendButton);
+    rightPane.addChildComponent(remixButton);
     extendButton.setTooltip("fill the block's empty tail, keeping what is already there");
     remixButton.setTooltip("regenerate the whole block, guided by the take it has");
     extendButton.onClick = [this] { if (onExtend) onExtend(); };

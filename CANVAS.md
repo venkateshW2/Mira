@@ -179,6 +179,14 @@ Blocks are also **clamped to tracks that exist**. Dragging below the last track 
 a block into empty space — a lane with no header, no fader and no mute, which is not a
 track, so the block was somewhere you could not mix it from.
 
+### Waveform height is not block height
+
+`[` and `]` draw the waveforms taller or shorter inside the blocks, without moving anything.
+A quiet take is a flat line you cannot edit against; a loud one fills its block and shows
+nothing but a wall. The peaks you are looking for are in neither — and the block's own
+height is the wrong control for it, since that changes the arrangement's layout to fix a
+drawing.
+
 ### The strip: one scale for the fader and the meter
 
 A **vertical fader beside a vertical stereo meter, the same height, sharing one dB scale** —
@@ -378,6 +386,7 @@ What undo does not cover: the audio device, and anything outside the document.
 | `Cmd-N` / `Cmd-O` / `Cmd-S` | new / open / save |
 | `G` / `H` | zoom out / in, around the playhead |
 | `shift-G` / `shift-H` | track height, down / up (`+` / `-` too) |
+| `[` / `]` | waveform height inside the blocks (not the blocks) |
 | `cmd-wheel` | zoom, around the mouse |
 | shift-wheel | track height |
 | wheel | scroll the timeline |
