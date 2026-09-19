@@ -27,6 +27,24 @@
 // today is untouched.
 namespace mira::canvas {
 
+// ---- MIRA-VIDEO.md Phase 1: a clip of picture on the timeline -----------------------
+//
+// A `Block` gains nothing from this. A video clip is its own thing: it is never summed,
+// never faded, never exported, and it is the only object on the canvas mira does not own
+// the samples of. The file is referenced where it lies -- never copied, never re-encoded.
+struct VideoClip
+{
+    juce::File file;           // the .mp4/.mov as given
+    double start = 0.0;        // where it sits on the canvas timeline
+    double length = 0.0;       // from an AVAsset query, NOT from getVideoDuration()
+    double sourceOffset = 0.0; // where in the film `start` corresponds to
+    // The picture's own clock, for the timecode ruler (Phase 3).
+    double fps = 0.0;          // 0 = unread
+    bool dropFrame = false;
+    double startTimecode = 0.0;    // seconds; 01:00:00:00 is 3600.0
+    juce::int64 audioBlockId = 0;  // the locked reference block (Phase 2), or 0
+};
+
 class CanvasView : public juce::Component,
                    public juce::FileDragAndDropTarget,
                    private juce::Timer
@@ -207,6 +225,20 @@ public:
     void setMasterGain(float g) { player.setMasterGain(g); }
     float getMasterGain() const { return player.getMasterGain(); }
     juce::File getProjectFolder() const { return projectFolder; }
+
+    // ---- picture (MIRA-VIDEO.md Phase 1) ----------------------------------------------
+    //
+    // ONE video track, with clips on it -- Phase 1 loads one, Phase 4 makes it several.
+    // One track keeps the picture unambiguous: there is only ever one thing to look at.
+    void setVideoClip(const juce::File& file, double lengthSeconds, double framesPerSecond);
+    void clearVideo();
+    bool hasVideo() const { return !videoClips.empty(); }
+    const std::vector<VideoClip>& getVideoClips() const { return videoClips; }
+    // Fired when the clip CHANGES -- a load, or a document that brought one with it --
+    // and not on an undo that left the same file in place, because reopening a 40-minute
+    // film to undo a fade would be a three-minute undo.
+    std::function<void(const VideoClip&)> onVideoClipChanged;
+    std::function<void()> onVideoCleared;
     static constexpr double getTimelineRate() { return CanvasPlayer::getTimelineRate(); }
     std::function<void()> onStateChanged;
 
@@ -353,6 +385,8 @@ private:
     juce::Array<juce::File> takesOf(const Visual& v) const;
     // 100+i shows take i, 200+i moves it to the Trash.
     void chooseTake(juce::int64 blockId, int menuId);
+    std::vector<VideoClip> videoClips;
+    void paintVideoStrip(juce::Graphics&);
     double genFraction = -1.0;   // <0 = nothing generating
     std::unique_ptr<juce::TextEditor> blockRenameEditor;
     juce::int64 renamingBlock = 0;
@@ -360,8 +394,14 @@ private:
     void setSelectionMuted(bool muted);
     static constexpr int kFadeGrab = 9;    // px either side of a fade handle
     static constexpr int kFadeBand = 14;   // px down from the block top that drags a fade
-    int laneToY(int lane) const { return topRuler + lane * laneHeight; }
-    int yToLane(int y) const { return juce::jmax(0, (y - topRuler) / laneHeight); }
+    // The video strip sits between the ruler and the first track: a video track, at the
+    // top, where a picture editor expects it. It has no height at all until there is a
+    // clip -- an empty video track is a promise nobody made, the same reasoning that
+    // stops the canvas opening with fifteen empty audio tracks.
+    int videoStripH() const { return videoClips.empty() ? 0 : 34; }
+    int lanesTop() const { return topRuler + videoStripH(); }
+    int laneToY(int lane) const { return lanesTop() + lane * laneHeight; }
+    int yToLane(int y) const { return juce::jmax(0, (y - lanesTop()) / laneHeight); }
     // Declared after Visual, which they take by reference.
     juce::File blockFolderFor(const Visual&) const;
     Visual* singleSelection();
@@ -431,6 +471,18 @@ public:
     // lives in Content (the project folder, the dirty flag, the save-as prompt), so the
     // menu asks the window rather than reaching past it into the view.
     void saveProject();
+    // MIRA-VIDEO.md Phase 1.3 -- pick a film, put it on the video track, open the picture.
+    void openVideo();
+    // Reopen the picture for a clip the document already holds. Closing the picture
+    // window does not throw the clip away: the film is still in the session, you have
+    // just stopped looking at it.
+    void showPicture();
+    bool hasVideo() const;
+
+    // ui_settings, reached through the owner. The canvas has no database of its own, and
+    // giving it one so a window could remember its size would be the wrong trade.
+    std::function<juce::String(const juce::String& key)> loadSetting;
+    std::function<void(const juce::String& key, const juce::String& value)> saveSetting;
 
 private:
     struct Content;

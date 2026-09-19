@@ -55,7 +55,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | [PRD.md](PRD.md) | the design: stack, models, phases, licence reasoning, every "why this and not that" | current as design; §-numbers are cited throughout the code |
 | [TASKS.md](TASKS.md) | the build checklist, phase by phase. Phases 0–5 complete, **Phase 6 in progress** | live — tick items here |
 | [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — **phases 1–5 built**, 6–7 open (2026-09-17) |
-| [MIRA-VIDEO.md](MIRA-VIDEO.md) | **scoring to picture** — a video window slaved to the transport, a locked reference track, timecode. Its own 6-phase task list | **plan only, nothing built** (2026-09-19) |
+| [MIRA-VIDEO.md](MIRA-VIDEO.md) | **scoring to picture** — a video window slaved to the transport, a locked reference track, timecode. Its own 6-phase task list | live — **Phase 0 measured, Phase 1 built and unverified** (2026-09-19) |
 | [CANVAS.md](CANVAS.md) | **the block canvas** — the Blockhead-shaped experiment: blocks that own their generator, tracks that sum, and the `.mira` document | live — experimental, 2026-09-19 |
 
 ### Captioning and training
@@ -175,6 +175,39 @@ These are not style preferences. Each one exists because breaking it caused a re
 ## Recent work
 
 Newest first. Keep this current — it is how the next session finds the thread.
+
+### 2026-09-19 (later still) — picture, and a spike that measured the wrong thing twice
+
+[MIRA-VIDEO.md](MIRA-VIDEO.md) Phase 0 and Phase 1. `spike/07_video_sync/` answered the
+three questions that decide the shape of the rest, and all three changed the plan.
+
+- **It is an offset, not a drift.** 700 seconds of muted `VideoComponent` against samples
+  the audio device actually consumed: start latency **−290.3 ms, constant**, worst drift
+  from it **8.1 ms** (0.20 frames at 25), and the worst value was reached in the first 30
+  seconds and never grew. So sync is a one-time seek, and the rate-nudge of the plan is a
+  safety net rather than the mechanism.
+- **`getVideoDuration()` returns 0.00** — for the whole run, after polling five seconds,
+  while the same player was plainly playing. The clip's length comes from our own
+  `AVURLAsset` query ([VideoNative.mm](src/mira_ui/Source/VideoNative.mm)) instead.
+- **`.mp4` reads, `.mov` does not.** 4/4 and 0/4, despite `.mov` being in
+  `CoreAudioFormat`'s own advertised extension list and `afinfo` opening every one. Phase
+  2.1 must try the direct read, fall back to `AVAssetReader`, and **say which route ran**.
+- **385× realtime on the internal SSD, 12× on an external drive** — 6 s against 200 s for a
+  40-minute film. Progress and a cache are not optional.
+
+**Two mistakes in the spike itself, both mine, both the same shape as convention 10.** The
+first version waited for `getProportionComplete()` to reach 1.0; it sits at 0.9999 forever,
+so it measured its own 120 s timeout instead of a read that had finished in two seconds.
+The second extrapolated the constant −292 ms offset into "12,635 ms per hour of drift" —
+a plausible number, confidently stated, measuring the wrong quantity. Offset and drift are
+different problems and the spike now reports them separately.
+
+Phase 1 is written and compiles: a floating always-on-top `VideoWindow` with no native
+controls, `Canvas ▸ Open Video...`, a PICTURE track above the tracks, start latency measured
+per machine at load, stop-parks and scrub-follows, and the window's geometry in
+`ui_settings` per project. The clip serialises into the `.mira` under a `video` array, and
+a document without one opens exactly as before. **None of it has been seen running** —
+see the top of MIRA-VIDEO.md Phase 1, and convention 8.
 
 ### 2026-09-19 (later) — the canvas becomes the project, and ARCHITECTURE.md
 
@@ -537,7 +570,9 @@ separate faults, each fixed and each re-measured against the same six.
 **Verify the canvas on screen.** Roughly a dozen commits on 2026-09-19 have not been seen
 running -- the tabs, the master strip, the file list, `[`/`]`, track select/delete, the
 title-bar colour, the Canvas menu, Open Recent, the block gain and rename, the on-block
-progress bar, cleanup and export. Convention 8 says compiling is not verifying, and this is
+progress bar, cleanup and export -- **and now the whole of MIRA-VIDEO Phase 1**: open a
+film, play, stop, scrub, close and reopen the project, and watch the picture against the
+playhead over a long reel (MIRA-VIDEO.md task 1.7). Convention 8 says compiling is not verifying, and this is
 the largest unverified stack this project has carried.
 
 

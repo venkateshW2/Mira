@@ -372,6 +372,17 @@ mira is simply seen next time.
 Editing marks the document **dirty** (a `*` in the title) rather than writing to disk behind
 your back.
 
+### Picture, if there is any
+
+`Canvas ▸ Open Video...` puts a film on a **PICTURE track** above the audio tracks and opens
+a floating window showing it. The clip serialises into the same `.mira` under a `video`
+array; a document without one opens exactly as it always did.
+
+The picture is driven by the transport and has no transport of its own, and the film's own
+audio is muted at the player — there is one audio clock in mira, and Phase 2 of
+[MIRA-VIDEO.md](MIRA-VIDEO.md) brings the film's audio in as a reference track through the
+same mixer as everything else. Nothing about picture touches the audio path.
+
 ---
 
 ## 4. The audio

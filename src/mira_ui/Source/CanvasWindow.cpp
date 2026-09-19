@@ -1,4 +1,5 @@
 #include "CanvasWindow.h"
+#include "VideoWindow.h"
 #include "mira/db/PathNormalise.h"
 #include "NativeWindowChrome.h"
 
@@ -689,7 +690,7 @@ void CanvasView::mouseDoubleClick(const juce::MouseEvent& e)
     // Double-click a lane's NAME to rename it. "takes / 3" says what the file was called,
     // not what the lane is for, and a lane you cannot name is one you have to identify by
     // its waveform every time.
-    if (e.x < kHeaderWidth && e.y >= topRuler)
+    if (e.x < kHeaderWidth && e.y >= lanesTop())
     {
         const int lane = yToLane(e.y);
         if (nameBoxFor(lane).contains(e.getPosition())) beginRename(lane);
@@ -1438,6 +1439,29 @@ juce::String CanvasView::toJson(const juce::File& base) const
     root->setProperty("laneCount", laneCount);
     root->setProperty("waveZoom", (double) waveZoom);
     root->setProperty("muteMask", juce::String(muteMask));
+
+    // A document with no `video` array opens exactly as it does today -- that is what
+    // makes picture additive rather than a migration. The array is written only when
+    // there IS a clip, so nothing that never saw a video grows an empty one.
+    if (!videoClips.empty())
+    {
+        juce::Array<juce::var> clips;
+        for (const auto& c : videoClips)
+        {
+            auto* o = new juce::DynamicObject();
+            const auto full = c.file.getFullPathName();
+            const bool inside = full.startsWith(base.getFullPathName() + "/");
+            o->setProperty("file", inside ? c.file.getRelativePathFrom(base) : full);
+            o->setProperty("start", c.start);
+            o->setProperty("length", c.length);
+            o->setProperty("offset", c.sourceOffset);
+            o->setProperty("fps", c.fps);
+            o->setProperty("dropFrame", c.dropFrame);
+            o->setProperty("startTimecode", c.startTimecode);
+            clips.add(juce::var(o));
+        }
+        root->setProperty("video", juce::var(clips));
+    }
     return juce::JSON::toString(juce::var(root), false);
 }
 
@@ -1451,6 +1475,11 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
     items.clear();
     selected.clear();
     panelBlockId = 0;      // the block it was showing no longer exists
+    // Remembered so the reload below can tell "a document brought a different film" from
+    // "an undo left the same one in place". Reopening a 40-minute film to undo a fade
+    // would be a three-minute undo.
+    const auto previousVideo = videoClips.empty() ? juce::File() : videoClips.front().file;
+    videoClips.clear();
     laneNames.clear();
     laneDb.clear();
     muteMask = soloMask = 0;
@@ -1497,6 +1526,34 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
                                                                : base.getChildFile(path));
             items.push_back(std::move(v));
         }
+
+    if (auto* clips = root.getProperty("video", {}).getArray())
+        for (const auto& c : *clips)
+        {
+            VideoClip v;
+            const auto path = c.getProperty("file", "").toString();
+            if (path.isEmpty()) continue;
+            v.file = juce::File::isAbsolutePath(path) ? juce::File(path) : base.getChildFile(path);
+            v.start = (double) c.getProperty("start", 0.0);
+            v.length = (double) c.getProperty("length", 0.0);
+            v.sourceOffset = (double) c.getProperty("offset", 0.0);
+            v.fps = (double) c.getProperty("fps", 0.0);
+            v.dropFrame = (bool) c.getProperty("dropFrame", false);
+            v.startTimecode = (double) c.getProperty("startTimecode", 0.0);
+            videoClips.push_back(v);
+        }
+
+    // Convention 9: never compare two paths with ==. The document holds the path as it
+    // was written; the window holds the path as the chooser gave it.
+    if (videoClips.empty())
+    {
+        if (previousVideo.getFullPathName().isNotEmpty() && onVideoCleared) onVideoCleared();
+    }
+    else if (!mira::pathsEquivalent(videoClips.front().file.getFullPathName().toStdString(),
+                                    previousVideo.getFullPathName().toStdString()))
+    {
+        if (onVideoClipChanged) onVideoClipChanged(videoClips.front());
+    }
 
     applyMasks();
     // An UNDO must not move the view. Refitting after every undone edit would answer a
@@ -1716,6 +1773,8 @@ void CanvasView::paint(juce::Graphics& g)
             g.drawText(formatTime(t), x + 3, 0, 60, topRuler, juce::Justification::centredLeft, false);
         }
     }
+
+    paintVideoStrip(g);
 
     // --- blocks
     for (const auto& item : items)
@@ -1941,11 +2000,11 @@ void CanvasView::paint(juce::Graphics& g)
     // --- lane headers, painted AFTER the blocks so a block scrolled left disappears
     // under them rather than over them.
     {
-        auto strip = juce::Rectangle<int>(0, topRuler, kHeaderWidth, getHeight() - topRuler);
+        auto strip = juce::Rectangle<int>(0, lanesTop(), kHeaderWidth, getHeight() - lanesTop());
         g.setColour(MiraLookAndFeel::surface2);
         g.fillRect(strip);
         g.setColour(MiraLookAndFeel::border);
-        g.drawVerticalLine(kHeaderWidth - 1, static_cast<float>(topRuler), static_cast<float>(getHeight()));
+        g.drawVerticalLine(kHeaderWidth - 1, static_cast<float>(lanesTop()), static_cast<float>(getHeight()));
 
         for (int lane = 0; lane < lanes; ++lane)
         {
@@ -2188,7 +2247,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
 
     // The lane headers first: they sit over everything on the left, so a click there is
     // never a click on a block.
-    if (e.x < kHeaderWidth && e.y >= topRuler)
+    if (e.x < kHeaderWidth && e.y >= lanesTop())
     {
         const int lane = yToLane(e.y);
         if (lane >= laneCount) return;
@@ -2222,6 +2281,15 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     }
 
     if (e.y < topRuler)
+    {
+        drag = Drag::Playhead;
+        player.setPositionSeconds(juce::jmax(0.0, xToSeconds(e.x)));
+        repaint();
+        return;
+    }
+    // The video track. Scrubs the playhead like the ruler does -- which is the gesture
+    // you actually want over picture -- and is not a lane, so yToLane never sees it.
+    if (e.y < lanesTop())
     {
         drag = Drag::Playhead;
         player.setPositionSeconds(juce::jmax(0.0, xToSeconds(e.x)));
@@ -2829,7 +2897,7 @@ void CanvasView::timerCallback()
 {
     if (player.isPlaying())
     {
-        const int lanes = juce::jmax(4, (getHeight() - topRuler) / laneHeight + 1);
+        const int lanes = juce::jmax(4, (getHeight() - lanesTop()) / laneHeight + 1);
         const std::array<float, 2> zero { 0.0f, 0.0f };
         if ((int) laneMeter.size()  < lanes) laneMeter.resize((size_t) lanes, zero);
         if ((int) laneHold.size()   < lanes) laneHold.resize((size_t) lanes, zero);
@@ -3243,6 +3311,79 @@ private:
     juce::Time lastStamp;
 };
 
+// ---- picture on the timeline (MIRA-VIDEO.md Phase 1) --------------------------------
+
+void CanvasView::paintVideoStrip(juce::Graphics& g)
+{
+    if (videoClips.empty()) return;
+
+    const auto band = juce::Rectangle<int>(0, topRuler, getWidth(), videoStripH());
+    g.setColour(MiraLookAndFeel::surface);
+    g.fillRect(band);
+
+    // The clips first, then the header over them -- the same order the audio lanes use,
+    // so a clip scrolled off the left disappears UNDER the header rather than over it.
+    {
+        juce::Graphics::ScopedSaveState clipped(g);
+        g.reduceClipRegion(band.withTrimmedLeft(kHeaderWidth));
+        for (const auto& c : videoClips)
+        {
+            const int x0 = secondsToX(c.start);
+            const int x1 = secondsToX(c.start + juce::jmax(0.5, c.length));
+            auto r = juce::Rectangle<int>(x0, topRuler + 3, juce::jmax(2, x1 - x0), videoStripH() - 6);
+            g.setColour(MiraLookAndFeel::surface2);
+            g.fillRoundedRectangle(r.toFloat(), 3.0f);
+            g.setColour(MiraLookAndFeel::border);
+            g.drawRoundedRectangle(r.toFloat().reduced(0.5f), 3.0f, 1.0f);
+            g.setColour(MiraLookAndFeel::textDim);
+            g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
+            // The length is said out loud in the strip, because a clip whose length
+            // AVFoundation would not report is drawn at a made-up half second, and that
+            // has to look wrong rather than look like a very short film.
+            const auto label = c.file.getFileName()
+                                 + (c.length > 0.0 ? "   " + juce::String(c.length, 1) + " s"
+                                                   : juce::String("   length unknown"));
+            g.drawText(label, r.reduced(7, 0), juce::Justification::centredLeft, true);
+        }
+    }
+
+    g.setColour(MiraLookAndFeel::surface2);
+    g.fillRect(0, topRuler, kHeaderWidth, videoStripH());
+    g.setColour(MiraLookAndFeel::border);
+    g.drawVerticalLine(kHeaderWidth - 1, static_cast<float>(topRuler), static_cast<float>(lanesTop()));
+    g.drawHorizontalLine(lanesTop() - 1, 0.0f, static_cast<float>(getWidth()));
+    g.setColour(MiraLookAndFeel::textFaint);
+    g.setFont(laf.monoRegular(MiraLookAndFeel::textSize(9.5f)));
+    g.drawText("PICTURE", juce::Rectangle<int>(10, topRuler, kHeaderWidth - 16, videoStripH()),
+               juce::Justification::centredLeft, false);
+}
+
+void CanvasView::setVideoClip(const juce::File& file, double lengthSeconds, double framesPerSecond)
+{
+    pushUndo();
+    VideoClip c;
+    c.file = file;
+    c.length = juce::jmax(0.0, lengthSeconds);
+    c.fps = juce::jmax(0.0, framesPerSecond);
+    videoClips.clear();            // Phase 1: one clip. Phase 4 makes this an append.
+    videoClips.push_back(c);
+    markDirty();
+    if (onVideoClipChanged) onVideoClipChanged(videoClips.front());
+    resized();
+    repaint();
+}
+
+void CanvasView::clearVideo()
+{
+    if (videoClips.empty()) return;
+    pushUndo();
+    videoClips.clear();
+    markDirty();
+    if (onVideoCleared) onVideoCleared();
+    resized();
+    repaint();
+}
+
 struct CanvasWindow::Content : juce::Component, private juce::Timer
 {
     Content(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
@@ -3361,6 +3502,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         view.onExtendRefused = [this](const juce::String& why) {
             if (panel != nullptr) panel->setStatus(why);
         };
+        // Picture. The clip is the document's; the WINDOW is this session's, so opening
+        // a project that carries a film opens the film with it.
+        view.onVideoClipChanged = [this](const VideoClip& c) { openPicture(c); };
+        view.onVideoCleared     = [this] { storeVideoGeometry(); videoWindow.reset(); };
         view.onTakeNote = [this](const juce::String& note) {
             if (panel != nullptr) panel->setStatus(note);
         };
@@ -3659,6 +3804,89 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     }
     void mouseUp(const juce::MouseEvent&) override { draggingSide = false; }
 
+    ~Content() override { storeVideoGeometry(); }
+
+    // ---- picture (MIRA-VIDEO.md Phase 1) ----------------------------------------------
+
+    void promptOpenVideo()
+    {
+        auto chooser = std::make_shared<juce::FileChooser>(
+            "Open a video", juce::File::getSpecialLocation(juce::File::userMoviesDirectory),
+            "*.mp4;*.mov;*.m4v");
+        chooser->launchAsync(juce::FileBrowserComponent::openMode
+                                 | juce::FileBrowserComponent::canSelectFiles,
+                              [this, chooser](const juce::FileChooser& fc) {
+            const auto f = fc.getResult();
+            if (f == juce::File()) return;
+            note("opening " + f.getFileName() + "...");
+            ensureVideoWindow();
+            const auto r = videoWindow->loadVideo(f);
+            if (r.failed())
+            {
+                // Convention 6: a file that will not open says why. It does NOT become a
+                // clip on the timeline that shows nothing.
+                note(r.getErrorMessage());
+                storeVideoGeometry();
+                videoWindow.reset();
+                return;
+            }
+            // The length comes from the WINDOW, which got it from AVFoundation -- see
+            // VideoNative.mm for why it cannot come from getVideoDuration().
+            view.setVideoClip(f, videoWindow->getClipLength(), videoWindow->getFrameRate());
+        });
+    }
+
+    void openPicture(const VideoClip& c)
+    {
+        ensureVideoWindow();
+        // Already showing this film: place it and leave it alone. Reloading here would
+        // make every undo reopen a 40-minute file.
+        if (!mira::pathsEquivalent(videoWindow->getFile().getFullPathName().toStdString(),
+                                   c.file.getFullPathName().toStdString()))
+        {
+            const auto r = videoWindow->loadVideo(c.file);
+            if (r.failed()) { note(r.getErrorMessage()); return; }
+        }
+        videoWindow->setPlacement(c.start, c.sourceOffset);
+        videoWindow->toFront(false);
+    }
+
+    void ensureVideoWindow()
+    {
+        if (videoWindow != nullptr) return;
+        videoWindow = std::make_unique<VideoWindow>();
+        // The transport is the clock, polled. MIRA-VIDEO.md §3.
+        videoWindow->transportPosition = [this] { return view.getPositionSeconds(); };
+        videoWindow->transportPlaying  = [this] { return view.isPlaying(); };
+        videoWindow->onNote = [this](const juce::String& n) { note(n); };
+        videoWindow->onClosed = [this] {
+            storeVideoGeometry();
+            // Deleted from the message queue rather than from inside its own callback.
+            juce::MessageManager::callAsync([safe = juce::Component::SafePointer<Content>(this)] {
+                if (safe != nullptr) safe->videoWindow.reset();
+            });
+        };
+        if (owner != nullptr && owner->loadSetting)
+            videoWindow->restoreGeometry(owner->loadSetting(videoGeometryKey()));
+    }
+
+    // Phase 1.6 -- per PROJECT, because where the picture wants to sit depends on what
+    // you are scoring, not on the app.
+    juce::String videoGeometryKey() const
+    {
+        const auto doc = view.getDocumentFile();
+        return "canvas_video_geometry:" + (doc.getFullPathName().isNotEmpty()
+                                               ? doc.getFullPathName() : juce::String("untitled"));
+    }
+
+    void storeVideoGeometry()
+    {
+        if (videoWindow == nullptr || owner == nullptr || !owner->saveSetting) return;
+        owner->saveSetting(videoGeometryKey(), videoWindow->geometryString());
+    }
+
+    void note(const juce::String& text) { if (panel != nullptr) panel->setStatus(text); }
+
     void timerCallback() override
     {
         // The peak matters MORE here than in a normal DAW. Stacking alternates means N
@@ -3714,6 +3942,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
     float held = 0.0f;
 
+    CanvasWindow* owner = nullptr;
+    std::unique_ptr<VideoWindow> videoWindow;
     CanvasView view;
     GenerateContent* panel = nullptr;      // owned by the window, not by this
     // How much of the window the side panel takes. Dragged, not fixed -- a panel that is
@@ -3746,6 +3976,7 @@ CanvasWindow::CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager&
                             juce::DocumentWindow::closeButton)
 {
     content = std::make_unique<Content>(laf, formats, cache, panel);
+    content->owner = this;
     view = &content->view;
     setUsingNativeTitleBar(true);
     setContentNonOwned(content.get(), false);
@@ -3762,5 +3993,17 @@ CanvasWindow::CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager&
 CanvasWindow::~CanvasWindow() = default;
 
 void CanvasWindow::saveProject() { if (content != nullptr) content->saveOrAsk(); }
+
+void CanvasWindow::openVideo() { if (content != nullptr) content->promptOpenVideo(); }
+
+void CanvasWindow::showPicture()
+{
+    if (content == nullptr || view == nullptr) return;
+    const auto& clips = view->getVideoClips();
+    if (clips.empty()) return;
+    content->openPicture(clips.front());
+}
+
+bool CanvasWindow::hasVideo() const { return view != nullptr && view->hasVideo(); }
 
 } // namespace mira::canvas

@@ -69,8 +69,10 @@ target_sources(mira_ui PRIVATE
   Source/CanvasWindow.cpp
   Source/PrepareWindow.cpp
     Source/PromptBuilderWindow.cpp
+  Source/VideoWindow.cpp
   Source/NativeBlur.mm
   Source/NativeWindowChrome.mm
+  Source/VideoNative.mm
 )
 
 # TASKS.md Phase 5 planning session's visual-direction decision: NSVisualEffectView
@@ -78,13 +80,16 @@ target_sources(mira_ui PRIVATE
 # relying on any project-wide default — JUCE's own recommended config doesn't set this
 # for consuming targets, and NSViewComponent::setView's documented retain/release
 # contract assumes the caller isn't fighting it with manual memory management.
-set_source_files_properties(Source/NativeBlur.mm Source/NativeWindowChrome.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+set_source_files_properties(Source/NativeBlur.mm Source/NativeWindowChrome.mm Source/VideoNative.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_include_directories(mira_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 target_compile_definitions(mira_ui PRIVATE
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
+  # juce_video also carries the camera capture surface. mira never reads a camera, and
+  # linking it would put a camera-access prompt in front of a music tool.
+  JUCE_USE_CAMERA=0
   JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:mira_ui,JUCE_PRODUCT_NAME>"
   JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:mira_ui,JUCE_VERSION>"
 )
@@ -95,6 +100,9 @@ target_link_libraries(mira_ui PRIVATE
   juce::juce_gui_extra
   juce::juce_audio_utils
   juce::juce_audio_formats
+  # MIRA-VIDEO.md Phase 1.1 -- juce_video wraps AVKit/AVFoundation on macOS. Proved in
+  # spike/07_video_sync before it was linked here; see MIRA-VIDEO.md Phase 0.
+  juce::juce_video
   juce::juce_recommended_config_flags
   juce::juce_recommended_lto_flags
   juce::juce_recommended_warning_flags

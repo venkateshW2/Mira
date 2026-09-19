@@ -1196,7 +1196,9 @@ namespace CanvasMenu {
         kAddTrack, kAddBlock, kDuplicate, kRemove,
         kSave,
         kExportTracks, kCleanup,
-        kFirst = kPlay, kLast = kCleanup
+        // MIRA-VIDEO.md Phase 1.3
+        kOpenVideo, kShowPicture,
+        kFirst = kPlay, kLast = kShowPicture
     };
 }
 
@@ -3246,6 +3248,7 @@ public:
     // is open, rather than appearing and vanishing -- a menu that moves is a menu nobody
     // learns the position of.
     bool hasCanvasWindow() const { return canvasWindow != nullptr; }
+    bool hasCanvasVideo() const { return canvasWindow != nullptr && canvasWindow->hasVideo(); }
 
     void performCanvasAction(int id)
     {
@@ -3264,6 +3267,8 @@ public:
             // the save-as prompt all live there.
             case CanvasMenu::kExportTracks: v.promptExport(2, 0); break;
             case CanvasMenu::kCleanup:      v.promptCleanup(); break;
+            case CanvasMenu::kOpenVideo:    canvasWindow->openVideo(); return;
+            case CanvasMenu::kShowPicture:  canvasWindow->showPicture(); return;
             case CanvasMenu::kSave:      canvasWindow->saveProject(); break;
             default: break;
         }
@@ -3291,6 +3296,16 @@ public:
         // Double-clicking a block opens the REAL generate window bound to that block's
         // folder -- one generator in mira, pointed at a block, rather than a second
         // smaller one that would drift from it.
+        // MIRA-VIDEO.md Phase 1.6. The canvas has no database of its own; this is the
+        // one place that knows about both.
+        canvasWindow->loadSetting = [this](const juce::String& key) {
+            if (database == nullptr) return juce::String();
+            const auto v = database->getSetting(key.toStdString());
+            return v.has_value() ? juce::String(*v) : juce::String();
+        };
+        canvasWindow->saveSetting = [this](const juce::String& key, const juce::String& value) {
+            if (database != nullptr) database->setSetting(key.toStdString(), value.toStdString());
+        };
         canvasWindow->getView().attachTo(sharedAudioDevice);
         canvasWindow->getView().setProject(getCurrentProject());
         canvasWindow->onClosed = [this] {
@@ -4824,6 +4839,8 @@ public:
     // not two menus deep); this is the same actions reachable from the menu bar, greyed
     // out when no canvas is open rather than hidden, so the menu is stable.
     std::function<bool()> hasCanvas;
+    // Whether the canvas holds a video clip -- Show Picture is meaningless without one.
+    std::function<bool()> hasCanvasVideo;
     std::function<void(int)> onCanvasAction;
 
     std::function<juce::StringArray()> getRecent;
@@ -4924,6 +4941,10 @@ public:
             menu.addItem(CanvasMenu::kCleanup, "Clean Up Unused Takes...", live, false);
             menu.addSeparator();
             menu.addItem(CanvasMenu::kSave, "Save Canvas", live, false);
+            menu.addSeparator();
+            menu.addItem(CanvasMenu::kOpenVideo, "Open Video...", live, false);
+            menu.addItem(CanvasMenu::kShowPicture, "Show Picture",
+                          live && hasCanvasVideo && hasCanvasVideo(), false);
         }
         else if (topLevelMenuIndex == 8)
         {
@@ -5047,6 +5068,7 @@ public:
                 mainWindow->getMainComponent().openProject(juce::File(recent[index]));
         };
         menuModel.hasCanvas = [this] { return mainWindow->getMainComponent().hasCanvasWindow(); };
+        menuModel.hasCanvasVideo = [this] { return mainWindow->getMainComponent().hasCanvasVideo(); };
         menuModel.onCanvasAction = [this](int id) { mainWindow->getMainComponent().performCanvasAction(id); };
         mainWindow->getMainComponent().onMenuStateChanged = [this] { menuModel.menuItemsChanged(); };
         menuModel.getAnalyzeOptions = [this] { return mainWindow->getMainComponent().getAnalyzeOptions(); };

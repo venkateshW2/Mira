@@ -248,21 +248,47 @@ or the machine changes, and every number above has a date on it for that reason.
 
 ### Phase 1 — a video window that follows the playhead
 
-- [ ] **1.1** `juce::juce_video` added to `src/mira_ui/CMakeLists.txt`.
-- [ ] **1.2** `VideoWindow` — a floating, always-on-top window holding a `VideoComponent`,
-  with no native controls (mira's transport is the only transport).
-- [ ] **1.3** `File ▸ Open Video...` on the canvas. One video track appears. Progress while
-  the waveform builds — 0.3 says that is 200 s for a 40-minute film on an external drive.
-- [ ] **1.4** Measure this machine's start latency once at load (seek to a known position,
-  compare), then the §3 loop with that offset. Muted, always.
-- [ ] **1.4b** Clip length from the audio reader or our own `AVAsset` query —
-  **not** `getVideoDuration()`, which Phase 0.2 watched return 0.00 for 700 seconds.
-- [ ] **1.5** Stop parks the picture at the transport position; scrubbing the playhead
-  scrubs the picture.
-- [ ] **1.6** The window remembers its size and position in `ui_settings`, per project.
+**Written 2026-09-19 and compiling. NOT YET SEEN RUNNING** — `[~]` below means the code is
+there and the build is clean, which convention 8 says is not the same as working. Every one
+of these needs a film opened on screen before it becomes `[x]`.
+
+- [x] **1.1** `juce::juce_video` added to `src/mira_ui/CMakeLists.txt`, with
+  `JUCE_USE_CAMERA=0` — the module also carries camera capture, and a music tool should not
+  ask for the camera.
+- [~] **1.2** [`VideoWindow`](src/mira_ui/Source/VideoWindow.h) — a floating, always-on-top
+  window holding a `VideoComponent` constructed with `false` (no native controls: mira's
+  transport is the only transport). Black surround, not mira's grey — everything around a
+  frame changes how you read it.
+- [~] **1.3** `Canvas ▸ Open Video...`, and `Canvas ▸ Show Picture` for a clip the document
+  already holds. A PICTURE track appears above the tracks, with the clip and its length on
+  it. It is in the **Canvas** menu rather than File: File belongs to the library window,
+  and every other canvas action already lives here.
+  The **waveform progress** of the original task moves to Phase 2 — there is no waveform
+  until there is a reference track, and 0.3's 200 seconds is that read, not this one.
+- [~] **1.4** Start latency measured **at load, on this machine**: play muted from a known
+  position, and one second later ask how far the picture actually got. `elapsed − advanced`
+  is the offset, added to every locate. If the picture never moves, the note says so and
+  sync stays uncompensated rather than silently wrong (convention 6).
+- [~] **1.4b** Clip length and frame rate from an `AVURLAsset` query of our own
+  ([VideoNative.mm](src/mira_ui/Source/VideoNative.mm)) — **not** `getVideoDuration()`,
+  which Phase 0.2 watched return 0.00 for 700 seconds of successful playback. A partial
+  answer is kept and said out loud: a length with no frame rate is still a length.
+- [~] **1.5** Stop parks the picture at the transport position; moving the playhead with
+  the transport stopped scrubs the picture. Clicking the PICTURE track scrubs too — over
+  picture that is the gesture you actually want.
+- [~] **1.6** The window remembers its size and position in `ui_settings`, keyed
+  `canvas_video_geometry:<document path>` — per project, because where the picture wants to
+  sit depends on what you are scoring.
+- [ ] **1.7** **Verify on screen.** Open a film, play, stop, scrub, close and reopen the
+  project. Then the long one: the picture against the playhead over a full reel.
 
 **Done when** the picture follows the playhead over a full 40-minute reel and the drift at
 the end is under one frame.
+
+**The clip is in the document.** `.mira` grows a `video` array (§6); a document without one
+opens exactly as it did, which is what makes this additive rather than a migration. An undo
+that leaves the same film in place does **not** reload it — reopening a 40-minute file to
+undo a fade would be a three-minute undo.
 
 ### Phase 2 — the reference track
 

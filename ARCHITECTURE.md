@@ -201,6 +201,13 @@ generation time.
 - **One `AudioDeviceManager` for the whole app** (`MainComponent::sharedAudioDevice`),
   persisted in `ui_settings.audio_device_state`. Every window that makes sound joins it.
   A device per window meant a device per take preview.
+- **The picture window** (`VideoWindow`, MIRA-VIDEO.md Phase 1) is a floating,
+  always-on-top `VideoComponent` with no native controls. It is a separate window and not
+  a pane because `VideoComponent` is a native `AVPlayerView`: it renders ABOVE JUCE, so a
+  pane inside the canvas would punch a hole through the blocks and the playhead. It makes
+  **no sound** — AVPlayer's audio is muted always, so the system has one audio clock — and
+  it owns no audio path. It polls the canvas transport and chases it; see MIRA-VIDEO.md §3
+  for the measurement that made that a one-time seek rather than a control loop.
 - **One SA3 worker for the whole app** (`Sa3WorkerHub`). A worker holds the DiT and the
   decoder; a 30-second generation peaked at 11 GB on a 16 GB machine. Two windows each
   owning one would be two processes swapping against each other.
