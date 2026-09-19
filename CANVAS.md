@@ -91,10 +91,15 @@ step with the picture; the picture *is* the number.
 
 ### Cutting is remembered, so you can continue from where the audio really ends
 
-A generated take often ends in silence. Drag the block's right edge **in** to cut it off,
-and that cut is kept: dragging back **out** grows the empty tail instead of revealing the
-silence you just removed. So "the take trails off, end it there and carry on" is two drags
-and a button, not a split, a delete and a re-drag.
+A generated take often ends in silence. Drag the block's right edge **in** to cut it off —
+or put the playhead where the audio really stops and press **`Cmd-E`** — and that cut is
+kept: dragging back **out** grows the empty tail instead of revealing the silence you just
+removed. So "the take trails off, end it there and carry on" is a cut, a drag and a button.
+
+**`Cmd-E` cuts; it does not split.** It ends the block at the playhead and leaves *one*
+block. Splitting into two is still there, on the right-click menu, where it reads as the
+deliberate operation it is — a second block means a second folder with an empty generator
+in it, which is not what you want when all you said was "the take ends here".
 
 `contentSeconds` on the block is what holds this — how much of the *file* the block uses,
 as against `length`, how long the block is on the *timeline*. The difference between them
@@ -326,7 +331,7 @@ What undo does not cover: the audio device, and anything outside the document.
 | `M` / `S` | mute / solo the selection's tracks |
 | `Cmd-Z` / `Cmd-shift-Z` | undo / redo |
 | `Cmd-D` | duplicate |
-| `Cmd-E` | split every block the playhead stands on |
+| `Cmd-E` | cut every block the playhead stands on, there |
 | `Cmd-N` / `Cmd-O` / `Cmd-S` | new / open / save |
 | `G` / `H` | zoom out / in, around the playhead |
 | `shift-G` / `shift-H` | track height, down / up (`+` / `-` too) |
@@ -344,7 +349,7 @@ when it is notched. `G`/`H` do the same thing on every device and on a laptop wi
 to hand.
 | double-click a track name | rename |
 | double-click a block | open its generator |
-| right-click a block | mute, fade shape, clear fades, duplicate, split, remove |
+| right-click a block | mute, fade shape, clear fades, restore full take, duplicate, cut, split in two, remove |
 | the `M` on a block | mute just that block |
 | drag a block's right edge in | cut the audio short, and remember it |
 | drag it back out | make a tail for Extend / Remix |

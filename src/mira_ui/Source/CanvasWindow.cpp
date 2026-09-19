@@ -447,7 +447,8 @@ void CanvasView::showBlockMenu(Visual& v)
     m.addItem(6, "Restore full take", v.block.contentSeconds > 0.0 && v.block.hasAudio());
     m.addSeparator();
     m.addItem(3, "Duplicate");
-    m.addItem(4, "Split at playhead");
+    m.addItem(7, "Cut at playhead");
+    m.addItem(4, "Split into two at playhead");
     m.addItem(5, "Remove");
 
     juce::Component::SafePointer<CanvasView> safe (this);
@@ -487,6 +488,7 @@ void CanvasView::showBlockMenu(Visual& v)
                          }
                          if (result == 3) { self.duplicateSelection(); return; }
                          if (result == 4) { self.splitAtPlayhead();   return; }
+                         if (result == 7) { self.cutAtPlayhead();     return; }
                          if (result == 5) { self.removeSelected();    return; }
                          if (result >= 10 && result <= 12)
                          {
@@ -1649,7 +1651,7 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
         if (key.getKeyCode() == 'S' && onSaveRequested) { onSaveRequested(); return true; }
         if (key.getKeyCode() == 'O' && onOpenRequested) { onOpenRequested(); return true; }
         if (key.getKeyCode() == 'N' && onNewRequested)  { onNewRequested();  return true; }
-        if (key.getKeyCode() == 'E') { splitAtPlayhead(); return true; }
+        if (key.getKeyCode() == 'E') { cutAtPlayhead(); return true; }
         // Cmd-Z / Cmd-shift-Z, the two every app has. Handled here rather than in the menu
         // bar because the canvas is the only thing in mira with a document to undo.
         if (key.getKeyCode() == 'Z')
@@ -1698,6 +1700,45 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
     if (key.getTextCharacter() == '-')
         { laneHeight = juce::jmax(28, laneHeight - 8); repaint(); return true; }
     return false;
+}
+
+void CanvasView::cutAtPlayhead()
+{
+    // CUT, not split. Cmd-E ends the block at the playhead and leaves ONE block -- the
+    // part before the cut -- ready to extend from there.
+    //
+    // It used to split into two, which made a second block with a second folder and an
+    // empty generator in it: you asked to end a take and got a new empty thing to explain.
+    // Splitting is still available, on the right-click menu, where it reads as the
+    // deliberate two-block operation it is.
+    //
+    // The audio is not touched. Only the block's claim about where it ends moves, so
+    // "Restore full take" brings it all back and undo is one keypress.
+    const double at = player.getPositionSeconds();
+
+    std::vector<Visual*> victims;
+    for (const auto& i : items)
+    {
+        const bool spans = i->block.start < at - 1.0e-6 && i->block.end() > at + 1.0e-6;
+        if (!spans) continue;
+        if (selected.empty() || selected.count(i->block.id)) victims.push_back(i.get());
+    }
+    if (victims.empty()) return;
+    pushUndo();
+
+    for (auto* v : victims)
+    {
+        const double left = at - v->block.start;
+        v->block.length = left;
+        v->block.contentSeconds = left;      // the audio ends here too, not just the frame
+        v->block.fadeIn  = juce::jmin(v->block.fadeIn,  left);
+        v->block.fadeOut = juce::jmin(v->block.fadeOut, left);
+    }
+
+    markDirty();
+    rebuildAudio();
+    announceSelection();
+    repaint();
 }
 
 void CanvasView::splitAtPlayhead()
@@ -1966,7 +2007,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         fitButton.onClick    = [this] { view.fit(); };
         deleteButton.onClick = [this] { view.removeSelected(); };
 
-        hint.setText("space play - L loop - M/S mute solo - F fit - G/H zoom - cmd-E split - cmd-Z undo - alt-drag pan",
+        hint.setText("space play - L loop - M/S mute solo - F fit - G/H zoom - cmd-E cut - cmd-Z undo - alt-drag pan",
                       juce::dontSendNotification);
         hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);

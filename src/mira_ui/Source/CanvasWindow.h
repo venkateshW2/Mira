@@ -70,8 +70,12 @@ public:
     void zoomBy(double factor, int aroundX);
     void zoomVertical(double pixels);
     void panBy(double seconds);
-    // Cut every block the playhead stands on into two, each half keeping its own end of
-    // the audio. The right half gets its own name and folder, like a duplicate does.
+    // END every block the playhead stands on, there. One block, its audio cut to the
+    // playhead, ready to extend from -- which is what Cmd-E is for.
+    void cutAtPlayhead();
+    // Split into TWO, each half keeping its own end of the audio. The right half gets its
+    // own name and folder, like a duplicate does. On the menu, not the keyboard: it makes
+    // a second block with an empty generator, which is a thing you ask for deliberately.
     void splitAtPlayhead();
     void fit();
     void clearAll();
