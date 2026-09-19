@@ -1194,6 +1194,7 @@ namespace CanvasMenu {
     enum Action {
         kPlay = 300, kLoop, kFit,
         kAddTrack, kAddBlock, kDuplicate, kRemove,
+        kTrackUp, kTrackDown,
         kSave,
         kExportTracks, kCleanup,
         // MIRA-VIDEO.md Phase 1.3
@@ -3260,6 +3261,8 @@ public:
             case CanvasMenu::kLoop:      v.setLoopFromSelection(); break;
             case CanvasMenu::kFit:       v.fit(); break;
             case CanvasMenu::kAddTrack:  v.addLane(); break;
+            case CanvasMenu::kTrackUp:   v.moveSelectedLane(-1); break;
+            case CanvasMenu::kTrackDown: v.moveSelectedLane(1); break;
             case CanvasMenu::kAddBlock:  v.addEmptyBlock(); break;
             case CanvasMenu::kDuplicate: v.duplicateSelection(); break;
             case CanvasMenu::kRemove:    v.removeSelected(); break;
@@ -4953,6 +4956,8 @@ public:
             menu.addItem(CanvasMenu::kFit,  "Fit to Window", live, false);
             menu.addSeparator();
             menu.addItem(CanvasMenu::kAddTrack, "Add Track", live, false);
+            menu.addItem(CanvasMenu::kTrackUp, "Move Track Up", live, false);
+            menu.addItem(CanvasMenu::kTrackDown, "Move Track Down", live, false);
             menu.addItem(CanvasMenu::kAddBlock, "Add Block", live, false);
             menu.addItem(CanvasMenu::kDuplicate, "Duplicate", live, false);
             menu.addItem(CanvasMenu::kRemove, "Remove", live, false);

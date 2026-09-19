@@ -143,6 +143,13 @@ public:
     std::function<void()> onDocumentChanged;   // title, mostly
     std::function<void()> onSaveRequested, onOpenRequested, onNewRequested;
     void addLane();
+    // Reorder the tracks. Drag a lane header up or down, or Canvas > Move Track Up/Down.
+    // Everything keyed on the lane INDEX travels with it -- the blocks, the name, the
+    // fader, the mute and solo bits, the meter, and which lane is the reference -- because
+    // a reorder that moved the blocks but left the faders behind would be worse than no
+    // reorder at all.
+    void moveLane(int from, int to);
+    void moveSelectedLane(int delta);
     // Removes a track and everything on it, and closes the gap -- blocks on the tracks
     // below move up, because a track numbered 4 with nothing above it is not a hole you
     // meant to leave.
@@ -278,7 +285,7 @@ private:
         double audioSeconds = 0.0;
     };
 
-    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain };
+    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain, LaneMove };
 
     const MiraLookAndFeel& laf;
     juce::AudioFormatManager& formats;
@@ -335,6 +342,9 @@ private:
     // clip that shows for 200 ms is a clip you will miss.
     std::vector<bool> laneClipped;
     int faderLane = -1;            // which lane's fader is being dragged, or -1
+    // Where a dragged lane header would land, or -1. The move happens on mouse-UP, not as
+    // you cross: one undo step for one gesture, and an insertion line you can aim.
+    int laneDropTarget = -1;
     // Which TRACK is selected, or -1. Separate from the block selection because deleting a
     // track and deleting the blocks on it are different things to want.
     int selectedLane = -1;

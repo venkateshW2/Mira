@@ -372,6 +372,18 @@ mira is simply seen next time.
 Editing marks the document **dirty** (a `*` in the title) rather than writing to disk behind
 your back.
 
+### The order of the tracks
+
+**Drag a lane header up or down**, or select a track and use `Cmd-↑` / `Cmd-↓` or
+`Canvas ▸ Move Track Up/Down`. An accent line shows where it lands; the move happens on
+mouse-up, so one gesture is one undo step.
+
+Everything keyed on the lane INDEX travels with it — the blocks, the name, the fader, the
+mute and solo bits, the meter, the block colours, and which lane is the reference. That is
+one permutation applied to every list rather than six separate shift expressions, because
+six would be six chances to disagree, and a reorder that moved the blocks but left the
+faders behind would be worse than no reorder at all.
+
 ### Picture, if there is any
 
 `Canvas ▸ Open Video...` puts a film on a **PICTURE track** above the audio tracks and opens
@@ -561,6 +573,7 @@ What undo does not cover: the audio device, and anything outside the document.
 | `M` / `S` | mute / solo the selection's tracks |
 | `Cmd-Z` / `Cmd-shift-Z` | undo / redo |
 | `Cmd-D` | duplicate |
+| `Cmd-↑` / `Cmd-↓` | move the selected track up / down |
 | `Cmd-E` | cut every block the playhead stands on, there |
 | `Cmd-shift-E` | split it into two blocks instead of cutting |
 | `Cmd-N` / `Cmd-O` / `Cmd-S` | new / open / save — handled by the WINDOW, so they work whatever has focus |

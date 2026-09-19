@@ -910,6 +910,96 @@ void CanvasView::addLane()
     repaint();
 }
 
+void CanvasView::moveLane(int from, int to)
+{
+    from = juce::jlimit(0, laneCount - 1, from);
+    to   = juce::jlimit(0, laneCount - 1, to);
+    if (from == to || laneCount < 2) return;
+
+    pushUndo();
+    UndoGuard oneEdit (*this);
+
+    // `order[newIndex] = oldIndex` -- ONE permutation, applied to every list that is keyed
+    // on the lane index. Writing the remap once and reusing it is the whole point: the
+    // blocks, the names, the faders, the meters, the mute and solo bits and the reference
+    // lane all have to agree, and six separate shift expressions would be six chances to
+    // disagree. A reorder that moved the blocks but left the faders behind would be worse
+    // than no reorder at all.
+    std::vector<int> order;
+    order.reserve((size_t) laneCount);
+    for (int i = 0; i < laneCount; ++i) if (i != from) order.push_back(i);
+    order.insert(order.begin() + to, from);
+
+    std::vector<int> newIndexOf((size_t) laneCount, 0);
+    for (int n = 0; n < laneCount; ++n) newIndexOf[(size_t) order[(size_t) n]] = n;
+
+    auto remap = [&](int oldLane) {
+        return juce::isPositiveAndBelow(oldLane, laneCount) ? newIndexOf[(size_t) oldLane] : oldLane;
+    };
+
+    for (auto& v : items)
+    {
+        // The colour travels with the TRACK: a block that is blue because it sits on
+        // track 1 stays blue when track 1 moves, rather than turning into whatever colour
+        // row 1 now is.
+        v->block.colour = remap(v->block.colour);
+        v->block.lane = remap(v->block.lane);
+    }
+
+    juce::StringArray names;
+    for (int n = 0; n < laneCount; ++n)
+        names.add(order[(size_t) n] < laneNames.size() ? laneNames[order[(size_t) n]] : juce::String());
+    laneNames = names;
+
+    auto reorderVector = [&](auto& v, auto fallback) {
+        std::decay_t<decltype(v)> out;
+        for (int n = 0; n < laneCount; ++n)
+        {
+            const auto o = (size_t) order[(size_t) n];
+            out.push_back(o < v.size() ? v[o] : fallback);
+        }
+        v = out;
+    };
+    reorderVector(laneDb, 0.0);
+    reorderVector(laneMeter, std::array<float, 2>{ 0.0f, 0.0f });
+    reorderVector(laneHold,  std::array<float, 2>{ 0.0f, 0.0f });
+    reorderVector(laneClipped, false);
+
+    auto reorderMask = [&](juce::uint64 mask) {
+        juce::uint64 out = 0;
+        for (int n = 0; n < juce::jmin(laneCount, CanvasAudioSource::kMaxLanes); ++n)
+            if ((mask >> order[(size_t) n]) & 1u) out |= juce::uint64(1) << n;
+        return out;
+    };
+    muteMask = reorderMask(muteMask);
+    soloMask = reorderMask(soloMask);
+    applyMasks();
+
+    if (referenceLane >= 0) referenceLane = remap(referenceLane);
+    if (selectedLane >= 0)  selectedLane  = remap(selectedLane);
+
+    markDirty();
+    rebuildAudio();
+    repaint();
+}
+
+void CanvasView::moveSelectedLane(int delta)
+{
+    if (selectedLane < 0)
+    {
+        if (onTakeNote) onTakeNote("select a track first - click its header");
+        return;
+    }
+    const int to = selectedLane + delta;
+    if (to < 0 || to >= laneCount)
+    {
+        if (onTakeNote) onTakeNote(delta < 0 ? "that track is already at the top"
+                                             : "that track is already at the bottom");
+        return;
+    }
+    moveLane(selectedLane, to);
+}
+
 void CanvasView::removeLane(int lane)
 {
     if (lane < 0 || lane >= laneCount || laneCount <= 1) return;
@@ -2228,6 +2318,21 @@ void CanvasView::paint(juce::Graphics& g)
         g.drawVerticalLine(kHeaderWidth - 1, 0.0f, static_cast<float>(topRuler));
     }
 
+    // --- where a dragged track would land. Drawn after the headers and before the
+    // playhead: it has to sit over the rows it is pointing between, and under the one
+    // thing that is always readable.
+    if (drag == Drag::LaneMove && laneDropTarget >= 0)
+    {
+        auto row = juce::Rectangle<int>(0, laneToY(laneDropTarget), getWidth(), laneHeight);
+        g.setColour(MiraLookAndFeel::accent.withAlpha(0.10f));
+        g.fillRect(row);
+        // The line goes on the side the track is travelling TOWARDS, so it reads as
+        // "it lands here" rather than "something is highlighted".
+        const int edge = laneDropTarget <= dragOriginLane ? row.getY() : row.getBottom() - 2;
+        g.setColour(MiraLookAndFeel::accent);
+        g.fillRect(0, edge, getWidth(), 2);
+    }
+
     // --- playhead, over everything
     {
         const int x = secondsToX(player.getPositionSeconds());
@@ -2336,7 +2441,18 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
                 repaint();
                 return;
             }
-            else return;
+            else
+            {
+                // Not a control, so this is the start of a possible REORDER. It costs
+                // nothing if you do not drag: the move happens on mouse-up, and only when
+                // the row actually changed.
+                commitRename();
+                drag = Drag::LaneMove;
+                dragOriginLane = lane;
+                laneDropTarget = lane;
+                repaint();
+                return;
+            }
             applyMasks();
             repaint();
         }
@@ -2439,6 +2555,13 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
 
 void CanvasView::mouseDrag(const juce::MouseEvent& e)
 {
+    if (drag == Drag::LaneMove)
+    {
+        const int t = juce::jlimit(0, laneCount - 1, yToLane(e.y));
+        if (t != laneDropTarget) { laneDropTarget = t; repaint(); }
+        return;
+    }
+
     if (faderLane >= 0)
     {
         setLaneDb(faderLane, faderDbAtY(faderLane, e.y));
@@ -2540,6 +2663,15 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
 void CanvasView::mouseUp(const juce::MouseEvent&)
 {
     faderLane = -1;
+    if (drag == Drag::LaneMove)
+    {
+        const int from = dragOriginLane, to = laneDropTarget;
+        drag = Drag::None;
+        laneDropTarget = -1;
+        if (to >= 0 && to != from) moveLane(from, to);
+        repaint();
+        return;
+    }
     const bool changed = drag == Drag::Move || drag == Drag::TrimLeft || drag == Drag::TrimRight
                       || drag == Drag::Gain
                       || drag == Drag::FadeIn || drag == Drag::FadeOut;
@@ -2648,6 +2780,11 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
             else                                  cutAtPlayhead();
             return true;
         }
+        // Cmd-up / Cmd-down move the SELECTED TRACK, which is what those keys move in
+        // every arrangement window there has ever been. Plain up/down are left alone:
+        // they are the obvious home for moving a BLOCK between tracks, later.
+        if (key.getKeyCode() == juce::KeyPress::upKey)   { moveSelectedLane(-1); return true; }
+        if (key.getKeyCode() == juce::KeyPress::downKey) { moveSelectedLane(1);  return true; }
         // Cmd-Z / Cmd-shift-Z, the two every app has. Handled here rather than in the menu
         // bar because the canvas is the only thing in mira with a document to undo.
         if (key.getKeyCode() == 'Z')
