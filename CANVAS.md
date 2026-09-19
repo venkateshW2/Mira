@@ -372,6 +372,30 @@ mira is simply seen next time.
 Editing marks the document **dirty** (a `*` in the title) rather than writing to disk behind
 your back.
 
+### The height of a track
+
+`shift-G` / `shift-H` change the **default** height, which every track follows until you
+say otherwise. To fix one track's height:
+
+- **click its padlock** in the header (under the M chip), or
+- **drag the bottom edge of its header**, which sets a height by hand and therefore locks
+  it — you have said how tall you want it, so the zoom stops arguing, or
+- **right-click the header** for the same toggle.
+
+A locked track shows a filled padlock; an unlocked one shows the shackle lifted off the
+body. Lanes too short to hold a padlock get a coloured bar at their bottom edge instead —
+"why is this one not zooming" has to have an answer on screen at every height.
+
+**The lock and the height are one thing, not two.** A lane either has a height of its own
+or it follows the default, and "locked" is exactly the first case. A separate boolean would
+let the two drift apart, and then there would be a state where a lock does nothing.
+
+**The REFERENCE track is locked by default**, at 76 px. It is something you glance at to
+find a cut, not something you read the waveform of, and a track you never edit should not
+grow every time you zoom the ones you do. Unlocking it sticks: a document written before
+per-lane heights existed has no opinion and gets the default, while one written afterwards
+said 0 on purpose.
+
 ### The order of the tracks
 
 **Drag a lane header up or down**, or select a track and use `Cmd-↑` / `Cmd-↓` or

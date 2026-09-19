@@ -285,7 +285,7 @@ private:
         double audioSeconds = 0.0;
     };
 
-    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain, LaneMove };
+    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain, LaneMove, LaneResize };
 
     const MiraLookAndFeel& laf;
     juce::AudioFormatManager& formats;
@@ -308,7 +308,38 @@ private:
     double viewStart = 0.0;
     // Tall enough for the channel strip to BE one. At 64 the fader had 34 pixels of
     // travel, which is a control you aim at rather than set.
+    // The DEFAULT track height, and the only thing shift-G/H moves.
     int laneHeight = 104;
+    // A per-lane height, or 0 for "follow the global". These are the SAME concept as a
+    // lock, which is why there is no second flag: a lane with a height of its own is
+    // exactly a lane that global zoom leaves alone, and unlocking is setting it back to 0.
+    // A second bool would let "locked" and "has its own height" drift apart, and then
+    // there would be a state where a lock does nothing.
+    std::vector<int> laneH;
+    static constexpr int kLaneMin = 28, kLaneMax = 320;
+    // What the reference lane gets when it arrives. Short on purpose: it is something you
+    // glance at to find a cut, not something you read the waveform of.
+    static constexpr int kReferenceHeight = 76;
+    int laneHeightOf(int lane) const
+    {
+        return juce::isPositiveAndBelow(lane, (int) laneH.size()) && laneH[(size_t) lane] > 0
+                   ? laneH[(size_t) lane] : laneHeight;
+    }
+    bool laneHeightLocked(int lane) const
+    {
+        return juce::isPositiveAndBelow(lane, (int) laneH.size()) && laneH[(size_t) lane] > 0;
+    }
+    void setLaneHeight(int lane, int height);
+    void setLaneHeightLocked(int lane, bool locked);
+    void ensureLaneArrays();
+    // Right-click a lane header: lock or release its height, reorder it, remove it.
+    void showLaneMenu(int lane, juce::Point<int> at);
+    // The padlock in the lane header. Empty when the lane is too short to hold it, in
+    // which case the right-click menu is the way in.
+    juce::Rectangle<int> lockBoxFor(int lane) const;
+    int resizingLane = -1;      // which lane's bottom edge is being dragged, or -1
+    int resizeOriginH = 0;
+    static constexpr int kLaneEdgeGrab = 5;
     // How tall the WAVEFORM is drawn inside its block, independent of the block. Quiet
     // takes are a flat line at 1.0 and you cannot see where the peaks are; loud ones fill
     // the block and you cannot see anything else. AudioThumbnail takes this directly.
@@ -434,8 +465,10 @@ private:
     // stops the canvas opening with fifteen empty audio tracks.
     int videoStripH() const { return videoClips.empty() ? 0 : 34; }
     int lanesTop() const { return topRuler + videoStripH(); }
-    int laneToY(int lane) const { return lanesTop() + lane * laneHeight; }
-    int yToLane(int y) const { return juce::jmax(0, (y - lanesTop()) / laneHeight); }
+    // Cumulative now that lanes can differ in height. Both walk the same list, so a lane
+    // found by y and the y of that lane can never disagree.
+    int laneToY(int lane) const;
+    int yToLane(int y) const;
     // Declared after Visual, which they take by reference.
     juce::File blockFolderFor(const Visual&) const;
     Visual* singleSelection();

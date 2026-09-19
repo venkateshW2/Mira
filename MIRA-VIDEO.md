@@ -343,6 +343,9 @@ the export exclusion was checked by looking in the folder, not by reading the co
   outright rather than writing a file you would have to notice was wrong.
 - [x] **2.4** The lane header says **REFERENCE**, in the picture's violet, and it is not a
   name you can edit — it is not a name anyone chose.
+- [x] **2.5b** Its **height is locked by default** at 76 px, so `shift-G`/`shift-H` leave it
+  alone: it is something you glance at to find a cut, not something you read the waveform
+  of. Any track can be locked the same way — see [CANVAS.md](CANVAS.md).
 - [~] **2.5** It keeps its fader, its mute, its solo and its meter: the same lane-header
   code path as every other track, drawn and on screen in the violet. The M chip's toggle
   could not be driven through the automation harness used for the rest of this — that is a

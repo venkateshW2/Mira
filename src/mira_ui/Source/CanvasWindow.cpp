@@ -144,16 +144,16 @@ void CanvasView::rebuildAudio()
 // vertical space the fader needs -- and vertical space is the only thing a fader has.
 juce::Rectangle<int> CanvasView::muteBoxFor(int lane) const
 {
-    return laneHeight >= 46
+    return laneHeightOf(lane) >= 46
                ? juce::Rectangle<int>(kHeaderWidth - 62, laneToY(lane) + 24, 26, 18)
-               : juce::Rectangle<int>(kHeaderWidth - 74, laneToY(lane) + laneHeight / 2 - 9, 22, 18);
+               : juce::Rectangle<int>(kHeaderWidth - 74, laneToY(lane) + laneHeightOf(lane) / 2 - 9, 22, 18);
 }
 
 juce::Rectangle<int> CanvasView::soloBoxFor(int lane) const
 {
-    return laneHeight >= 46
+    return laneHeightOf(lane) >= 46
                ? juce::Rectangle<int>(kHeaderWidth - 32, laneToY(lane) + 24, 26, 18)
-               : juce::Rectangle<int>(kHeaderWidth - 48, laneToY(lane) + laneHeight / 2 - 9, 22, 18);
+               : juce::Rectangle<int>(kHeaderWidth - 48, laneToY(lane) + laneHeightOf(lane) / 2 - 9, 22, 18);
 }
 
 // One warped scale, shared by the fader and the meter. Linear-in-dB spends half the
@@ -181,9 +181,9 @@ double CanvasView::normToDb(double n)
 // the whole width, so it reads as the handle of the thing the meter is part of.
 juce::Rectangle<int> CanvasView::stripBoxFor(int lane) const
 {
-    if (laneHeight < 46) return {};
+    if (laneHeightOf(lane) < 46) return {};
     const int top = laneToY(lane) + 22;
-    return { 10, top, 30, juce::jmax(16, laneHeight - 30) };
+    return { 10, top, 30, juce::jmax(16, laneHeightOf(lane) - 30) };
 }
 
 juce::Rectangle<int> CanvasView::faderBoxFor(int lane) const
@@ -215,17 +215,17 @@ juce::Colour CanvasView::laneColour(int lane)
 // cannot show the fault a meter exists to catch -- a take with a dead side.
 juce::Rectangle<int> CanvasView::meterBoxFor(int lane) const
 {
-    if (laneHeight < 46)
-        return { kHeaderWidth - 16, laneToY(lane) + 4, 9, juce::jmax(10, laneHeight - 8) };
+    if (laneHeightOf(lane) < 46)
+        return { kHeaderWidth - 16, laneToY(lane) + 4, 9, juce::jmax(10, laneHeightOf(lane) - 8) };
     auto strip = stripBoxFor(lane);
     return { strip.getX() + 2, strip.getY(), 11, strip.getHeight() };
 }
 
 juce::Rectangle<int> CanvasView::nameBoxFor(int lane) const
 {
-    return laneHeight >= 46
+    return laneHeightOf(lane) >= 46
                ? juce::Rectangle<int>(8, laneToY(lane) + 2, kHeaderWidth - 18, 18)
-               : juce::Rectangle<int>(8, laneToY(lane), kHeaderWidth - 84, laneHeight);
+               : juce::Rectangle<int>(8, laneToY(lane), kHeaderWidth - 84, laneHeightOf(lane));
 }
 
 // RENAMING A BLOCK RENAMES ITS FOLDER. The name is not a label: blockFolderFor builds the
@@ -961,6 +961,8 @@ void CanvasView::moveLane(int from, int to)
         v = out;
     };
     reorderVector(laneDb, 0.0);
+    ensureLaneArrays();
+    reorderVector(laneH, 0);
     reorderVector(laneMeter, std::array<float, 2>{ 0.0f, 0.0f });
     reorderVector(laneHold,  std::array<float, 2>{ 0.0f, 0.0f });
     reorderVector(laneClipped, false);
@@ -1026,6 +1028,7 @@ void CanvasView::removeLane(int lane)
 
     laneNames.remove(lane);
     if (lane < (int) laneDb.size()) laneDb.erase(laneDb.begin() + lane);
+    if (lane < (int) laneH.size())  laneH.erase(laneH.begin() + lane);
 
     // The mask bits above the removed lane shift down with it, or mute and solo would
     // apply to whichever track happened to slide into the slot.
@@ -1562,6 +1565,14 @@ juce::String CanvasView::toJson(const juce::File& base) const
     root->setProperty("laneNames", juce::var(names));
     root->setProperty("laneGainDb", juce::var(gains));
     root->setProperty("laneCount", laneCount);
+    // A per-lane height, 0 meaning "follow the zoom". Written as an array beside the gains
+    // because it belongs to the track exactly as much as its fader does.
+    {
+        juce::Array<juce::var> heights;
+        for (int i = 0; i < laneCount; ++i)
+            heights.add(i < (int) laneH.size() ? laneH[(size_t) i] : 0);
+        root->setProperty("laneHeights", juce::var(heights));
+    }
     root->setProperty("waveZoom", (double) waveZoom);
     root->setProperty("muteMask", juce::String(muteMask));
 
@@ -1621,6 +1632,18 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
         for (int i = 0; i < names->size(); ++i) laneNames.set(i, (*names)[i].toString());
     if (auto* gains = root.getProperty("laneGainDb", {}).getArray())
         for (int i = 0; i < gains->size(); ++i) setLaneDb(i, (double) (*gains)[i]);
+    laneH.clear();
+    // Whether the KEY was there, not whether the array has a value: a document written
+    // before per-lane heights existed has no opinion about them, while one written after
+    // has said 0 on purpose. Without that distinction, unlocking the reference would be
+    // undone by the next reload -- a setting that will not stay off.
+    const bool documentKnowsHeights = root.getProperty("laneHeights", {}).isArray();
+    if (auto* heights = root.getProperty("laneHeights", {}).getArray())
+        for (int i = 0; i < heights->size(); ++i)
+        {
+            const int h = (int) (*heights)[i];
+            laneH.push_back(h > 0 ? juce::jlimit(kLaneMin, kLaneMax, h) : 0);
+        }
     muteMask = (juce::uint64) root.getProperty("muteMask", "0").toString().getLargeIntValue();
     laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, (int) root.getProperty("laneCount", 1));
     referenceLane = (int) root.getProperty("referenceLane", -1);
@@ -1694,6 +1717,16 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
         // whether it is missing is a different question from whether the film changed.
         if (differentFilm || referenceLane < 0)
             if (onVideoClipChanged) onVideoClipChanged(videoClips.front());
+    }
+
+    // The reference lane is locked BY DEFAULT, and that has to hold for documents that
+    // predate the setting too -- otherwise the one track the feature was asked for is the
+    // one track that does not have it.
+    if (referenceLane >= 0 && !documentKnowsHeights)
+    {
+        ensureLaneArrays();
+        if (juce::isPositiveAndBelow(referenceLane, (int) laneH.size()))
+            laneH[(size_t) referenceLane] = kReferenceHeight;
     }
 
     applyMasks();
@@ -1846,7 +1879,7 @@ juce::Rectangle<int> CanvasView::boundsOf(const Visual& v) const
 {
     const int x = secondsToX(v.block.start);
     const int w = juce::jmax(3, juce::roundToInt(v.block.length * pixelsPerSecond));
-    return { x, laneToY(v.block.lane) + 3, w, laneHeight - 6 };
+    return { x, laneToY(v.block.lane) + 3, w, laneHeightOf(v.block.lane) - 6 };
 }
 
 // ---- painting ----------------------------------------------------------------------
@@ -1862,7 +1895,7 @@ void CanvasView::paint(juce::Graphics& g)
         // alternating tints separated by a hairline read as one striped surface -- "the
         // track looks joined with other track" -- and a track is the thing you mix with,
         // so it has to look like a thing.
-        auto r = juce::Rectangle<int>(0, laneToY(lane), getWidth(), laneHeight).reduced(0, 2);
+        auto r = juce::Rectangle<int>(0, laneToY(lane), getWidth(), laneHeightOf(lane)).reduced(0, 2);
         const bool chosen = lane == selectedLane;
         g.setColour(chosen ? laneColour(lane).withAlpha(0.10f)
                            : MiraLookAndFeel::surface.withAlpha(0.55f));
@@ -2165,6 +2198,31 @@ void CanvasView::paint(juce::Graphics& g)
             drawChip(muteBoxFor(lane), "M", muted,  MiraLookAndFeel::warn);
             drawChip(soloBoxFor(lane), "S", soloed, MiraLookAndFeel::accent);
 
+            // The padlock: this track's height is its own, and shift-G/H will not move it.
+            if (auto lock = lockBoxFor(lane); !lock.isEmpty())
+            {
+                const bool held = laneHeightLocked(lane);
+                const auto tint = isReferenceLane(lane) ? kPictureColour : laneColour(lane);
+                g.setColour(held ? tint : MiraLookAndFeel::surface3);
+                g.fillRoundedRectangle(lock.toFloat(), 3.5f);
+
+                // Drawn rather than lettered. "L" next to M and S reads as loop, or left,
+                // and this control is rare enough that it has to explain itself.
+                const auto c = lock.getCentre();
+                const auto body = juce::Rectangle<float>(0, 0, 9.0f, 7.0f)
+                                      .withCentre({ (float) c.x, (float) c.y + 1.5f });
+                juce::Path shackle;
+                const float r = 2.6f;
+                shackle.addCentredArc((float) c.x, body.getY(), r, r, 0.0f,
+                                       -juce::MathConstants<float>::halfPi,
+                                       juce::MathConstants<float>::halfPi, true);
+                g.setColour(held ? MiraLookAndFeel::surface : MiraLookAndFeel::textDim);
+                g.strokePath(shackle, juce::PathStrokeType(1.4f));
+                // An OPEN padlock when it is not locked -- the shackle lifted off the body
+                // is the difference you can read at 9 pixels.
+                g.fillRoundedRectangle(held ? body : body.translated(0.0f, 1.0f), 1.5f);
+            }
+
             // The reference lane says WHAT IT IS, not "track 4" -- and it is not a name
             // you can edit, because it is not a name anyone chose.
             const bool referenceHere = isReferenceLane(lane);
@@ -2176,6 +2234,15 @@ void CanvasView::paint(juce::Graphics& g)
                                          : (laneNames[lane].isNotEmpty() ? laneNames[lane]
                                                                          : juce::String(lane + 1)),
                             nameBoxFor(lane), juce::Justification::centredLeft, true);
+
+            // A bar at the lane's bottom edge as well as the padlock, for lanes too short
+            // to show one: "why is this one not zooming" must have an answer on screen at
+            // every height.
+            if (laneHeightLocked(lane) && lockBoxFor(lane).isEmpty())
+            {
+                g.setColour((referenceHere ? kPictureColour : laneColour(lane)).withAlpha(0.55f));
+                g.fillRect(0, laneToY(lane) + laneHeightOf(lane) - 2, 14, 2);
+            }
 
             auto fader = faderBoxFor(lane);
             auto meterBox = meterBoxFor(lane);
@@ -2323,7 +2390,7 @@ void CanvasView::paint(juce::Graphics& g)
     // thing that is always readable.
     if (drag == Drag::LaneMove && laneDropTarget >= 0)
     {
-        auto row = juce::Rectangle<int>(0, laneToY(laneDropTarget), getWidth(), laneHeight);
+        auto row = juce::Rectangle<int>(0, laneToY(laneDropTarget), getWidth(), laneHeightOf(laneDropTarget));
         g.setColour(MiraLookAndFeel::accent.withAlpha(0.10f));
         g.fillRect(row);
         // The line goes on the side the track is travelling TOWARDS, so it reads as
@@ -2399,6 +2466,21 @@ CanvasView::Visual* CanvasView::hitTest(juce::Point<int> p, Drag& what)
 
 void CanvasView::mouseMove(const juce::MouseEvent& e)
 {
+    // The lane headers: the bottom edge of each one resizes it, so say so with the cursor.
+    // An edge you cannot see and were never told about is a feature nobody finds.
+    if (e.x < kHeaderWidth && e.y >= lanesTop())
+    {
+        const int lane = yToLane(e.y);
+        if (lane < laneCount
+            && std::abs(e.y - (laneToY(lane) + laneHeightOf(lane))) <= kLaneEdgeGrab)
+        {
+            setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+            return;
+        }
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+        return;
+    }
+
     Drag what = Drag::None;
     hitTest(e.getPosition(), what);
     setMouseCursor(what == Drag::TrimLeft || what == Drag::TrimRight
@@ -2427,6 +2509,25 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
         // thing you can ask for, and it costs nothing -- M, S and the fader all still do
         // their own jobs because they are tested before this takes effect.
         selectedLane = lane;
+        if (e.mods.isPopupMenu()) { showLaneMenu(lane, e.getPosition()); repaint(); return; }
+        // The padlock. Clicked, it captures the height the lane has right now and stops
+        // the zoom touching it; clicked again, the lane follows the zoom as before.
+        if (auto lock = lockBoxFor(lane); !lock.isEmpty() && lock.contains(e.getPosition()))
+        {
+            setLaneHeightLocked(lane, !laneHeightLocked(lane));
+            return;
+        }
+        // The BOTTOM EDGE of the header resizes this lane alone. Setting a height by hand
+        // is what locking means: you have said how tall you want it, so the global zoom
+        // stops arguing with you about it.
+        if (std::abs(e.y - (laneToY(lane) + laneHeightOf(lane))) <= kLaneEdgeGrab)
+        {
+            drag = Drag::LaneResize;
+            resizingLane = lane;
+            resizeOriginH = laneHeightOf(lane);
+            dragStart = e.getPosition();
+            return;
+        }
         if (lane < CanvasAudioSource::kMaxLanes)
         {
             const juce::uint64 bit = juce::uint64 (1) << lane;
@@ -2555,6 +2656,12 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
 
 void CanvasView::mouseDrag(const juce::MouseEvent& e)
 {
+    if (drag == Drag::LaneResize)
+    {
+        setLaneHeight(resizingLane, resizeOriginH + (e.y - dragStart.y));
+        return;
+    }
+
     if (drag == Drag::LaneMove)
     {
         const int t = juce::jlimit(0, laneCount - 1, yToLane(e.y));
@@ -2663,6 +2770,14 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
 void CanvasView::mouseUp(const juce::MouseEvent&)
 {
     faderLane = -1;
+    if (drag == Drag::LaneResize)
+    {
+        drag = Drag::None;
+        resizingLane = -1;
+        repaint();
+        return;
+    }
+
     if (drag == Drag::LaneMove)
     {
         const int from = dragOriginLane, to = laneDropTarget;
@@ -2728,6 +2843,96 @@ void CanvasView::panBy (double seconds)
 {
     viewStart = juce::jmax (0.0, viewStart + seconds);
     repaint();
+}
+
+int CanvasView::laneToY(int lane) const
+{
+    int y = lanesTop();
+    for (int i = 0; i < lane; ++i) y += laneHeightOf(i);
+    return y;
+}
+
+int CanvasView::yToLane(int y) const
+{
+    int top = lanesTop();
+    // Bounded rather than open: yToLane is asked about clicks well below the last track,
+    // and a walk that only stops when it finds the row would never stop down there.
+    for (int lane = 0; lane < CanvasAudioSource::kMaxLanes; ++lane)
+    {
+        const int h = juce::jmax(1, laneHeightOf(lane));
+        if (y < top + h) return juce::jmax(0, lane);
+        top += h;
+    }
+    return CanvasAudioSource::kMaxLanes - 1;
+}
+
+void CanvasView::ensureLaneArrays()
+{
+    if ((int) laneH.size() < laneCount) laneH.resize((size_t) laneCount, 0);
+}
+
+void CanvasView::setLaneHeight(int lane, int height)
+{
+    if (!juce::isPositiveAndBelow(lane, laneCount)) return;
+    ensureLaneArrays();
+    laneH[(size_t) lane] = juce::jlimit(kLaneMin, kLaneMax, height);
+    markDirty();
+    repaint();
+}
+
+void CanvasView::setLaneHeightLocked(int lane, bool locked)
+{
+    if (!juce::isPositiveAndBelow(lane, laneCount)) return;
+    ensureLaneArrays();
+    // Locking CAPTURES the height the lane has right now, so the lock never changes what
+    // you are looking at -- it only stops it changing afterwards.
+    laneH[(size_t) lane] = locked ? juce::jlimit(kLaneMin, kLaneMax, laneHeightOf(lane)) : 0;
+    if (onTakeNote)
+        onTakeNote(locked ? "track height locked at " + juce::String(laneHeightOf(lane)) + " px"
+                          : "track height follows the zoom again");
+    markDirty();
+    repaint();
+}
+
+juce::Rectangle<int> CanvasView::lockBoxFor(int lane) const
+{
+    // Under the M chip, on the row below it. Only when the lane is tall enough to hold a
+    // third control without crowding the two that are used far more often.
+    if (laneHeightOf(lane) < 70) return {};
+    return { kHeaderWidth - 62, laneToY(lane) + 46, 26, 16 };
+}
+
+void CanvasView::showLaneMenu(int lane, juce::Point<int> at)
+{
+    if (!juce::isPositiveAndBelow(lane, laneCount)) return;
+    juce::PopupMenu m;
+    const bool locked = laneHeightLocked(lane);
+    m.addItem(1, locked ? "Let the height follow the zoom" : "Lock this height", true, false);
+    m.addSeparator();
+    m.addItem(3, "Move up", lane > 0, false);
+    m.addItem(4, "Move down", lane < laneCount - 1, false);
+    m.addSeparator();
+    m.addItem(5, "Remove track", laneCount > 1 && !isReferenceLane(lane), false);
+
+    juce::Component::SafePointer<CanvasView> safe (this);
+    // AT THE POINTER, not centred on the canvas. withTargetComponent aims at the whole
+    // component, which for a full-window canvas means the middle of the window -- a menu
+    // that opens nowhere near the track it is about.
+    const auto onScreen = localPointToGlobal(at);
+    m.showMenuAsync(juce::PopupMenu::Options()
+                        .withTargetScreenArea({ onScreen.x, onScreen.y, 1, 1 }),
+                     [safe, lane](int id) {
+        if (safe == nullptr || id == 0) return;
+        auto& self = *safe;
+        switch (id)
+        {
+            case 1: self.setLaneHeightLocked(lane, !self.laneHeightLocked(lane)); break;
+            case 3: self.moveLane(lane, lane - 1); break;
+            case 4: self.moveLane(lane, lane + 1); break;
+            case 5: self.removeLane(lane); break;
+            default: break;
+        }
+    });
 }
 
 void CanvasView::zoomVertical (double pixels)
@@ -3613,6 +3818,11 @@ void CanvasView::attachReference(const juce::File& audio, double startOnTimeline
     laneCount = juce::jlimit(1, CanvasAudioSource::kMaxLanes, referenceLane + 1);
     laneNames.set(referenceLane, "REFERENCE");
     setLaneDb(referenceLane, 0.0);
+    // Locked, and shorter, from the moment it arrives. The reference is something you
+    // glance at to find a cut, not something you read the waveform of -- and a track you
+    // never edit should not grow every time you zoom the ones you do.
+    ensureLaneArrays();
+    laneH[(size_t) referenceLane] = kReferenceHeight;
 
     auto v = std::make_unique<Visual>();
     v->block.lane = referenceLane;
@@ -3659,6 +3869,7 @@ void CanvasView::detachReference()
     for (auto& v : items) if (v->block.lane > lane) --v->block.lane;
     laneNames.remove(lane);
     if (lane < (int) laneDb.size()) laneDb.erase(laneDb.begin() + lane);
+    if (lane < (int) laneH.size())  laneH.erase(laneH.begin() + lane);
     auto shift = [lane](juce::uint64 mask) {
         const juce::uint64 below = mask & ((juce::uint64 (1) << lane) - 1);
         const juce::uint64 above = mask >> (lane + 1);
