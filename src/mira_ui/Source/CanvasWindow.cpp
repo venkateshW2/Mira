@@ -1,6 +1,5 @@
 #include "CanvasWindow.h"
 #include "mira/db/PathNormalise.h"
-#include "NativeWindowChrome.h"
 
 namespace mira::canvas {
 
@@ -2357,14 +2356,34 @@ public:
     {
         g.fillAll (MiraLookAndFeel::surface);
 
-        auto r = getLocalBounds().reduced (14, 14);
+        // A SLIM CHANNEL: label, reading, fader. The readout sits above the strip rather
+        // than beside it, so the panel is as wide as a fader and a scale and nothing else
+        // -- and the fader gets the whole height, which is the part you actually aim at.
+        // The old three-line "drag to set / cmd-click unity" tip is gone: it is a mixer
+        // fader, it behaves like every other one, and it was costing more room than the
+        // control.
+        auto r = getLocalBounds().reduced (10, 12);
         g.setColour (MiraLookAndFeel::accent);
-        g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (11.0f)));
-        g.drawText ("MASTER", r.removeFromTop (18), juce::Justification::centredLeft, false);
-        r.removeFromTop (10);
+        g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (10.0f)));
+        g.drawText ("MASTER", r.removeFromTop (14), juce::Justification::centredLeft, false);
 
-        auto strip = r.removeFromLeft (44);
-        r.removeFromLeft (36);        // the scale's own column, labelled below
+        {
+            auto read = r.removeFromTop (19);
+            g.setColour (MiraLookAndFeel::text);
+            g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (14.0f)));
+            g.drawText (db() <= -60.0 ? juce::String ("-inf") : juce::String (db(), 1) + " dB",
+                        read, juce::Justification::centredLeft, false);
+
+            const float peakDb = juce::Decibels::gainToDecibels (juce::jmax (hold[0], hold[1], 1.0e-6f));
+            g.setColour (clipped ? MiraLookAndFeel::warn : MiraLookAndFeel::textDim);
+            g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (10.0f)));
+            g.drawText (clipped ? "CLIP " + juce::String (peakDb, 1)
+                                : juce::String (peakDb, 1) + " pk",
+                        r.removeFromTop (14), juce::Justification::centredLeft, false);
+        }
+        r.removeFromTop (8);
+
+        auto strip = r.removeFromLeft (juce::jmin (44, juce::jmax (30, r.getWidth() - 26)));
 
         g.setColour (MiraLookAndFeel::surface.darker (0.5f));
         g.fillRoundedRectangle (strip.toFloat(), 4.0f);
@@ -2431,26 +2450,6 @@ public:
         g.drawRoundedRectangle (cap, 3.0f, 1.0f);
         g.fillRect (cap.getX() + 3.0f, cap.getCentreY() - 0.5f, cap.getWidth() - 6.0f, 1.0f);
 
-        // The numbers, beside the strip. A master with no readout is a control you cannot
-        // put back where it was.
-        auto right = r.withHeight (22);
-        g.setColour (MiraLookAndFeel::text);
-        g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (15.0f)));
-        g.drawText (db() <= -60.0 ? juce::String ("-inf") : juce::String (db(), 1) + " dB",
-                    right, juce::Justification::topLeft, false);
-
-        const float peakDb = juce::Decibels::gainToDecibels (juce::jmax (hold[0], hold[1], 1.0e-6f));
-        g.setColour (clipped ? MiraLookAndFeel::warn : MiraLookAndFeel::textDim);
-        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (10.5f)));
-        g.drawText (clipped ? "CLIP " + juce::String (peakDb, 1) : "peak " + juce::String (peakDb, 1) + " dB",
-                    right.withY (right.getBottom() + 2).withHeight (16),
-                    juce::Justification::topLeft, false);
-
-        g.setColour (MiraLookAndFeel::textFaint);
-        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (9.5f)));
-        g.drawFittedText ("drag to set\ncmd-click unity\ndouble-click clears clip",
-                          right.withY (right.getBottom() + 26).withHeight (54),
-                          juce::Justification::topLeft, 3);
         faderBox = strip;
     }
 
@@ -2869,19 +2868,12 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     {
         auto r = getLocalBounds();
 
-        // THE TOOLBAR LIVES IN THE TITLE BAR. The window's content runs under it, so the
-        // row that sat below the traffic lights is now beside them -- the unified strip
-        // every native macOS app has, and a whole row of canvas back.
-        //
-        // Measured from the window, not assumed: the bar's height and how far the traffic
-        // lights reach are both AppKit's to decide, and a hardcoded inset is a button
-        // hiding under a close button on the first machine that disagrees.
-        titleBarHeight = mira_ui::chrome::useFullSizeContentView(*this);
-        titleInset     = mira_ui::chrome::trafficLightInset(*this);
-
-        const int barHeight = juce::jmax(34, titleBarHeight);
-        auto bar = r.removeFromTop(barHeight).reduced(8, 5);
-        if (titleInset > 0) bar.removeFromLeft(juce::jmax(0, titleInset - 8));
+        // THE TOOLBAR IS A ROW IN THE WINDOW, not the title bar. It lived in the title bar
+        // for exactly one commit: "the osx toolbar" meant the MENU BAR -- File, Edit,
+        // Analyze -- and a full-size content view with buttons across it leaves nowhere to
+        // grab the window. Every action here is also in the macOS Canvas menu (Main.cpp),
+        // which is where it was asked to be; this row is the visible transport.
+        auto bar = r.removeFromTop(34).reduced(8, 5);
         playButton.setBounds(bar.removeFromLeft(70));
         bar.removeFromLeft(6);
         loopButton.setBounds(bar.removeFromLeft(110));
@@ -2917,7 +2909,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             // two numbers; giving it a third of the window because the generator wants one
             // is a third of the window spent on empty panel.
             const int wanted = tab == SideTab::Master
-                                   ? 228
+                                   ? 104
                                : tab == SideTab::Files
                                    ? juce::jmax(300, juce::roundToInt(r.getWidth() * panelFraction * 0.8))
                                    : juce::roundToInt(r.getWidth() * panelFraction);
@@ -3067,7 +3059,6 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::Rectangle<int> masterMeter;
     bool panelCollapsed = false;
     juce::Label hint, clock, meter;
-    int titleBarHeight = 0, titleInset = 0;
     // The side panel is one column with a tab strip, not a stack of panes fighting for
     // height. GENERATE is the block's generator; MASTER is the sum; FILES is every take
     // the project holds. Adding the next tool is an enum row and a component.
@@ -3093,5 +3084,7 @@ CanvasWindow::CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager&
 }
 
 CanvasWindow::~CanvasWindow() = default;
+
+void CanvasWindow::saveProject() { if (content != nullptr) content->saveOrAsk(); }
 
 } // namespace mira::canvas

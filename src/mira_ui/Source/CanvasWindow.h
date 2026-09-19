@@ -393,6 +393,11 @@ public:
 
     CanvasView& getView() { return *view; }
 
+    // What the macOS Canvas menu reaches that the view does not own: the document itself
+    // lives in Content (the project folder, the dirty flag, the save-as prompt), so the
+    // menu asks the window rather than reaching past it into the view.
+    void saveProject();
+
 private:
     struct Content;
     std::unique_ptr<Content> content;

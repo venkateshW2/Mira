@@ -1186,6 +1186,19 @@ private:
 // two-panel bottom strip): sidebar spans the full middle-row height by default; the
 // bottom combined panel only claims height once a file is selected, and the sidebar
 // shrinks to match rather than the two coexisting as permanent fixed strips.
+// The canvas's entries in the macOS menu bar (MiraMenuBarModel's Canvas menu, far below).
+// At file scope because the menu model is declared after MainComponent and both ends of
+// the dispatch need the same ids -- an int literal at one end is how the two drift apart.
+// A range of its own, below the 700 the Tags/Segments/View surfaces share.
+namespace CanvasMenu {
+    enum Action {
+        kPlay = 300, kLoop, kFit,
+        kAddTrack, kAddBlock, kDuplicate, kRemove,
+        kSave,
+        kFirst = kPlay, kLast = kSave
+    };
+}
+
 class MainComponent : public juce::Component, private juce::Timer
 {
 public:
@@ -3209,6 +3222,32 @@ public:
         prepareWindow->toFront(true);
     }
 
+    // The Canvas menu's two ends. The menu is always present and greys out when no canvas
+    // is open, rather than appearing and vanishing -- a menu that moves is a menu nobody
+    // learns the position of.
+    bool hasCanvasWindow() const { return canvasWindow != nullptr; }
+
+    void performCanvasAction(int id)
+    {
+        if (canvasWindow == nullptr) return;
+        auto& v = canvasWindow->getView();
+        switch (id)
+        {
+            case CanvasMenu::kPlay:      v.togglePlay(); break;
+            case CanvasMenu::kLoop:      v.setLoopFromSelection(); break;
+            case CanvasMenu::kFit:       v.fit(); break;
+            case CanvasMenu::kAddTrack:  v.addLane(); break;
+            case CanvasMenu::kAddBlock:  v.addEmptyBlock(); break;
+            case CanvasMenu::kDuplicate: v.duplicateSelection(); break;
+            case CanvasMenu::kRemove:    v.removeSelected(); break;
+            // Save is the WINDOW's, not the view's: the project folder, the dirty flag and
+            // the save-as prompt all live there.
+            case CanvasMenu::kSave:      canvasWindow->saveProject(); break;
+            default: break;
+        }
+        canvasWindow->toFront(true);
+    }
+
     // The canvas experiment. Opened from Window, closes on its own, and joins the app's
     // single audio device like every other window that makes sound -- that is the ONLY
     // thing it shares with the rest of mira.
@@ -4715,6 +4754,7 @@ public:
 class MiraMenuBarModel : public juce::MenuBarModel
 {
 public:
+
     std::function<void()> onAddFolder;
     std::function<void()> onAddFiles;
     // "rescan can be in the osx toolbar like rescan not in the ui, its confusing" —
@@ -4753,13 +4793,21 @@ public:
     std::function<juce::String()> undoName, redoName;
     std::function<void(int)> onAction;
 
+    // THE CANVAS MENU. "can the toppaneel play loop selection addtrack allbeinthe
+    // osxtoolbar" -- the osx toolbar being THIS, the menu bar with File/Edit/Analyze, not
+    // the window's title bar. The canvas keeps its transport row (you want Play visible,
+    // not two menus deep); this is the same actions reachable from the menu bar, greyed
+    // out when no canvas is open rather than hidden, so the menu is stable.
+    std::function<bool()> hasCanvas;
+    std::function<void(int)> onCanvasAction;
+
     juce::StringArray getMenuBarNames() override
     {
         // "Cues" is top-level rather than a section inside Segments -- review round 7, item
         // 4: "its own entry in the macOS menu bar ("Cues" as a top-level menu rather than a
         // section inside Segments)". It sits right after Segments because the two are
         // siblings, file-scoped and group-scoped.
-        return {"File", "Edit", "Analyze", "Tags", "Segments", "Cues", "View", "Window"};
+        return {"File", "Edit", "Analyze", "Tags", "Segments", "Cues", "View", "Canvas", "Window"};
     }
 
     juce::PopupMenu getMenuForIndex(int topLevelMenuIndex, const juce::String&) override
@@ -4825,6 +4873,20 @@ public:
         }
         else if (topLevelMenuIndex == 7)
         {
+            const bool live = hasCanvas && hasCanvas();
+            menu.addItem(CanvasMenu::kPlay, "Play / Stop", live, false);
+            menu.addItem(CanvasMenu::kLoop, "Loop Selection", live, false);
+            menu.addItem(CanvasMenu::kFit,  "Fit to Window", live, false);
+            menu.addSeparator();
+            menu.addItem(CanvasMenu::kAddTrack, "Add Track", live, false);
+            menu.addItem(CanvasMenu::kAddBlock, "Add Block", live, false);
+            menu.addItem(CanvasMenu::kDuplicate, "Duplicate", live, false);
+            menu.addItem(CanvasMenu::kRemove, "Remove", live, false);
+            menu.addSeparator();
+            menu.addItem(CanvasMenu::kSave, "Save Canvas", live, false);
+        }
+        else if (topLevelMenuIndex == 8)
+        {
             // Audio Settings lives here rather than in its own one-item top-level menu now
             // that there is a Window menu to hold it and the log.
             // Brings the browser back when it has been closed while a generation
@@ -4864,6 +4926,8 @@ public:
         else if (menuItemID == 6 && onAudioSettings) onAudioSettings();
         else if (menuItemID == 4 && onUndo) onUndo();
         else if (menuItemID == 5 && onRedo) onRedo();
+        else if (menuItemID >= CanvasMenu::kFirst && menuItemID <= CanvasMenu::kLast && onCanvasAction)
+            onCanvasAction(menuItemID);
         else if (menuItemID >= 700 && onAction) onAction(menuItemID); // Tags/Segments/View share one id space
         else if ((menuItemID >= 10 && menuItemID <= 12) || menuItemID == 14 || menuItemID == 16)
         {
@@ -4934,6 +4998,8 @@ public:
         };
         // (wired below, next to the other table callbacks)
         menuModel.onAction = [this](int actionId) { mainWindow->getMainComponent().performMenuAction(actionId); };
+        menuModel.hasCanvas = [this] { return mainWindow->getMainComponent().hasCanvasWindow(); };
+        menuModel.onCanvasAction = [this](int id) { mainWindow->getMainComponent().performCanvasAction(id); };
         mainWindow->getMainComponent().onMenuStateChanged = [this] { menuModel.menuItemsChanged(); };
         menuModel.getAnalyzeOptions = [this] { return mainWindow->getMainComponent().getAnalyzeOptions(); };
         menuModel.setAnalyzeOptions = [this](AnalyzeOptions o) {
