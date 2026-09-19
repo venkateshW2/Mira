@@ -133,7 +133,7 @@ public:
     CanvasAudioSource()
     {
         for (auto& g : laneGain) g.store(1.0f);
-        for (auto& p : lanePeak) p.store(0.0f);
+        for (auto& p : lanePeak) { p[0].store(0.0f); p[1].store(0.0f); }
     }
 
     // Called on the MESSAGE thread. Builds readers, then publishes.
@@ -164,7 +164,11 @@ public:
 
     // Per-lane peak since the last read, cleared by reading. This is what answers "which
     // lane is making that noise" -- the one question a stack of twelve waveforms cannot.
-    float readAndClearLanePeak(int lane);
+    //
+    // PER CHANNEL, because a mono meter cannot show the one fault it exists to catch: a
+    // stereo take with a dead side, or a mix leaning entirely one way. A single number
+    // averaged over both is the number that hides it.
+    float readAndClearLanePeak(int lane, int channel);
 
     // The canvas timeline's own rate, fixed. Every SA3 take is 44,100 and the transport
     // resamples to the device, so nothing here has to care what the device opened at.
@@ -189,7 +193,7 @@ private:
     std::atomic<juce::int64> loopStart { 0 }, loopEnd { 0 };
     std::atomic<juce::uint64> muteMask { 0 }, soloMask { 0 };
     std::atomic<float> laneGain[kMaxLanes];
-    std::atomic<float> lanePeak[kMaxLanes];
+    std::atomic<float> lanePeak[kMaxLanes][2];
     std::atomic<float> peak { 0.0f };
     int blockSize = 512;
 
@@ -224,9 +228,15 @@ public:
 
     void setLoop(bool on, double startSeconds, double endSeconds);
     bool isLooping() const { return loopOn; }
+    // What the interface is actually running at, as against the timeline's 44,100. The
+    // difference is a resample, and a resample that nothing on screen admits to is the
+    // difference between "mira sounds different from the preview" being a mystery and
+    // being a fact you can point at.
+    double getDeviceRate() const;
+    static constexpr double getTimelineRate() { return CanvasAudioSource::kTimelineRate; }
     void setLaneMasks(juce::uint64 muted, juce::uint64 soloed) { canvasSource.setLaneMasks(muted, soloed); }
     void setLaneGain(int lane, float gain) { canvasSource.setLaneGain(lane, gain); }
-    float readAndClearLanePeak(int lane) { return canvasSource.readAndClearLanePeak(lane); }
+    float readAndClearLanePeak(int lane, int channel) { return canvasSource.readAndClearLanePeak(lane, channel); }
     float readAndClearPeak() { return canvasSource.readAndClearPeak(); }
 
 private:

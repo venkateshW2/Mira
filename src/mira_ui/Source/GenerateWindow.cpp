@@ -261,6 +261,12 @@ GenerateContent::GenerateContent(const MiraLookAndFeel& lafIn, juce::File studio
 
     tip(generateButton, "Generate with the settings above.");
     generateButton.onClick = [this] { generate(); };
+    addChildComponent(extendButton);
+    addChildComponent(remixButton);
+    extendButton.setTooltip("fill the block's empty tail, keeping what is already there");
+    remixButton.setTooltip("regenerate the whole block, guided by the take it has");
+    extendButton.onClick = [this] { if (onExtend) onExtend(); };
+    remixButton.onClick  = [this] { if (onRemix)  onRemix();  };
     rightPane.addAndMakeVisible(generateButton);
 
     triggerLabel.setText("trigger", juce::dontSendNotification);
@@ -799,6 +805,18 @@ juce::var GenerateContent::recipeFor(const juce::File& wav) const {
         if (!parsed.isVoid()) return parsed;
     }
     return lastRecipe;
+}
+
+void GenerateContent::setBlockActions(bool canExtend, bool canRemix)
+{
+    // Shown only where a block is driving this panel. The plain generate window never sets
+    // onExtend/onRemix, so it never grows two buttons it has no meaning for.
+    const bool show = onExtend != nullptr || onRemix != nullptr;
+    if (show != showBlockActions) { showBlockActions = show; resized(); }
+    extendButton.setVisible(show);
+    remixButton.setVisible(show);
+    extendButton.setEnabled(canExtend && !busy);
+    remixButton.setEnabled(canRemix && !busy);
 }
 
 // ---- a block's generator settings ---------------------------------------------------
@@ -2280,6 +2298,23 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
     }
     // --- audio in: init audio and inpainting, one clearly-bounded section instead of a
     // row of controls that never said they belonged together.
+    //
+    // NOT IN A BLOCK. On the canvas the block IS the audio in: its take is the source and
+    // its empty tail is the range, so a second place to load a file and drag a range is a
+    // second, contradictory answer to a question the geometry already settles.
+    if (panelOnly)
+    {
+        if (applyBounds)
+        {
+            inpaintHeading.setBounds({});  audioInCollapse.setBounds({});
+            initAudioButton.setBounds({}); clearInitButton.setBounds({});
+            inpaintToggle.setBounds({});   initLabel.setBounds({});
+            inpaintHelp.setBounds({});     inpaintStart.setBounds({}); inpaintEnd.setBounds({});
+            if (inpaintStrip != nullptr) inpaintStrip->setBounds({});
+        }
+    }
+    else
+    {
     heading(inpaintHeading, "AUDIO IN");
     if (applyBounds) {
         // The arrow sits on the heading's own line, at the right, where the rule ends.
@@ -2319,6 +2354,7 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
             inpaintHelp.setBounds({});
             inpaintStart.setBounds({}); inpaintEnd.setBounds({});
         }
+    }
     }
 
 
@@ -2367,6 +2403,23 @@ int GenerateContent::layoutRightPane(int width, bool applyBounds) {
         place(generateButton, line.removeFromLeft(line.getWidth() - stopW - 6));
         line.removeFromLeft(6);
         place(stopButton, line);
+    }
+
+    // EXTEND and REMIX, under Generate, because they are the same verb aimed at audio this
+    // block already has. On the canvas toolbar they read as things the CANVAS does, which
+    // is wrong twice: they act on one block, and they act through this generator's prompt.
+    if (showBlockActions)
+    {
+        auto line = row(28, 2);
+        const int half = (line.getWidth() - 6) / 2;
+        place(extendButton, line.removeFromLeft(half));
+        line.removeFromLeft(6);
+        place(remixButton, line);
+    }
+    else if (applyBounds)
+    {
+        extendButton.setBounds({});
+        remixButton.setBounds({});
     }
     // Show in Finder and the worker console are window furniture, not part of making a
     // block: in the canvas the block's folder is one click away on the block itself, and

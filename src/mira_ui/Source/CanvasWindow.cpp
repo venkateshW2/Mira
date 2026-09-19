@@ -88,26 +88,49 @@ void CanvasView::rebuildAudio()
 // meter down the right edge. The name used to start at x=60 with nothing to its left,
 // because it shared a row with chips that were vertically centred somewhere else -- so it
 // read as floating rather than as a title, and the rename box landed in the same odd spot.
+// M and S sit to the RIGHT of the fader column, not above it. Stacked above, they ate the
+// vertical space the fader needs -- and vertical space is the only thing a fader has.
 juce::Rectangle<int> CanvasView::muteBoxFor(int lane) const
 {
     return laneHeight >= 46
-               ? juce::Rectangle<int>(8, laneToY(lane) + 25, 24, 18)
-               : juce::Rectangle<int>(kHeaderWidth - 76, laneToY(lane) + laneHeight / 2 - 9, 22, 18);
+               ? juce::Rectangle<int>(kHeaderWidth - 62, laneToY(lane) + 24, 26, 18)
+               : juce::Rectangle<int>(kHeaderWidth - 74, laneToY(lane) + laneHeight / 2 - 9, 22, 18);
 }
 
 juce::Rectangle<int> CanvasView::soloBoxFor(int lane) const
 {
     return laneHeight >= 46
-               ? juce::Rectangle<int>(36, laneToY(lane) + 25, 24, 18)
-               : juce::Rectangle<int>(kHeaderWidth - 50, laneToY(lane) + laneHeight / 2 - 9, 22, 18);
+               ? juce::Rectangle<int>(kHeaderWidth - 32, laneToY(lane) + 24, 26, 18)
+               : juce::Rectangle<int>(kHeaderWidth - 48, laneToY(lane) + laneHeight / 2 - 9, 22, 18);
 }
 
+// One warped scale, shared by the fader and the meter. Linear-in-dB spends half the
+// travel between -60 and -30, where nothing you care about happens; a console spends it at
+// the top. Both controls use this, which is the whole point -- a fader at -12 lines up
+// with a meter reading -12.
+double CanvasView::dbToNorm(double db)
+{
+    db = juce::jlimit(kFaderBottomDb, kFaderTopDb, db);
+    if (db >= -12.0) return 0.55 + 0.45 * (db + 12.0) / 18.0;    // +6..-12 over the top 45%
+    if (db >= -30.0) return 0.25 + 0.30 * (db + 30.0) / 18.0;    // -12..-30 over 30%
+    return 0.25 * (db + 60.0) / 30.0;                             // -30..-60 over 25%
+}
+
+double CanvasView::normToDb(double n)
+{
+    n = juce::jlimit(0.0, 1.0, n);
+    if (n >= 0.55) return -12.0 + (n - 0.55) / 0.45 * 18.0;
+    if (n >= 0.25) return -30.0 + (n - 0.25) / 0.30 * 18.0;
+    return -60.0 + n / 0.25 * 30.0;
+}
+
+// The strip runs the full height of the lane under the name row, so the fader and the
+// meter are the same height and the scale between them reads for both.
 juce::Rectangle<int> CanvasView::faderBoxFor(int lane) const
 {
-    // Only while the lane is tall enough to hold one. A fader squeezed into 28px would be
-    // a control you cannot aim at, which is worse than a control that is not there.
     if (laneHeight < 46) return {};
-    return { 66, laneToY(lane) + 28, kHeaderWidth - 92, 12 };
+    const int top = laneToY(lane) + 22;
+    return { 10, top, 16, juce::jmax(16, laneHeight - top + laneToY(lane) - 8) };
 }
 
 // Muted and deliberately NOT the accent: the accent means "selected" and "playing"
@@ -128,18 +151,20 @@ juce::Colour CanvasView::laneColour(int lane)
     return palette[(size_t) juce::jmax(0, lane) % (sizeof(palette) / sizeof(palette[0]))];
 }
 
+// IMMEDIATELY BESIDE THE FADER and exactly as tall, because they share a scale. Two
+// stereo bars: a mono meter cannot show the fault it exists to catch.
 juce::Rectangle<int> CanvasView::meterBoxFor(int lane) const
 {
-    // VERTICAL, at the right edge of the header, running the lane's full height. A
-    // horizontal meter stacked above a horizontal fader read as two faders, one of which
-    // moved on its own -- and neither lined up with the other.
-    return { kHeaderWidth - 18, laneToY(lane) + 4, 10, juce::jmax(12, laneHeight - 12) };
+    if (laneHeight < 46)
+        return { kHeaderWidth - 16, laneToY(lane) + 4, 9, juce::jmax(10, laneHeight - 8) };
+    auto f = faderBoxFor(lane);
+    return { f.getRight() + 6, f.getY(), 14, f.getHeight() };
 }
 
 juce::Rectangle<int> CanvasView::nameBoxFor(int lane) const
 {
     return laneHeight >= 46
-               ? juce::Rectangle<int>(8, laneToY(lane) + 4, kHeaderWidth - 32, 20)
+               ? juce::Rectangle<int>(8, laneToY(lane) + 2, kHeaderWidth - 18, 18)
                : juce::Rectangle<int>(8, laneToY(lane), kHeaderWidth - 84, laneHeight);
 }
 
@@ -210,6 +235,16 @@ void CanvasView::mouseDoubleClick(const juce::MouseEvent& e)
         pointPanelAt(hit);
         repaint();
     }
+}
+
+// Where a click on the fader lands, in dB, through the SAME warped scale the fader and
+// meter are drawn with -- so the cap arrives under the pointer instead of near it.
+double CanvasView::faderDbAtY(int lane, int y) const
+{
+    auto f = faderBoxFor(lane);
+    if (f.isEmpty() || f.getHeight() <= 0) return laneDbAt(lane);
+    const double norm = 1.0 - (double) (y - f.getY()) / (double) f.getHeight();
+    return normToDb(norm);
 }
 
 void CanvasView::setLaneDb(int lane, double db)
@@ -1216,84 +1251,128 @@ void CanvasView::paint(juce::Graphics& g)
                 g.drawText(laneNames[lane].isNotEmpty() ? laneNames[lane] : juce::String(lane + 1),
                             nameBoxFor(lane), juce::Justification::centredLeft, true);
 
-            if (auto meterBox = meterBoxFor(lane); !meterBox.isEmpty())
+            auto fader = faderBoxFor(lane);
+            auto meterBox = meterBoxFor(lane);
+            const bool strip = !fader.isEmpty();
+
+            // ONE mapping, used by both. `norm` is 0 at -60 dB and 1 at +6, warped so the
+            // working range gets the travel -- see dbToNorm.
+            auto yFor = [&](juce::Rectangle<int> box, double db) {
+                return (float) box.getBottom() - (float) box.getHeight() * (float) dbToNorm(db);
+            };
+
+            // --- the scale, drawn BETWEEN the fader and the meter so it reads for both.
+            if (strip)
             {
-                const float level = lane < (int) laneMeter.size() ? laneMeter[(size_t) lane] : 0.0f;
-                const float hold  = lane < (int) laneHold.size()  ? laneHold[(size_t) lane]  : 0.0f;
-
-                // A SCALE, not a bar. dBFS over -48..0, with ticks at -6, -12, -24 and -36
-                // so a level can be read rather than only compared -- that is the whole
-                // difference between a meter and a progress bar, and it is what was
-                // missing. Green to -6, amber to -1, red over: the colour answers "am I
-                // near clipping" without doing arithmetic on a decibel.
-                auto toY = [&](float db) {
-                    const float f = juce::jlimit(0.0f, 1.0f, (db + 48.0f) / 48.0f);
-                    return meterBox.getBottom() - meterBox.getHeight() * f;
-                };
-
-                g.setColour(MiraLookAndFeel::surface.darker(0.4f));
-                g.fillRoundedRectangle(meterBox.toFloat(), 2.0f);
-
-                if (level > 0.0005f)
+                g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(8.0f)));
+                // A scale with more marks than it has room for is a smear. Drop to the two
+                // that matter -- unity and -12 -- when the lane is short, and label them
+                // only when there is width to the right of the meter to label them in.
+                const bool roomy = fader.getHeight() >= 70;
+                const bool labels = kHeaderWidth - meterBox.getRight() >= 26;
+                for (double tick : roomy ? std::vector<double>{ 6.0, 0.0, -6.0, -12.0, -24.0, -40.0 }
+                                         : std::vector<double>{ 0.0, -12.0 })
                 {
-                    const float db = juce::Decibels::gainToDecibels(level);
-                    const float top = toY(db);
-                    // Drawn in three bands so the colour is where the LEVEL is, not one
-                    // colour for the whole column: a peak touching red should show red at
-                    // the top and green below it, the way a real meter does.
-                    auto band = [&](float lo, float hi, juce::Colour c) {
-                        const float y0 = toY(juce::jmin(hi, db)), y1 = toY(lo);
-                        if (y0 >= y1 || db < lo) return;
-                        g.setColour(c);
-                        g.fillRect(juce::Rectangle<float>((float) meterBox.getX() + 1.0f, y0,
-                                                           (float) meterBox.getWidth() - 2.0f, y1 - y0));
-                    };
-                    band(-48.0f, -6.0f, MiraLookAndFeel::active);
-                    band(-6.0f,  -1.0f, MiraLookAndFeel::accent);
-                    band(-1.0f,   0.0f, MiraLookAndFeel::warn);
-                    juce::ignoreUnused(top);
+                    const float y = yFor(fader, tick);
+                    if (y < fader.getY() + 4 || y > fader.getBottom() - 2) continue;
+                    // The tick crosses BOTH controls. That line is the whole argument for
+                    // one scale: you can see where the fader is against where the signal
+                    // is, in one look, without reading two numbers.
+                    g.setColour(MiraLookAndFeel::border.withAlpha(tick == 0.0 ? 0.9f : 0.45f));
+                    g.fillRect((float) fader.getX(), y, (float) (meterBox.getRight() - fader.getX()), 1.0f);
+                    if (!labels) continue;
+                    g.setColour(MiraLookAndFeel::textFaint.withAlpha(tick == 0.0 ? 0.9f : 0.6f));
+                    g.drawText(tick > 0 ? "+" + juce::String((int) tick) : juce::String((int) tick),
+                                juce::Rectangle<int>(meterBox.getRight() + 3, (int) y - 5, 22, 10),
+                                juce::Justification::centredLeft, false);
                 }
-
-                // Peak hold: the highest recent level, left behind as a line. Without it a
-                // transient is gone before your eye reaches the meter.
-                if (hold > 0.0005f)
-                {
-                    const float db = juce::Decibels::gainToDecibels(hold);
-                    g.setColour(db > -1.0f ? MiraLookAndFeel::warn : MiraLookAndFeel::text.withAlpha(0.85f));
-                    g.fillRect((float) meterBox.getX(), toY(db) - 1.0f, (float) meterBox.getWidth(), 1.5f);
-                }
-
-                g.setColour(MiraLookAndFeel::border.withAlpha(0.8f));
-                for (float tick : { -6.0f, -12.0f, -24.0f, -36.0f })
-                    g.fillRect((float) meterBox.getRight() - 3.0f, toY(tick), 3.0f, 1.0f);
             }
 
-            if (auto fader = faderBoxFor(lane); !fader.isEmpty())
+            // --- the meter: two bars, left and right, against that same scale.
+            if (!meterBox.isEmpty())
+            {
+                const auto lv = lane < (int) laneMeter.size() ? laneMeter[(size_t) lane]
+                                                              : std::array<float, 2>{ 0.0f, 0.0f };
+                const auto hd = lane < (int) laneHold.size()  ? laneHold[(size_t) lane]
+                                                              : std::array<float, 2>{ 0.0f, 0.0f };
+                g.setColour(MiraLookAndFeel::surface.darker(0.45f));
+                g.fillRoundedRectangle(meterBox.toFloat(), 2.0f);
+
+                const float barW = (meterBox.getWidth() - 3.0f) * 0.5f;
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const float x = meterBox.getX() + 1.0f + ch * (barW + 1.0f);
+                    if (lv[(size_t) ch] > 0.0005f)
+                    {
+                        const double db = juce::Decibels::gainToDecibels(lv[(size_t) ch]);
+                        // Three bands, so the colour is where the LEVEL is rather than one
+                        // colour for the whole column -- a peak touching red shows red at
+                        // the top and green below it, the way a real meter does.
+                        auto band = [&](double lo, double hi, juce::Colour c) {
+                            if (db < lo) return;
+                            const float y0 = yFor(meterBox, juce::jmin(hi, db)), y1 = yFor(meterBox, lo);
+                            if (y0 >= y1) return;
+                            g.setColour(c);
+                            g.fillRect(juce::Rectangle<float>(x, y0, barW, y1 - y0));
+                        };
+                        band(kFaderBottomDb, -6.0, MiraLookAndFeel::active);
+                        band(-6.0, -1.0, MiraLookAndFeel::accent);
+                        band(-1.0, kFaderTopDb, MiraLookAndFeel::warn);
+                    }
+                    if (hd[(size_t) ch] > 0.0005f)
+                    {
+                        const double db = juce::Decibels::gainToDecibels(hd[(size_t) ch]);
+                        g.setColour(db > -1.0 ? MiraLookAndFeel::warn
+                                              : MiraLookAndFeel::text.withAlpha(0.85f));
+                        g.fillRect(x, yFor(meterBox, db) - 1.0f, barW, 1.5f);
+                    }
+                }
+
+                // CLIP, latched. A clip that shows for 200 ms is a clip you will miss, and
+                // the canvas sums tracks -- overs are the failure mode it invites. Click
+                // the strip to clear it.
+                if (lane < (int) laneClipped.size() && laneClipped[(size_t) lane])
+                {
+                    g.setColour(MiraLookAndFeel::warn);
+                    g.fillRect((float) meterBox.getX(), (float) meterBox.getY() - 4.0f,
+                                (float) meterBox.getWidth(), 3.0f);
+                }
+            }
+
+            // --- the fader: a groove with a proper cap, on the same scale.
+            if (strip)
             {
                 const double db = laneDbAt(lane);
-                const float frac = (float) ((db + 60.0) / 66.0);
-
-                // A GROOVE AND A CAP, not a filled bar. A bar cannot show you where the
-                // control is when the value is zero, and it reads as a meter that happens
-                // to be draggable -- which is exactly the confusion of having both.
-                auto groove = fader.toFloat().withSizeKeepingCentre((float) fader.getWidth(), 3.0f);
-                g.setColour(MiraLookAndFeel::surface.darker(0.3f));
+                auto groove = fader.toFloat().withSizeKeepingCentre(3.0f, (float) fader.getHeight());
+                g.setColour(MiraLookAndFeel::surface.darker(0.35f));
                 g.fillRoundedRectangle(groove, 1.5f);
-                g.setColour(muted ? MiraLookAndFeel::textFaint : laneColour(lane).withAlpha(0.7f));
-                g.fillRoundedRectangle(groove.withWidth(juce::jmax(2.0f, groove.getWidth() * frac)), 1.5f);
 
-                // Unity marked, because "where was 0 dB again" is the one question a fader
-                // with no numbers has to answer at a glance.
-                const float unityX = fader.getX() + fader.getWidth() * (60.0f / 66.0f);
-                g.setColour(MiraLookAndFeel::text.withAlpha(0.3f));
-                g.fillRect(unityX, (float) fader.getY() + 1.0f, 1.0f, (float) fader.getHeight() - 2.0f);
+                const float capY = yFor(fader, db);
+                g.setColour(muted ? MiraLookAndFeel::textFaint : laneColour(lane).withAlpha(0.75f));
+                g.fillRoundedRectangle(groove.withTop(capY), 1.5f);
 
-                const float capX = fader.getX() + fader.getWidth() * juce::jlimit(0.0f, 1.0f, frac);
-                auto cap = juce::Rectangle<float>(capX - 3.5f, (float) fader.getY(), 7.0f, (float) fader.getHeight());
-                g.setColour(muted ? MiraLookAndFeel::surface3 : laneColour(lane).brighter(0.25f));
-                g.fillRoundedRectangle(cap, 2.0f);
-                g.setColour(MiraLookAndFeel::surface.darker(0.5f));
-                g.drawRoundedRectangle(cap, 2.0f, 1.0f);
+                // A CAP with a centre line, which is what a fader looks like and what makes
+                // its exact position readable against a scale. A filled bar cannot say
+                // where the control is when the value is at the bottom.
+                auto cap = juce::Rectangle<float>((float) fader.getX(), capY - 5.0f,
+                                                   (float) fader.getWidth(), 10.0f);
+                g.setColour(muted ? MiraLookAndFeel::surface3 : laneColour(lane).brighter(0.3f));
+                g.fillRoundedRectangle(cap, 2.5f);
+                g.setColour(MiraLookAndFeel::surface.darker(0.6f));
+                g.drawRoundedRectangle(cap, 2.5f, 1.0f);
+                g.fillRect(cap.getX() + 2.0f, cap.getCentreY() - 0.5f, cap.getWidth() - 4.0f, 1.0f);
+            }
+
+            // --- the number. A fader without one is a gesture you cannot repeat.
+            if (strip)
+            {
+                const double db = laneDbAt(lane);
+                g.setColour(muted ? MiraLookAndFeel::textFaint : MiraLookAndFeel::textDim);
+                g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.5f)));
+                g.drawText(db <= kFaderBottomDb ? juce::String("-inf")
+                                                : juce::String(db, 1) + " dB",
+                            juce::Rectangle<int>(kHeaderWidth - 62, laneToY(lane) + 44, 56, 12),
+                            juce::Justification::centredLeft, false);
             }
         }
         // The ruler's own corner, so the seconds do not run under the headers.
@@ -1380,17 +1459,21 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     {
         const int lane = yToLane(e.y);
         if (lane >= laneCount) return;
+        // Any click on the strip acknowledges the clip. Latched indicators need a way to
+        // be cleared or they stop meaning "this happened" and start meaning "this happened
+        // at some point, once, maybe ages ago".
+        if (lane < (int) laneClipped.size()) laneClipped[(size_t) lane] = false;
         if (lane < CanvasAudioSource::kMaxLanes)
         {
             const juce::uint64 bit = juce::uint64 (1) << lane;
             if (muteBoxFor(lane).contains(e.getPosition())) muteMask ^= bit;
             else if (soloBoxFor(lane).contains(e.getPosition())) soloMask ^= bit;
             else if (auto fader = faderBoxFor(lane);
-                     !fader.isEmpty() && fader.expanded(0, 5).contains(e.getPosition()))
+                     !fader.isEmpty() && fader.expanded(6, 4).contains(e.getPosition()))
             {
                 faderLane = lane;
                 if (e.mods.isCommandDown()) setLaneDb(lane, 0.0);   // cmd-click = unity
-                else setLaneDb(lane, -60.0 + 66.0 * (e.x - fader.getX()) / (double) fader.getWidth());
+                else setLaneDb(lane, faderDbAtY(lane, e.y));
                 repaint();
                 return;
             }
@@ -1486,8 +1569,7 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
 {
     if (faderLane >= 0)
     {
-        if (auto fader = faderBoxFor(faderLane); !fader.isEmpty())
-            setLaneDb(faderLane, -60.0 + 66.0 * (e.x - fader.getX()) / (double) fader.getWidth());
+        setLaneDb(faderLane, faderDbAtY(faderLane, e.y));
         repaint();
         return;
     }
@@ -1976,25 +2058,33 @@ void CanvasView::timerCallback()
     if (player.isPlaying())
     {
         const int lanes = juce::jmax(4, (getHeight() - topRuler) / laneHeight + 1);
-        if ((int) laneMeter.size() < lanes) laneMeter.resize((size_t) lanes, 0.0f);
-        if ((int) laneHold.size()  < lanes) laneHold.resize((size_t) lanes, 0.0f);
+        const std::array<float, 2> zero { 0.0f, 0.0f };
+        if ((int) laneMeter.size()  < lanes) laneMeter.resize((size_t) lanes, zero);
+        if ((int) laneHold.size()   < lanes) laneHold.resize((size_t) lanes, zero);
+        if ((int) laneClipped.size() < lanes) laneClipped.resize((size_t) lanes, false);
         for (int lane = 0; lane < lanes && lane < CanvasAudioSource::kMaxLanes; ++lane)
-        {
-            const float hit = player.readAndClearLanePeak(lane);
-            auto& held = laneMeter[(size_t) lane];
-            // Instant attack, slow release: a meter that falls as fast as it rises is a
-            // flicker you cannot read at 30 fps.
-            held = hit > held ? hit : held * 0.80f;
-            auto& hold = laneHold[(size_t) lane];
-            hold = hit > hold ? hit : hold * 0.985f;   // ~2 s to fall away
-        }
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float hit = player.readAndClearLanePeak(lane, ch);
+                auto& held = laneMeter[(size_t) lane][(size_t) ch];
+                // Instant attack, slow release: a meter that falls as fast as it rises is
+                // a flicker you cannot read at 30 fps.
+                held = hit > held ? hit : held * 0.80f;
+                auto& hold = laneHold[(size_t) lane][(size_t) ch];
+                hold = hit > hold ? hit : hold * 0.985f;   // ~2 s to fall away
+                // LATCHED. Full scale reached even once is the thing you need to know
+                // about, and it is over before the meter has finished a frame.
+                if (hit >= 0.999f) laneClipped[(size_t) lane] = true;
+            }
         repaint();
         return;
     }
     // Let the meters fall to nothing after a stop rather than freezing mid-level.
     bool alive = false;
-    for (auto& m : laneMeter) { if (m > 0.0005f) { m *= 0.8f; alive = true; } else m = 0.0f; }
-    for (auto& h : laneHold)  { if (h > 0.0005f) { h *= 0.9f; alive = true; } else h = 0.0f; }
+    for (auto& m : laneMeter)
+        for (auto& c : m) { if (c > 0.0005f) { c *= 0.8f; alive = true; } else c = 0.0f; }
+    for (auto& h : laneHold)
+        for (auto& c : h) { if (c > 0.0005f) { c *= 0.9f; alive = true; } else c = 0.0f; }
     if (alive) { repaint(); return; }
 
     // Thumbnails load on a background thread and finish whenever they finish. Without
@@ -2041,18 +2131,14 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         button(duplicateButton, "Duplicate");
         duplicateButton.onClick = [this] { view.duplicateSelection(); };
 
-        // EXTEND and REMIX. Both fill the block's empty tail by inpainting; the only
-        // difference is whose prompt does it. Extend restores the block's own recipe, so
-        // the continuation continues in the voice that made what it continues. Remix keeps
-        // whatever you have just typed, which is the whole point of calling it a remix.
-        button(extendButton, "Extend");
-        extendButton.onClick = [this] { view.extendSelection(false); };
-        button(remixButton, "Remix");
-        remixButton.onClick = [this] { view.extendSelection(true); };
-        extendButton.setEnabled(false);
-        remixButton.setEnabled(false);
-        extendButton.setTooltip("fill the empty tail with more of the same");
-        remixButton.setTooltip("fill the empty tail using the prompt as it is now");
+        // Extend and Remix used to live here. They are a BLOCK's actions, driven by the
+        // block's own prompt, so they belong in the block's generator -- on the toolbar
+        // they read as something the canvas does.
+        if (panel != nullptr)
+        {
+            panel->onExtend = [this] { view.extendSelection(false); };
+            panel->onRemix  = [this] { view.extendSelection(true);  };
+        }
         button(addTrackButton, "+ Track");
         button(panelToggle, "Generate >");
         panelToggle.onClick = [this] {
@@ -2097,8 +2183,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             // different length, rather than typing a number somewhere else on screen.
             if (panel != nullptr) panel->setDuration(lengthSeconds);
             // Extend needs somewhere to put the audio; remix only needs audio to remix.
-            extendButton.setEnabled(tailSeconds > 0.05);
-            remixButton.setEnabled(hasAudio && lengthSeconds > 0.0);
+            if (panel != nullptr)
+                panel->setBlockActions(tailSeconds > 0.05, hasAudio && lengthSeconds > 0.0);
         };
         view.onExtendRequested = [this](const juce::File& take, double rangeStart,
                                          double totalSeconds, bool remix) {
@@ -2246,10 +2332,6 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         bar.removeFromLeft(6);
         duplicateButton.setBounds(bar.removeFromLeft(86));
         bar.removeFromLeft(6);
-        extendButton.setBounds(bar.removeFromLeft(68));
-        bar.removeFromLeft(4);
-        remixButton.setBounds(bar.removeFromLeft(64));
-        bar.removeFromLeft(6);
         panelToggle.setBounds(bar.removeFromRight(96));
         bar.removeFromRight(8);
         newProjectButton.setBounds(bar.removeFromLeft(56));
@@ -2258,7 +2340,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         bar.removeFromLeft(4);
         saveProjectButton.setBounds(bar.removeFromLeft(56));
         bar.removeFromLeft(12);
-        clock.setBounds(bar.removeFromRight(180));
+        clock.setBounds(bar.removeFromRight(250));
         bar.removeFromRight(8);
         meter.setBounds(bar.removeFromRight(72));
         bar.removeFromRight(4);
@@ -2346,8 +2428,21 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         held *= 0.92f;                                     // a slow fall, so a hit is readable
         const float dB = juce::Decibels::gainToDecibels(juce::jmax(held, 1.0e-6f));
 
+        // The rates, said out loud. The timeline is 44,100 because that is all SA3
+        // generates; the interface is whatever you set it to, and when they differ the
+        // transport resamples the whole mix. That resample is the honest explanation for
+        // "the canvas sounds different from the preview", and hiding it made the
+        // difference feel like a fault rather than a conversion.
+        const double devRate = view.getDeviceRate();
+        auto khz = [](double r) { return juce::String(r / 1000.0, 1) + "k"; };
+        const auto rates = devRate <= 0.0
+                               ? juce::String("no device")
+                               : (std::abs(devRate - CanvasView::getTimelineRate()) < 1.0
+                                      ? khz(devRate)
+                                      : khz(CanvasView::getTimelineRate()) + " -> " + khz(devRate));
+
         clock.setText(formatTime(view.getPositionSeconds()) + " / " + formatTime(view.getLengthSeconds())
-                       + "   " + juce::String(view.getBlockCount()) + " blocks",
+                       + "   " + juce::String(view.getBlockCount()) + " blocks   " + rates,
                       juce::dontSendNotification);
         meter.setText(held > 1.0f ? "CLIP +" + juce::String(dB, 1) + " dB"
                                   : juce::String(dB, 1) + " dB",
@@ -2373,7 +2468,6 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::Label blockLabel;
     juce::TextButton playButton, loopButton, fitButton, deleteButton,
                      addBlockButton, addTrackButton, duplicateButton,
-                     extendButton, remixButton,
                      newProjectButton, openProjectButton, saveProjectButton, panelToggle;
     juce::Rectangle<int> masterMeter;
     bool panelCollapsed = false;

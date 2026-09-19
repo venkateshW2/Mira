@@ -59,9 +59,10 @@ void CanvasAudioSource::setLaneGain(int lane, float gain)
     if (lane >= 0 && lane < kMaxLanes) laneGain[lane].store(juce::jlimit(0.0f, 4.0f, gain));
 }
 
-float CanvasAudioSource::readAndClearLanePeak(int lane)
+float CanvasAudioSource::readAndClearLanePeak(int lane, int channel)
 {
-    return (lane >= 0 && lane < kMaxLanes) ? lanePeak[lane].exchange(0.0f) : 0.0f;
+    if (lane < 0 || lane >= kMaxLanes || channel < 0 || channel > 1) return 0.0f;
+    return lanePeak[lane][channel].exchange(0.0f);
 }
 
 float CanvasAudioSource::getLaneGain(int lane) const
@@ -176,19 +177,45 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
         // than a `continue`, because silently dropping a voice is what made the first
         // version inaudible without saying anything was wrong.
         jassert(n <= scratch.getNumSamples());
-        scratch.clear(0, n);
+
+        // ---- sample rate ---------------------------------------------------------------
+        //
+        // The timeline is 44,100 because SA3 generates at 44,100 and nothing else, and the
+        // transport resamples the finished mix to whatever the interface is running at
+        // (48,000 here). A file at the timeline's own rate therefore costs nothing.
+        //
+        // A file at ANY OTHER RATE was broken: rateRatio was computed and used to offset
+        // the read position, and then n consecutive samples were read anyway -- so a 48 kHz
+        // drop played 8.8% slow and drifted further out of place the longer it ran, with
+        // nothing on screen to say so. It needs resampling, not an offset.
+        const bool needsResample = std::abs(v.rateRatio - 1.0) > 1.0e-9;
+        const int srcWanted = needsResample
+                                  ? (int) std::ceil(n * v.rateRatio) + 4
+                                  : n;
+        // One sample of run-up, so the interpolator has a point behind the first output.
+        const juce::int64 srcFrom = needsResample ? juce::jmax<juce::int64>(0, readFrom - 1)
+                                                  : readFrom;
+        if (srcWanted > scratch.getNumSamples())
+        {
+            // Cannot happen at any ratio we accept; said out loud rather than truncated,
+            // because a silently short read is a click nobody can reproduce.
+            jassertfalse;
+            continue;
+        }
+        scratch.clear(0, srcWanted);
         // Reading on this thread is safe ONLY because a BufferingAudioSource sits in
         // front of this source: this runs on its background thread, not in the device
         // callback. Take that buffer away and this line becomes file I/O in the
         // real-time path.
-        v.reader->read(&scratch, 0, n, readFrom, true, true);
+        v.reader->read(&scratch, 0, srcWanted, srcFrom, true, true);
 
-        float voicePeak = 0.0f;
+        float voicePeak[2] = { 0.0f, 0.0f };
         for (int ch = 0; ch < outChannels; ++ch)
         {
             const int srcCh = juce::jmin(ch, scratch.getNumChannels() - 1);
             auto* dst = info.buffer->getWritePointer(ch, info.startSample + static_cast<int>(overlapStart - from));
             const auto* src = scratch.getReadPointer(srcCh);
+            const double lead = needsResample ? (double) (readFrom - srcFrom) : 0.0;
 
             for (int i = 0; i < n; ++i)
             {
@@ -201,8 +228,31 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
                     env *= fadeGain (static_cast<float>(v.lengthSamples - at)
                                           / static_cast<float>(v.fadeOutSamples),
                                       v.fadeOutShape);
-                const float sample = src[i] * env;
-                voicePeak = juce::jmax(voicePeak, std::abs(sample));
+                float raw;
+                if (needsResample)
+                {
+                    // Catmull-Rom over four neighbours. Stateless, because each chunk is
+                    // read at an explicit position -- there is no running filter to carry
+                    // across a seek, which is what makes an arbitrary-position source
+                    // awkward to resample at all.
+                    const double pos = lead + i * v.rateRatio;
+                    const int i1 = (int) pos;
+                    const float t = (float) (pos - i1);
+                    const int last = srcWanted - 1;
+                    const float y0 = src[juce::jlimit(0, last, i1 - 1)];
+                    const float y1 = src[juce::jlimit(0, last, i1)];
+                    const float y2 = src[juce::jlimit(0, last, i1 + 1)];
+                    const float y3 = src[juce::jlimit(0, last, i1 + 2)];
+                    raw = y1 + 0.5f * t * (y2 - y0
+                              + t * (2.0f * y0 - 5.0f * y1 + 4.0f * y2 - y3
+                              + t * (3.0f * (y1 - y2) + y3 - y0)));
+                }
+                else
+                {
+                    raw = src[i];
+                }
+                const float sample = raw * env;
+                if (ch < 2) voicePeak[ch] = juce::jmax(voicePeak[ch], std::abs(sample));
                 dst[i] += sample;
             }
         }
@@ -211,10 +261,12 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
         // the file contains -- pulling a fader down has to move its meter or the meter is
         // answering a question nobody asked.
         if (v.lane < kMaxLanes)
-        {
-            float seen = lanePeak[v.lane].load();
-            while (voicePeak > seen && !lanePeak[v.lane].compare_exchange_weak(seen, voicePeak)) {}
-        }
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                float seen = lanePeak[v.lane][ch].load();
+                while (voicePeak[ch] > seen
+                       && !lanePeak[v.lane][ch].compare_exchange_weak(seen, voicePeak[ch])) {}
+            }
     }
 
     // One peak for the whole mix, after summing -- which is the only place the stacking
@@ -249,6 +301,13 @@ void CanvasPlayer::attachTo(juce::AudioDeviceManager& device)
     deviceManager = &device;
     player.setSource(&transport);
     deviceManager->addAudioCallback(&player);
+}
+
+double CanvasPlayer::getDeviceRate() const
+{
+    if (deviceManager == nullptr) return 0.0;
+    if (auto* dev = deviceManager->getCurrentAudioDevice()) return dev->getCurrentSampleRate();
+    return 0.0;
 }
 
 void CanvasPlayer::detach()

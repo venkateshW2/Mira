@@ -179,6 +179,22 @@ Blocks are also **clamped to tracks that exist**. Dragging below the last track 
 a block into empty space — a lane with no header, no fader and no mute, which is not a
 track, so the block was somewhere you could not mix it from.
 
+### The strip: one scale for the fader and the meter
+
+A **vertical fader beside a vertical stereo meter, the same height, sharing one dB scale** —
+which is what makes a console strip readable. A tick line crosses both, so where the fader
+sits and where the signal is answer each other in one look, with no arithmetic on a decibel.
+
+The scale is **warped, not linear in dB**: +6 to −12 gets the top 45% of the travel, −12 to
+−30 the next 30%, and −30 to −60 the bottom quarter. Linear-in-dB spends half the fader
+between −60 and −30, where nothing you care about happens. `dbToNorm` is the single mapping
+and both controls use it — that is what "sharing a scale" has to mean.
+
+The meter is **stereo**, because a mono meter cannot show the fault a meter exists to catch:
+a take with a dead side. Peak hold decays far slower than the bar, and **clip is latched** —
+full scale reached once is what you need to know, and it is over before a frame has
+finished. Click the strip to clear it.
+
 ### A track is a lane, and lanes just sum
 
 Stacking is the point: drums on one track, guitars on another, playing together. So tracks
@@ -266,7 +282,15 @@ allocate, may not lock, and may not touch the filesystem.
 - **Readers are cached across rebuilds**, keyed by path. Reopening twelve files from an
   external drive on every mouse-up is where the lag on dragging a block came from.
 - **The timeline is 44,100 Hz regardless of the device.** SA3 generates at 44.1 and nothing
-  else; the transport resamples for us.
+  else; the transport resamples the finished mix to whatever the interface runs at. The
+  toolbar says which — `44.1k -> 48.0k` when they differ, one figure when they do not. A
+  conversion nothing on screen admits to is the difference between "the canvas sounds
+  different from the preview" being a mystery and being a fact you can point at.
+- **A file at any other rate is resampled per voice**, Catmull-Rom over four neighbours,
+  stateless because each chunk is read at an explicit position. Before this, `rateRatio` was
+  computed, used to offset the read, and then *n* consecutive samples were read anyway — so
+  a 48 kHz drop played 8.8% slow and drifted further out of place the longer it ran, with
+  nothing to say so. Every SA3 take is 44.1, so this only ever bit dropped files.
 - Mute, solo and the faders are **atomic**, read directly by the audio thread, so moving one
   takes effect on the next block rather than after a rebuild.
 
@@ -304,9 +328,6 @@ replacement rather than be handed it.
 ### Open, in rough order
 
 - [ ] **Levels, properly.** A real fader law and calibrated meters, not a bar and a number.
-- [ ] **Sample rate handling for blocks.** Mixed-rate sources currently ride on the
-      transport's resampler; export already does the right thing per take
-      ([Export.cpp](src/mira_ui/Source/Export.cpp)) and the canvas should match it.
 - [ ] **Zoom controls** — buttons and a fit-to-selection, not only `cmd-wheel` and `F`.
 - [ ] Gain handle on a block.
 - [ ] Bars from mira's own analysis, per block — §1's point, still unbuilt.

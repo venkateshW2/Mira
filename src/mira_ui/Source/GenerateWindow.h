@@ -401,6 +401,13 @@ public:
     //
     // Same shape as the recipe written beside a take, so a block's settings and a take's
     // sidecar are the same thing and cannot drift into two formats.
+    // EXTEND / REMIX live in the BLOCK's generator, not on the canvas toolbar: they are
+    // things this block does to its own audio, the same way Generate is. Set by the canvas;
+    // when they are null the buttons are not shown at all, which is how the plain generate
+    // window stays exactly as it was.
+    std::function<void()> onExtend, onRemix;
+    void setBlockActions(bool canExtend, bool canRemix);
+
     juce::var captureSettings() const;
     void applySettings(const juce::var& settings);
 
@@ -572,6 +579,8 @@ private:
     juce::Rectangle<int> panelDividerArea() const;
     int promptHeightFor(int width) const;
     juce::TextButton stopButton { "Stop" };
+    juce::TextButton extendButton { "Extend" }, remixButton { "Remix" };
+    bool showBlockActions = false;
     // Memory readout. Generation RAM scales with clip length (peak was 11 GB at 30 s on
     // a 16 GB machine), and a second SA3 process -- a forgotten gradio, say -- is enough
     // to push the whole thing into swap, where every diffusion step pages to disk. That

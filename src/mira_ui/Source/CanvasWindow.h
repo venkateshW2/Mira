@@ -6,6 +6,8 @@
 #include "CanvasEngine.h"
 #include "GenerateWindow.h"
 
+#include <array>
+
 // ---- the canvas experiment: the picture --------------------------------------------
 //
 // A free surface with a time axis and no grid. Blocks of audio sit where you put them,
@@ -169,6 +171,8 @@ public:
     // A take generated into a block's folder becomes that block's audio.
     void adoptTake(const juce::File& folder, const juce::File& take);
     float readAndClearPeak() { return player.readAndClearPeak(); }
+    double getDeviceRate() const { return player.getDeviceRate(); }
+    static constexpr double getTimelineRate() { return CanvasPlayer::getTimelineRate(); }
     std::function<void()> onStateChanged;
 
 private:
@@ -206,7 +210,9 @@ private:
     // there is no tempo here to have them in.
     double pixelsPerSecond = 40.0;
     double viewStart = 0.0;
-    int laneHeight = 64;
+    // Tall enough for the channel strip to BE one. At 64 the fader had 34 pixels of
+    // travel, which is a control you aim at rather than set.
+    int laneHeight = 104;
     int topRuler = 26;
     // Mute and solo live on the LANE, not the block: a lane is one take, and muting "this
     // take" is the whole point of stacking them. Bitmasks because that is what the audio
@@ -226,10 +232,15 @@ private:
     // A fader per lane, in dB, -60 (off) to +6. Stacking drums against guitars is the
     // point of the canvas, and stacking without levels is just addition.
     std::vector<double> laneDb;
-    std::vector<float> laneMeter;  // decayed peak per lane, for the header meters
+    // Decayed peak per lane, PER CHANNEL: [lane][0] left, [lane][1] right. A mono meter
+    // cannot show a stereo take with a dead side, which is the fault a meter is for.
+    std::vector<std::array<float, 2>> laneMeter;
     // Peak hold, decaying far slower than the bar. A transient is over before your eye
     // reaches the meter; the line is what lets you see it happened.
-    std::vector<float> laneHold;
+    std::vector<std::array<float, 2>> laneHold;
+    // Has this lane hit full scale since the strip was last clicked? Latched, because a
+    // clip that shows for 200 ms is a clip you will miss.
+    std::vector<bool> laneClipped;
     int faderLane = -1;            // which lane's fader is being dragged, or -1
     std::unique_ptr<juce::TextEditor> renameEditor;
     int renamingLane = -1;
@@ -256,11 +267,22 @@ private:
     juce::Rectangle<int> soloBoxFor(int lane) const;
     juce::Rectangle<int> faderBoxFor(int lane) const;
     juce::Rectangle<int> meterBoxFor(int lane) const;
+    // ONE SCALE for the fader and the meter. That is what makes a channel strip readable:
+    // a fader sitting at -12 lines up with a meter reading -12, and you can see the
+    // headroom you have left without doing arithmetic on a decibel.
+    //
+    // Warped rather than linear, the way a console is: the top 18 dB -- where you actually
+    // work -- gets nearly half the travel, and the bottom 30 dB, where the difference
+    // between -52 and -58 matters to nobody, gets a quarter.
+    static double dbToNorm(double db);
+    static double normToDb(double norm);
+    static constexpr double kFaderTopDb = 6.0, kFaderBottomDb = -60.0;
     juce::Rectangle<int> nameBoxFor(int lane) const;
     void beginRename(int lane);
     void commitRename();
     double laneDbAt(int lane) const { return lane < (int) laneDb.size() ? laneDb[(size_t) lane] : 0.0; }
     void setLaneDb(int lane, double db);
+    double faderDbAtY(int lane, int y) const;
     // Seconds of empty block past the end of its audio: what "extend" would fill. Zero
     // when the audio reaches the end of the block, or when there is no audio at all.
     double tailSecondsOf(const Visual& v) const;
