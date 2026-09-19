@@ -76,6 +76,19 @@ Same take, same trim, fades, gain and generator settings. Four bars you like bec
 bars you like twice. A duplicate that regenerated would be different audio wearing the same
 name.
 
+**But it gets a new name, and so a new folder.** The name is the generation target:
+`adoptTake` gives a finished take to the block whose folder it was written into, so a
+duplicate that kept its original's name sent its generations to the *original* — the first
+block found with that folder won. Duplicating now also points the side panel at the copy,
+because generating is aimed by whatever the panel is showing. The colour is deliberately
+unchanged: colour belongs to the **track**, and the duplicate is on the same one.
+
+### Every generation is kept; only one is shown
+
+A block's folder holds everything ever generated into it, `.wav` and `.json` side by side.
+The canvas shows the one in use. Nothing is thrown away and there is no second hierarchy of
+takes to manage — the alternates are files in a folder, which is what they are.
+
 ---
 
 ## 3. The document

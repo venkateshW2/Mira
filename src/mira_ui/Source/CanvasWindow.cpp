@@ -1,4 +1,5 @@
 #include "CanvasWindow.h"
+#include "mira/db/PathNormalise.h"
 
 namespace mira::canvas {
 
@@ -193,15 +194,7 @@ void CanvasView::mouseDoubleClick(const juce::MouseEvent& e)
         selected.clear();
         selected.insert(hit->block.id);
         if (onRevealGenerator) onRevealGenerator();
-        if (onOpenGenerator)
-        {
-            auto folder = blockFolderFor(*hit);
-            const auto label = hit->block.name
-                             + (hit->block.hasAudio()
-                                    ? "  -  " + hit->block.file.getFileNameWithoutExtension()
-                                    : juce::String("  -  empty"));
-            if (folder != juce::File()) onOpenGenerator(label, folder);
-        }
+        pointPanelAt(hit);
         repaint();
     }
 }
@@ -317,6 +310,7 @@ void CanvasView::addEmptyBlock()
     selected.insert(v->block.id);
     items.push_back(std::move(v));
     announceSelection();
+    pointPanelAt(items.back().get());
     markDirty();
     repaint();
 }
@@ -334,25 +328,44 @@ void CanvasView::duplicateSelection()
         { rightmost = juce::jmax(rightmost, i->block.end()); leftmost = juce::jmin(leftmost, i->block.start); }
     const double shift = juce::jmax(0.25, rightmost - leftmost);
 
-    std::vector<std::unique_ptr<Visual>> copies;
+    // The sources, resolved before anything is added -- pushing into `items` while
+    // iterating it is how this loop would eat itself.
+    std::vector<Visual*> sources;
     for (const auto& i : items)
-    {
-        if (selected.count(i->block.id) == 0) continue;
-        auto v = std::make_unique<Visual>();
-        v->block = i->block;                 // trim, fades, gain, lane, name all come too
-        v->block.id = nextId++;
-        v->block.start = i->block.start + shift;
-        v->settings = i->settings;
-        // The SAME take, not a new one. A duplicate that regenerated would be a different
-        // piece of audio wearing the same name.
-        setFileOn(*v, i->block.file);
-        v->block.length = i->block.length;   // setFileOn may have reset it to the file's
-        v->block.sourceOffset = i->block.sourceOffset;
-        copies.push_back(std::move(v));
-    }
+        if (selected.count(i->block.id)) sources.push_back(i.get());
 
     selected.clear();
-    for (auto& c : copies) { selected.insert(c->block.id); items.push_back(std::move(c)); }
+    for (auto* src : sources)
+    {
+        auto v = std::make_unique<Visual>();
+        v->block = src->block;               // trim, fades, gain and lane all come too
+        v->block.id = nextId++;
+        v->block.start = src->block.start + shift;
+        v->settings = src->settings;
+        // A NEW NAME, and therefore a new folder. The name is what says where a generation
+        // lands: `adoptTake` finds the block whose folder the take was written into, so a
+        // duplicate that kept its original's name meant generating on the duplicate put the
+        // audio on the ORIGINAL -- the first block with that folder wins. The colour does
+        // not change, because colour comes from the TRACK and the duplicate is on the same
+        // one; what makes them tell apart is the name, which is the thing that has to differ
+        // anyway.
+        v->block.name = nextBlockName();
+        // The SAME take, not a new one. A duplicate that regenerated would be a different
+        // piece of audio wearing the same name.
+        setFileOn(*v, src->block.file);
+        v->block.length = src->block.length; // setFileOn may have reset it to the file's
+        v->block.sourceOffset = src->block.sourceOffset;
+        selected.insert(v->block.id);
+        // Pushed one at a time so nextBlockName() can see the previous copy -- otherwise
+        // duplicating three blocks gives all three the same name and the same folder,
+        // which is the bug this whole function was fixing.
+        items.push_back(std::move(v));
+    }
+
+    // AND point the panel at the copy. Generating is aimed by whatever the panel is
+    // showing, so leaving it on the original is the other half of why "duplicate, then
+    // generate" put the new audio back on the block you had duplicated FROM.
+    pointPanelAt(items.empty() ? nullptr : items.back().get());
     markDirty();
     rebuildAudio();
     repaint();
@@ -376,10 +389,26 @@ void CanvasView::chooseTakeForSelection(const juce::File& take)
 
 void CanvasView::announceSelection() {}
 
+void CanvasView::pointPanelAt(const Visual* v)
+{
+    if (onOpenGenerator == nullptr) return;
+    if (v == nullptr) { onOpenGenerator({}, {}); return; }
+    const auto folder = blockFolderFor(*v);
+    if (folder == juce::File()) return;
+    onOpenGenerator(v->block.name
+                        + (v->block.hasAudio()
+                               ? "  -  " + v->block.file.getFileNameWithoutExtension()
+                               : juce::String("  -  empty")),
+                    folder);
+}
+
 void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
 {
     for (auto& i : items)
-        if (blockFolderFor(*i) == folder)
+        // Convention 9: never `==` on paths. A block named with an accent in it produces
+        // one byte sequence here and another from whatever handed us `folder`.
+        if (mira::pathsEquivalent(blockFolderFor(*i).getFullPathName().toStdString(),
+                                  folder.getFullPathName().toStdString()))
         {
             setFileOn(*i, take);
             rebuildAudio();
@@ -947,7 +976,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     {
         if (!e.mods.isShiftDown()) selected.clear();
         announceSelection();
-        if (onOpenGenerator) onOpenGenerator({}, {});
+        pointPanelAt(nullptr);
         drag = Drag::Marquee;
         marquee = { e.x, e.y, 0, 0 };
         repaint();
@@ -969,15 +998,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     dragTarget = hit->block.id;
     announceSelection();
     // Selecting a block IS opening its generator now that the panel is always on screen.
-    if (onOpenGenerator)
-    {
-        auto folder = blockFolderFor(*hit);
-        const auto label = hit->block.name
-                         + (hit->block.hasAudio()
-                                ? "  -  " + hit->block.file.getFileNameWithoutExtension()
-                                : juce::String("  -  empty"));
-        if (folder != juce::File()) onOpenGenerator(label, folder);
-    }
+    pointPanelAt(hit);
     dragOrigins.clear();
     for (const auto& i : items)
         if (selected.count(i->block.id)) dragOrigins[i->block.id] = { i->block.start, i->block.lane };
@@ -1272,6 +1293,8 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
     markDirty();
     rebuildAudio();
     announceSelection();
+    // A dropped file IS a block, so the panel follows it like any other selection.
+    if (!items.empty()) pointPanelAt(items.back().get());
     repaint();
 }
 

@@ -98,6 +98,11 @@ public:
     // A COPY, not another version. The trim, the fades, the gain, the generator settings
     // and the same chosen take -- so four bars you like can become four bars you like
     // twice, which is arranging rather than generating.
+    //
+    // It gets a NEW NAME, and so a new folder. The name is the generation target: a
+    // duplicate that kept its original's name sent its generations into the original's
+    // folder, and `adoptTake` gave the audio to whichever block it found there first --
+    // the original. The colour is unchanged on purpose; colour belongs to the TRACK.
     void duplicateSelection();
     int getLaneCount() const { return laneCount; }
     void writeTo(const juce::File& miraFile) const;
@@ -214,6 +219,10 @@ private:
     Visual* singleSelection();
     void setFileOn(Visual&, const juce::File&);
     void announceSelection();
+    // One place that points the side panel at a block, because there were three and they
+    // drifted: Cmd-D left the panel aimed at the ORIGINAL, so the next Generate landed on
+    // the block you had just copied away from. Pass nullptr to point it at nothing.
+    void pointPanelAt(const Visual* v);
     juce::Rectangle<int> boundsOf(const Visual&) const;
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();
