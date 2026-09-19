@@ -68,6 +68,11 @@ public:
     double getLengthSeconds() const { return player.getLengthSeconds(); }
     int getBlockCount() const { return static_cast<int>(items.size()); }
     void zoomBy(double factor, int aroundX);
+    void zoomVertical(double pixels);
+    void panBy(double seconds);
+    // Cut every block the playhead stands on into two, each half keeping its own end of
+    // the audio. The right half gets its own name and folder, like a duplicate does.
+    void splitAtPlayhead();
     void fit();
     void clearAll();
     void addEmptyBlock();
@@ -223,6 +228,7 @@ private:
     // drifted: Cmd-D left the panel aimed at the ORIGINAL, so the next Generate landed on
     // the block you had just copied away from. Pass nullptr to point it at nothing.
     void pointPanelAt(const Visual* v);
+    int zoomAnchorX() const;
     juce::Rectangle<int> boundsOf(const Visual&) const;
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();

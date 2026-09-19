@@ -1093,22 +1093,58 @@ void CanvasView::mouseUp(const juce::MouseEvent&)
 
 void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
-    // Shift-wheel zooms VERTICALLY: taller lanes mean a taller waveform, which is the
-    // only way to judge a quiet take against a loud one by eye. Separate from the
-    // horizontal zoom because time and amplitude are separate questions.
-    if (e.mods.isShiftDown())
-    {
-        laneHeight = juce::jlimit(28, 320, laneHeight + (wheel.deltaY > 0 ? 6 : -6));
-        repaint();
-        return;
-    }
+    // A MOUSE WHEEL HAS ONE AXIS, and that is the whole bug. A trackpad reports deltaX and
+    // deltaY, so panning read deltaX and felt right; a wheel only ever reports deltaY, so
+    // the pan branch was handed 0.0 on every event and the canvas simply would not move.
+    // Everything below works off whichever axis actually moved instead of a fixed one.
+    //
+    // (macOS turns a shift-held wheel into deltaX itself, which is a second way the same
+    // assumption broke: shift-zoom read deltaY and got nothing.)
+    const float dx = wheel.deltaX, dy = wheel.deltaY;
+    const float d  = std::abs (dx) > std::abs (dy) ? dx : dy;
+    if (d == 0.0f) return;
+
+    // A notched wheel sends a few big events; a trackpad sends a stream of small ones.
+    // Scaling by the delta alone makes the wheel crawl, and a fixed step per event makes
+    // the trackpad lurch a screen at a time. So: proportional when smooth, a step when not.
+    const double step = wheel.isSmooth ? (double) d
+                                       : (d > 0.0f ? 1.0 : -1.0) * 0.28;
+
+    // Shift zooms VERTICALLY: taller lanes mean a taller waveform, which is the only way
+    // to judge a quiet take against a loud one by eye. Separate from the horizontal zoom
+    // because time and amplitude are separate questions.
+    if (e.mods.isShiftDown())    { zoomVertical (step * 22.0); return; }
     if (e.mods.isCommandDown() || e.mods.isCtrlDown())
-    {
-        zoomBy(wheel.deltaY > 0 ? 1.15 : 1.0 / 1.15, e.x);
-        return;
-    }
-    viewStart = juce::jmax(0.0, viewStart - wheel.deltaX * 240.0 / pixelsPerSecond);
+                                 { zoomBy (std::pow (1.6, step), e.x); return; }
+
+    // Plain wheel pans the timeline. A wheel user has no other way to get there, and a
+    // canvas that only scrolls for trackpads is a canvas half the input devices cannot
+    // navigate.
+    panBy (-step * 520.0 / pixelsPerSecond);
+}
+
+void CanvasView::panBy (double seconds)
+{
+    viewStart = juce::jmax (0.0, viewStart + seconds);
     repaint();
+}
+
+void CanvasView::zoomVertical (double pixels)
+{
+    const int was = laneHeight;
+    laneHeight = juce::jlimit (28, 320, laneHeight + juce::roundToInt (pixels));
+    // A zoom that rounds to no change at all should still not repaint forever.
+    if (laneHeight != was) repaint();
+}
+
+// Where a keyboard zoom should anchor. The playhead when you can see it -- that is the
+// thing you are looking at -- and the middle of the view when you cannot, rather than the
+// left edge, which throws away half the zoom.
+int CanvasView::zoomAnchorX() const
+{
+    const int p = secondsToX (player.getPositionSeconds());
+    if (p >= kHeaderWidth && p <= getWidth()) return p;
+    return kHeaderWidth + (getWidth() - kHeaderWidth) / 2;
 }
 
 void CanvasView::zoomBy(double factor, int aroundX)
@@ -1131,6 +1167,20 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
         if (key.getKeyCode() == 'S' && onSaveRequested) { onSaveRequested(); return true; }
         if (key.getKeyCode() == 'O' && onOpenRequested) { onOpenRequested(); return true; }
         if (key.getKeyCode() == 'N' && onNewRequested)  { onNewRequested();  return true; }
+        if (key.getKeyCode() == 'E') { splitAtPlayhead(); return true; }
+    }
+
+    // ZOOM FROM THE KEYBOARD. G and H horizontally, shift-G and shift-H vertically --
+    // left-to-right reading as less-to-more, so H opens the view out under your eye and G
+    // pulls it back. On the keyboard because scroll gestures are not the same on every
+    // device and a shortcut is: it does the same thing on a trackpad, a wheel, and a
+    // laptop with neither to hand.
+    if (key.getKeyCode() == 'G' || key.getKeyCode() == 'H')
+    {
+        const bool in = key.getKeyCode() == 'H';
+        if (key.getModifiers().isShiftDown()) zoomVertical (in ? 10.0 : -10.0);
+        else                                  zoomBy (in ? 1.25 : 1.0 / 1.25, zoomAnchorX());
+        return true;
     }
     if (key == juce::KeyPress::spaceKey)       { togglePlay(); return true; }
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
@@ -1159,6 +1209,64 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
     if (key.getTextCharacter() == '-')
         { laneHeight = juce::jmax(28, laneHeight - 8); repaint(); return true; }
     return false;
+}
+
+void CanvasView::splitAtPlayhead()
+{
+    const double at = player.getPositionSeconds();
+
+    // What to cut: the selection when there is one, and otherwise everything the playhead
+    // is standing on. "The block at the cursor" is the second case, and having to select
+    // first would make the shortcut two gestures instead of one.
+    std::vector<Visual*> victims;
+    for (const auto& i : items)
+    {
+        const bool spans = i->block.start < at - 1.0e-6 && i->block.end() > at + 1.0e-6;
+        if (!spans) continue;
+        if (selected.empty() || selected.count(i->block.id)) victims.push_back(i.get());
+    }
+    if (victims.empty()) return;
+
+    selected.clear();
+    for (auto* v : victims)
+    {
+        const double leftLength = at - v->block.start;
+
+        auto right = std::make_unique<Visual>();
+        right->block = v->block;
+        right->block.id = nextId++;
+        right->block.start = at;
+        right->block.length = v->block.length - leftLength;
+        // The right half starts further INTO the file. Trimming moves the offset rather
+        // than the audio, which is the same rule the left-edge drag follows.
+        right->block.sourceOffset = v->block.sourceOffset + leftLength;
+        // A new name, and so a new folder -- for the same reason a duplicate gets one. The
+        // name is the generation target, and two blocks sharing a folder is exactly the
+        // bug where generating on one put the audio on the other.
+        right->block.name = nextBlockName();
+        right->settings = v->settings;
+        // The fade-out belongs to the piece that still has the end of the sound; the
+        // fade-in to the piece that still has the start. Splitting in the middle of a fade
+        // would otherwise leave both halves fading the wrong way.
+        right->block.fadeIn = 0.0;
+        v->block.fadeOut = 0.0;
+        right->block.fadeOut = juce::jmin (v->block.fadeOut, right->block.length);
+
+        setFileOn (*right, v->block.file);
+        right->block.length = v->block.length - leftLength;   // setFileOn may have reset it
+        right->block.sourceOffset = v->block.sourceOffset + leftLength;
+
+        v->block.length = leftLength;
+        v->block.fadeIn = juce::jmin (v->block.fadeIn, leftLength);
+
+        selected.insert (right->block.id);
+        items.push_back (std::move (right));   // one at a time, so the namer sees the last
+    }
+
+    pointPanelAt (items.back().get());
+    markDirty();
+    rebuildAudio();
+    repaint();
 }
 
 void CanvasView::togglePlay()
@@ -1355,7 +1463,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         fitButton.onClick    = [this] { view.fit(); };
         deleteButton.onClick = [this] { view.removeSelected(); };
 
-        hint.setText("space play - L loop - M/S mute solo - F fit - alt-drag pan - cmd-wheel zoom - shift-wheel lane height",
+        hint.setText("space play - L loop - M/S mute solo - F fit - G/H zoom - shift-G/H lane height - cmd-E split - alt-drag pan",
                       juce::dontSendNotification);
         hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);

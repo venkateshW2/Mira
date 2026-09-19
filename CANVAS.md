@@ -203,9 +203,21 @@ replacement rather than be handed it.
 | `F` | fit |
 | `M` / `S` | mute / solo the selection's tracks |
 | `Cmd-D` | duplicate |
+| `Cmd-E` | split every block the playhead stands on |
 | `Cmd-N` / `Cmd-O` / `Cmd-S` | new / open / save |
-| `+` / `-`, shift-wheel | track height |
-| `cmd-wheel` | zoom, around the cursor |
+| `G` / `H` | zoom out / in, around the playhead |
+| `shift-G` / `shift-H` | track height, down / up (`+` / `-` too) |
+| `cmd-wheel` | zoom, around the mouse |
+| shift-wheel | track height |
+| wheel | scroll the timeline |
 | alt-drag | pan |
+
+**Zoom is on the keyboard because scroll gestures are not the same on every device.** A
+trackpad reports `deltaX` and `deltaY`; a mouse wheel reports only `deltaY`, so a pan that
+read `deltaX` did nothing at all with a mouse — and macOS turns a shift-held wheel into
+`deltaX` itself, which broke shift-zoom the other way round. The wheel handler now works
+off whichever axis actually moved, proportionally when the gesture is smooth and in steps
+when it is notched. `G`/`H` do the same thing on every device and on a laptop with neither
+to hand.
 | double-click a track name | rename |
 | double-click a block | open its generator |
