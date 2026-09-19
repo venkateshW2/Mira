@@ -238,7 +238,14 @@ public:
     //
     // ONE video track, with clips on it -- Phase 1 loads one, Phase 4 makes it several.
     // One track keeps the picture unambiguous: there is only ever one thing to look at.
-    void setVideoClip(const juce::File& file, double lengthSeconds, double framesPerSecond);
+    // Phase 4: several clips on the ONE video track, laid end to end. Appends after the
+    // last one, so opening a second reel never moves the first.
+    void addVideoClip(const juce::File& file, double lengthSeconds, double framesPerSecond);
+    void removeVideoClip(int index);
+    // Which clip sits under this timeline position, or -1.
+    int videoClipAt(double seconds) const;
+    // Right-click a clip in the PICTURE track.
+    void showVideoClipMenu(int index, juce::Point<int> at);
     // ---- timecode (MIRA-VIDEO.md Phase 3) ---------------------------------------------
     //
     // SECONDS or TIMECODE, everywhere at once: the ruler, the transport clock and the
@@ -264,7 +271,11 @@ public:
     // Fired when the clip CHANGES -- a load, or a document that brought one with it --
     // and not on an undo that left the same file in place, because reopening a 40-minute
     // film to undo a fade would be a three-minute undo.
-    std::function<void(const VideoClip&)> onVideoClipChanged;
+    // The video track changed -- a clip added, removed, or brought in by a document.
+    // Deliberately not "here is the clip": with several of them the listener has to look
+    // at the whole track anyway, and a per-clip callback would be a second description of
+    // the same list.
+    std::function<void()> onVideoClipsChanged;
     std::function<void()> onVideoCleared;
 
     // ---- the reference track (MIRA-VIDEO.md Phase 2) ---------------------------------
@@ -281,6 +292,9 @@ public:
     // It keeps its fader, its mute and its meter, because scoring to picture means riding
     // the reference under the cue constantly.
     void attachReference(const juce::File& audio, double startOnTimeline);
+    // The reference lane, made if it does not exist yet. Several clips mean several
+    // reference blocks on the one lane.
+    int ensureReferenceLane();
     void detachReference();
     // How far the reference's waveform has got, or -1 when there is none or it is done.
     // MIRA-VIDEO.md 0.3 measured 12x realtime off an external drive -- 200 seconds for a

@@ -3,12 +3,13 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <juce_video/juce_video.h>
 
-// ---- MIRA-VIDEO.md Phase 1: the picture, slaved to the transport ---------------------
+#include <vector>
+
+// ---- MIRA-VIDEO.md Phases 1 and 4: the picture, slaved to the transport ---------------
 //
-// A floating window holding one `VideoComponent`, with NO native controls. mira's
-// transport is the only transport -- a play button on the picture would be a second one,
-// and two transports that can disagree is exactly the fault this whole phase exists to
-// avoid.
+// A floating window holding the picture, with NO native controls. mira's transport is the
+// only transport -- a play button on the picture would be a second one, and two transports
+// that can disagree is exactly the fault this whole feature exists to avoid.
 //
 // It is a separate WINDOW rather than a pane in the canvas because `VideoComponent` is a
 // native `AVPlayerView`: it sits above JUCE's rendering and nothing can be drawn over it.
@@ -26,11 +27,20 @@
 // The error is an OFFSET, not a drift. It settles within the first seconds -- `play()`
 // takes that long to put a frame up -- and then never grows: 8.0 ms at 30 s, 8.1 ms at
 // 692 s. So the mechanism is a one-time seek that compensates the offset, and the
-// rate-nudge below is a SAFETY NET for what the spike could not produce (a system under
-// load, a drive stalling), not the thing that holds sync.
+// rate-nudge is a SAFETY NET for what the spike could not produce (a system under load, a
+// drive stalling), not the thing that holds sync.
 //
-// The offset is measured per machine at load (see `calibrate`), because -290 ms is one
-// laptop with one device at 48 kHz, not a constant of nature.
+// The offset is measured per machine at load, because -290 ms is one laptop with one
+// device at 48 kHz, not a constant of nature. This machine measured 261, 276, 289, 307 and
+// 362 ms across five runs -- which is also why it is measured at every load rather than
+// remembered from the last one.
+//
+// ---- two players, because a reel change must not be a black frame --------------------
+//
+// Phase 4 puts several clips on the one video track, and swapping an AVPlayerItem at a
+// boundary is visible. So there are TWO VideoComponents: the one you are watching, and one
+// holding the next clip parked on its first frame. Crossing a boundary swaps which is
+// visible, which costs nothing.
 namespace mira::canvas {
 
 class VideoWindow : public juce::DocumentWindow,
@@ -40,29 +50,32 @@ public:
     VideoWindow();
     ~VideoWindow() override;
 
-    // Loads the picture and starts the latency calibration. Returns a failed Result with
-    // the reason -- never a silent no-op (convention 6).
-    juce::Result loadVideo(const juce::File& file);
+    // One clip of picture as the window needs to know it. The canvas owns the real
+    // VideoClip; this is only what it takes to put the right frame up at the right time.
+    struct Clip
+    {
+        juce::File file;
+        double start = 0.0;          // on the canvas timeline
+        double length = 0.0;
+        double sourceOffset = 0.0;   // where in the film `start` corresponds to
+        double end() const { return start + length; }
+    };
+
+    // The whole video track, in order.
+    void setClips(std::vector<Clip> newClips);
+    bool hasClips() const { return !clips.empty(); }
     void unload();
 
-    juce::File getFile() const { return videoFile; }
-    // The clip's length, from an AVAsset query -- NOT from `getVideoDuration()`, which
-    // Phase 0.2 watched return 0.00 for 700 seconds of successful playback.
-    double getClipLength() const { return lengthSeconds; }
-    double getFrameRate() const { return fps; }
     // Positive seconds: how far behind the transport the picture starts. -1 until
     // measured; 0 with a note if it could not be measured.
     double getStartLatency() const { return startLatency; }
-
-    // Where the clip sits on the canvas timeline, and where in the film that point is.
-    void setPlacement(double startOnTimeline, double sourceOffset);
 
     // The transport is the clock. Polled rather than pushed: the canvas already runs a
     // timer and a second notification path would be a second thing to keep in step.
     std::function<double()> transportPosition;
     std::function<bool()>   transportPlaying;
-    // Anything worth saying out loud -- which route the length came from, what the
-    // latency measured, a picture that never started.
+    // Anything worth saying out loud -- what the latency measured, a clip that would not
+    // open, a reel change that had to load rather than swap.
     std::function<void(const juce::String&)> onNote;
     std::function<void()> onClosed;
 
@@ -74,20 +87,25 @@ public:
 
 private:
     void timerCallback() override;
-    // One tick of the load-time latency measurement. Plays muted from a known position
-    // and asks, a second later, how far the picture actually got.
+    // One tick of the load-time latency measurement: play muted from a known position, and
+    // a second later ask how far the picture actually got.
     void calibrateTick(double nowMs);
+    int clipAt(double seconds) const;        // which clip covers this position, or -1
+    int clipAfter(double seconds) const;     // the next clip to start, or -1
+    juce::VideoComponent& shown();
+    juce::VideoComponent& spare();
+    bool prepare(int index);                 // load `index` into the spare, parked
+    void swapPlayers();
     void seekPicture(double filePosition);
+    void showNothing();
 
     struct Screen;
     std::unique_ptr<Screen> screen;
-    juce::VideoComponent* video = nullptr;   // owned by screen
 
-    juce::File videoFile;
-    double lengthSeconds = 0.0, fps = 0.0;
-    double clipStart = 0.0, sourceOffset = 0.0;
+    std::vector<Clip> clips;
+    int shownClip = -1;        // which clip the VISIBLE player holds, or -1
+    int readyClip = -1;        // which clip the SPARE player holds, or -1
 
-    // -1 = not measured yet. Positive seconds of start lag, added to every seek.
     double startLatency = -1.0;
     enum class Phase { Idle, Calibrating, Ready };
     Phase phase = Phase::Idle;
@@ -96,12 +114,16 @@ private:
     bool picturePlaying = false;
     double lastCheckMs = 0.0, parkedAt = -1.0;
     bool speedNudged = false;
+    // How far ahead of a boundary the next clip is loaded. Six seconds is comfortably more
+    // than a load takes off a local disk, and short enough that scrubbing about does not
+    // thrash the spare player.
+    static constexpr double kPreloadLead = 6.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VideoWindow)
 };
 
 // AVFoundation, asked directly. `VideoComponent::getVideoDuration()` reported 0.00 for an
-// entire 700-second run in Phase 0.2, so the clip's length cannot come from it.
+// entire 700-second run in Phase 0.2, so a clip's length cannot come from it.
 // Implemented in VideoNative.mm.
 namespace video_native {
 bool probe(const juce::File& file, double& seconds, double& framesPerSecond, juce::String& error);

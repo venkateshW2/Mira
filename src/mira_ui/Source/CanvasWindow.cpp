@@ -1601,6 +1601,10 @@ juce::String CanvasView::toJson(const juce::File& base) const
             o->setProperty("fps", c.fps);
             o->setProperty("dropFrame", c.dropFrame);
             o->setProperty("startTimecode", c.startTimecode);
+            // `audioBlockId` is NOT written. Block ids are handed out fresh on every load
+            // (`nextId++` in fromJson), so a saved id would point at whatever block
+            // happened to take that number next time. The link is rebuilt structurally on
+            // load instead -- a block on the reference lane starting where the clip does.
             clips.add(juce::var(o));
         }
         root->setProperty("video", juce::var(clips));
@@ -1706,7 +1710,7 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
             v.fps = (double) c.getProperty("fps", 0.0);
             v.dropFrame = (bool) c.getProperty("dropFrame", false);
             v.startTimecode = (double) c.getProperty("startTimecode", 0.0);
-            videoClips.push_back(v);
+            videoClips.push_back(v);   // audioBlockId is relinked below, not read
         }
 
     // Convention 9: never compare two paths with ==. The document holds the path as it
@@ -1727,8 +1731,24 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
         // do not reload" guard correctly said nothing had changed. The guard is about the
         // PICTURE, which is expensive to reopen; the reference is rebuilt state, and
         // whether it is missing is a different question from whether the film changed.
-        if (differentFilm || referenceLane < 0)
-            if (onVideoClipChanged) onVideoClipChanged(videoClips.front());
+        // Any clip without a reference block, or a film that changed, means the listener
+        // has work to do. With several clips the question is no longer "did the film
+        // change" but "is anything missing", which is the same question the first fix made
+        // it: `referenceLane < 0` was that question asked for exactly one clip.
+        // Rebuild clip -> reference-block links from the geometry, because ids are not
+        // stable across a load.
+        for (auto& c : videoClips)
+        {
+            c.audioBlockId = 0;
+            for (const auto& i : items)
+                if (i->block.lane == referenceLane && std::abs(i->block.start - c.start) < 0.001)
+                { c.audioBlockId = i->block.id; break; }
+        }
+
+        bool referenceMissing = referenceLane < 0;
+        for (const auto& c : videoClips) referenceMissing = referenceMissing || c.audioBlockId == 0;
+        if (differentFilm || referenceMissing)
+            if (onVideoClipsChanged) onVideoClipsChanged();
     }
 
     // The reference lane is locked BY DEFAULT, and that has to hold for documents that
@@ -2596,6 +2616,12 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     // you actually want over picture -- and is not a lane, so yToLane never sees it.
     if (e.y < lanesTop())
     {
+        if (e.mods.isPopupMenu())
+        {
+            if (const int clip = videoClipAt(xToSeconds(e.x)); clip >= 0)
+                showVideoClipMenu(clip, e.getPosition());
+            return;
+        }
         drag = Drag::Playhead;
         player.setPositionSeconds(juce::jmax(0.0, xToSeconds(e.x)));
         repaint();
@@ -3955,37 +3981,97 @@ void CanvasView::paintVideoStrip(juce::Graphics& g)
                juce::Justification::centredLeft, false);
 }
 
-void CanvasView::setVideoClip(const juce::File& file, double lengthSeconds, double framesPerSecond)
+void CanvasView::addVideoClip(const juce::File& file, double lengthSeconds, double framesPerSecond)
 {
     pushUndo();
+    UndoGuard oneEdit (*this);
+
     VideoClip c;
     c.file = file;
     c.length = juce::jmax(0.0, lengthSeconds);
     c.fps = juce::jmax(0.0, framesPerSecond);
-    // A new film means the old film's audio is the wrong reference. Dropped before the
-    // clip is replaced, so there is no moment at which the two disagree.
-    detachReference();
-    videoClips.clear();            // Phase 1: one clip. Phase 4 makes this an append.
+    // END TO END, after the last clip. A cut arrives in reels, and reel 2 starts where
+    // reel 1 finished -- anywhere else and you would have to place it by hand before you
+    // could watch it. Non-overlapping by construction, which is what makes "there is only
+    // ever one thing to look at" true rather than a rule someone has to remember.
+    double after = 0.0;
+    for (const auto& existing : videoClips) after = juce::jmax(after, existing.start + existing.length);
+    c.start = after;
+
     videoClips.push_back(c);
     markDirty();
-    if (onVideoClipChanged) onVideoClipChanged(videoClips.front());
+    if (onVideoClipsChanged) onVideoClipsChanged();
     resized();
     repaint();
 }
 
-// ---- the reference track (MIRA-VIDEO.md Phase 2) ------------------------------------
-
-void CanvasView::attachReference(const juce::File& audio, double startOnTimeline)
+void CanvasView::removeVideoClip(int index)
 {
-    detachReference();
-    if (!audio.existsAsFile())
-    {
-        if (onTakeNote) onTakeNote("the film's audio is not where it was left: " + audio.getFullPathName());
-        return;
-    }
-
+    if (!juce::isPositiveAndBelow(index, (int) videoClips.size())) return;
     pushUndo();
     UndoGuard oneEdit (*this);
+
+    // Its reference block goes with it. They are one object with two faces, and a
+    // reference left behind for a film that is gone is dialogue with nothing to explain it.
+    const auto blockId = videoClips[(size_t) index].audioBlockId;
+    if (blockId != 0)
+        items.erase(std::remove_if(items.begin(), items.end(),
+                                    [blockId](const std::unique_ptr<Visual>& v) {
+                                        return v->block.id == blockId;
+                                    }),
+                     items.end());
+
+    videoClips.erase(videoClips.begin() + index);
+    // The last clip takes the lane with it: an empty REFERENCE track is a row that can
+    // only confuse.
+    if (videoClips.empty()) detachReference();
+
+    markDirty();
+    if (onVideoClipsChanged) onVideoClipsChanged();
+    rebuildAudio();
+    resized();
+    repaint();
+}
+
+int CanvasView::videoClipAt(double seconds) const
+{
+    for (int i = 0; i < (int) videoClips.size(); ++i)
+    {
+        const auto& c = videoClips[(size_t) i];
+        if (seconds >= c.start && seconds < c.start + juce::jmax(0.5, c.length)) return i;
+    }
+    return -1;
+}
+
+void CanvasView::showVideoClipMenu(int index, juce::Point<int> at)
+{
+    if (!juce::isPositiveAndBelow(index, (int) videoClips.size())) return;
+    const auto& c = videoClips[(size_t) index];
+
+    juce::PopupMenu m;
+    m.addSectionHeader(c.file.getFileName());
+    // 4.3 -- each clip keeps its OWN rate. Two reels at different rates is a real thing,
+    // so the rate is shown per clip rather than as one setting for the whole track.
+    m.addItem(1, juce::String(c.fps, 3) + " fps, " + juce::String(c.length, 1) + " s", false, false);
+    m.addItem(2, "Start timecode...", true, false);
+    m.addSeparator();
+    m.addItem(3, "Remove this clip", true, false);
+
+    juce::Component::SafePointer<CanvasView> safe (this);
+    const auto onScreen = localPointToGlobal(at);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({ onScreen.x, onScreen.y, 1, 1 }),
+                     [safe, index](int id) {
+        if (safe == nullptr || id == 0) return;
+        if (id == 2) safe->promptStartTimecode();
+        if (id == 3) safe->removeVideoClip(index);
+    });
+}
+
+// ---- the reference track (MIRA-VIDEO.md Phase 2) ------------------------------------
+
+int CanvasView::ensureReferenceLane()
+{
+    if (referenceLane >= 0) return referenceLane;
 
     // Its own lane, at the bottom. Appending rather than inserting keeps every existing
     // block's lane index -- and so every mute bit, solo bit and fader -- exactly where it
@@ -3999,6 +4085,20 @@ void CanvasView::attachReference(const juce::File& audio, double startOnTimeline
     // never edit should not grow every time you zoom the ones you do.
     ensureLaneArrays();
     laneH[(size_t) referenceLane] = kReferenceHeight;
+    return referenceLane;
+}
+
+void CanvasView::attachReference(const juce::File& audio, double startOnTimeline)
+{
+    if (!audio.existsAsFile())
+    {
+        if (onTakeNote) onTakeNote("the film's audio is not where it was left: " + audio.getFullPathName());
+        return;
+    }
+
+    pushUndo();
+    UndoGuard oneEdit (*this);
+    ensureReferenceLane();
 
     auto v = std::make_unique<Visual>();
     v->block.lane = referenceLane;
@@ -4010,7 +4110,11 @@ void CanvasView::attachReference(const juce::File& audio, double startOnTimeline
     // the film's audio, and there is no gesture that could have made it anything else.
     v->block.length = 0.0;
     setFileOn(*v, audio);
-    if (!videoClips.empty()) videoClips.front().audioBlockId = v->block.id;
+    // Tied to the clip it came from, by START: several clips mean several reference blocks
+    // on the one lane, and removing a clip has to know which of them was its.
+    for (auto& c : videoClips)
+        if (std::abs(c.start - startOnTimeline) < 0.001 && c.audioBlockId == 0)
+        { c.audioBlockId = v->block.id; break; }
     items.push_back(std::move(v));
 
     markDirty();
@@ -4192,13 +4296,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         };
         // Picture. The clip is the document's; the WINDOW is this session's, so opening
         // a project that carries a film opens the film with it.
-        view.onVideoClipChanged = [this](const VideoClip& c) {
-            openPicture(c);
-            // A document that already carries a reference lane brought its own; only a
-            // film arriving fresh needs one built.
-            if (view.getReferenceLane() < 0) attachReferenceFor(c);
-            if (owner != nullptr && owner->onVideoChanged) owner->onVideoChanged();
-        };
+        view.onVideoClipsChanged = [this] { syncPicture(); };
         view.onVideoCleared = [this] {
             storeVideoGeometry();
             videoWindow.reset();
@@ -4506,6 +4604,42 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
     // ---- picture (MIRA-VIDEO.md Phase 1) ----------------------------------------------
 
+    // ONE place that reconciles the canvas's video track with the picture window and the
+    // reference lane. Called whenever the track changes -- a clip added, removed, or
+    // brought in by a document -- because with several clips the question is never "what
+    // happened to this one" but "does the whole track agree with itself".
+    void syncPicture()
+    {
+        const auto& clips = view.getVideoClips();
+        if (clips.empty())
+        {
+            storeVideoGeometry();
+            videoWindow.reset();
+            if (owner != nullptr && owner->onVideoChanged) owner->onVideoChanged();
+            return;
+        }
+
+        ensureVideoWindow();
+        std::vector<VideoWindow::Clip> forWindow;
+        forWindow.reserve(clips.size());
+        for (const auto& c : clips)
+            forWindow.push_back({ c.file, c.start, c.length, c.sourceOffset });
+        videoWindow->setClips(std::move(forWindow));
+        videoWindow->toFront(false);
+
+        // Any clip with no reference block yet gets one. Done after the window is up, so
+        // the picture is watchable while a long extraction runs. The direct-read route is
+        // synchronous and cheap, so every clip that can take it does; a clip that needs an
+        // extraction waits its turn, because there is one extractor and it is busy.
+        //
+        // A COPY of the list, because attachReferenceFor mutates the clips it is iterating.
+        const auto pending = clips;
+        for (const auto& c : pending)
+            if (c.audioBlockId == 0) attachReferenceFor(c);
+
+        if (owner != nullptr && owner->onVideoChanged) owner->onVideoChanged();
+    }
+
     void promptOpenVideo()
     {
         auto chooser = std::make_shared<juce::FileChooser>(
@@ -4517,36 +4651,22 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             const auto f = fc.getResult();
             if (f == juce::File()) return;
             note("opening " + f.getFileName() + "...");
-            ensureVideoWindow();
-            const auto r = videoWindow->loadVideo(f);
-            if (r.failed())
+            // PROBED BEFORE IT BECOMES A CLIP. A file that will not open says why and does
+            // not land on the timeline as a clip showing nothing (convention 6) -- and the
+            // length has to come from AVFoundation, not from getVideoDuration(), which
+            // Phase 0.2 watched return 0.00 through 700 seconds of playback.
+            double seconds = 0.0, fps = 0.0;
+            juce::String probeError;
+            if (!video_native::probe(f, seconds, fps, probeError) && seconds <= 0.0)
             {
-                // Convention 6: a file that will not open says why. It does NOT become a
-                // clip on the timeline that shows nothing.
-                note(r.getErrorMessage());
-                storeVideoGeometry();
-                videoWindow.reset();
+                note("cannot open " + f.getFileName() + " - " + probeError);
                 return;
             }
-            // The length comes from the WINDOW, which got it from AVFoundation -- see
-            // VideoNative.mm for why it cannot come from getVideoDuration().
-            view.setVideoClip(f, videoWindow->getClipLength(), videoWindow->getFrameRate());
+            if (fps <= 0.0)
+                note("no frame rate reported for " + f.getFileName()
+                      + " - timecode will count at 25 until you set it");
+            view.addVideoClip(f, seconds, fps);
         });
-    }
-
-    void openPicture(const VideoClip& c)
-    {
-        ensureVideoWindow();
-        // Already showing this film: place it and leave it alone. Reloading here would
-        // make every undo reopen a 40-minute file.
-        if (!mira::pathsEquivalent(videoWindow->getFile().getFullPathName().toStdString(),
-                                   c.file.getFullPathName().toStdString()))
-        {
-            const auto r = videoWindow->loadVideo(c.file);
-            if (r.failed()) { note(r.getErrorMessage()); return; }
-        }
-        videoWindow->setPlacement(c.start, c.sourceOffset);
-        videoWindow->toFront(false);
     }
 
     // ---- the reference track (MIRA-VIDEO.md Phase 2.1) -------------------------------
@@ -4606,6 +4726,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         if (extractor != nullptr) { note("still extracting the last film's audio"); return; }
         note("JUCE cannot read this file's audio - extracting it with AVAssetReader...");
         extractStartMs = juce::Time::getMillisecondCounterHiRes();
+        // WHERE it goes, remembered with the job. With several clips on the track, "the
+        // first clip's start" is not the answer -- the reference has to land under the
+        // reel it came out of.
+        extractFor = c.start;
         extractor = std::make_unique<Extractor>(c.file, dest);
         extractor->startThread();
     }
@@ -4625,8 +4749,11 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         extractor.reset();
 
         if (!ok) { note("could not extract the film's audio - " + error); return; }
-        view.attachReference(dest, view.getVideoClips().empty() ? 0.0
-                                                                : view.getVideoClips().front().start);
+        view.attachReference(dest, extractFor);
+        // Another clip may have been waiting for this extractor to be free.
+        juce::MessageManager::callAsync([safe = juce::Component::SafePointer<Content>(this)] {
+            if (safe != nullptr) safe->syncPicture();
+        });
         note("reference: extracted with AVAssetReader in " + juce::String(took, 1) + " s -> "
               + dest.getParentDirectory().getFileName() + "/" + dest.getFileName());
         sawWaveformProgress = false;
@@ -4782,7 +4909,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         std::atomic<bool> done { false }, ok { false };
     };
     std::unique_ptr<Extractor> extractor;
-    double extractStartMs = 0.0;
+    double extractStartMs = 0.0, extractFor = 0.0;
     bool sawWaveformProgress = false;
     CanvasView view;
     GenerateContent* panel = nullptr;      // owned by the window, not by this
@@ -4839,9 +4966,8 @@ void CanvasWindow::openVideo() { if (content != nullptr) content->promptOpenVide
 void CanvasWindow::showPicture()
 {
     if (content == nullptr || view == nullptr) return;
-    const auto& clips = view->getVideoClips();
-    if (clips.empty()) return;
-    content->openPicture(clips.front());
+    if (view->getVideoClips().empty()) return;
+    content->syncPicture();
 }
 
 bool CanvasWindow::hasVideo() const { return view != nullptr && view->hasVideo(); }

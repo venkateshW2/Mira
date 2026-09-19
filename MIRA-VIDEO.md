@@ -403,13 +403,34 @@ a test you trust more than the thing it tests is how a correct implementation ge
 
 ### Phase 4 — several clips on the one video track
 
-- [ ] **4.1** More than one `VideoClip`, non-overlapping, on the single video track.
-- [ ] **4.2** The window switches source as the playhead crosses a boundary. **Pre-load the
-  next item** — an `AVPlayerItem` swap at the boundary is visible, and a black frame at
-  every reel change is the kind of thing that makes a tool feel broken.
-- [ ] **4.3** Each clip keeps its own fps and start timecode. Two reels at different rates
-  is a real thing.
-- [ ] **4.4** The gap between clips is black, not the last frame held.
+**Built 2026-09-19.**
+
+- [x] **4.1** Several `VideoClip`s, laid **end to end** by construction. A cut arrives in
+  reels and reel 2 starts where reel 1 finished; appending is also what makes
+  "non-overlapping" true rather than a rule someone has to remember. `Canvas ▸ Open
+  Video...` appends; right-click a clip in the PICTURE track to remove it.
+- [x] **4.2** **Two players.** Swapping an `AVPlayerItem` at a boundary is visible, so the
+  window holds two `VideoComponent`s: the one you are watching and one parked on the next
+  clip's first frame. Crossing a boundary swaps which is visible, which costs nothing. The
+  next reel is loaded six seconds out — long enough for a local disk, short enough that
+  scrubbing about does not thrash the spare player. A jump straight into the middle of a
+  reel that was **not** pre-loaded loads there and then, and **says so**: knowing when the
+  pre-load did not happen is how the lead time gets tuned rather than guessed.
+- [x] **4.3** Each clip keeps its own fps and start timecode — two reels at different rates
+  is a real thing, so the rate is per clip rather than one setting for the track.
+- [x] **4.4** The gap between clips is **black**: both players hidden, the window's own
+  background showing through. A held last frame reads as "the picture has stopped
+  following" at exactly the moment it has not.
+
+**Each clip gets its own reference block**, on the one REFERENCE lane, under the reel it
+came out of. Removing a clip takes its reference with it — they are one object with two
+faces, and a reference left behind for a film that is gone is dialogue with nothing to
+explain it.
+
+**`audioBlockId` is deliberately not serialised.** Block ids are handed out fresh on every
+load, so a saved id would point at whatever block happened to take that number next time.
+The clip-to-reference link is rebuilt from the geometry instead: a block on the reference
+lane starting where the clip does.
 
 ### Phase 5 — scoring conveniences
 
