@@ -3313,6 +3313,14 @@ private:
 
 // ---- picture on the timeline (MIRA-VIDEO.md Phase 1) --------------------------------
 
+// The picture track's colour, and it is deliberately NOT one of laneColour's eight. Every
+// track colour in this canvas is a desaturated mid-tone, because eight of them have to sit
+// side by side without any one shouting; a saturated violet belongs to none of that family,
+// so the video track reads as a DIFFERENT KIND OF THING before you have read the word
+// PICTURE. That is the whole job: it is the one lane on the canvas that carries no audio,
+// sums into nothing and exports nowhere, and it should not look like a track you could mix.
+static const juce::Colour kPictureColour { 0xff9b6fd8 };
+
 void CanvasView::paintVideoStrip(juce::Graphics& g)
 {
     if (videoClips.empty()) return;
@@ -3331,12 +3339,12 @@ void CanvasView::paintVideoStrip(juce::Graphics& g)
             const int x0 = secondsToX(c.start);
             const int x1 = secondsToX(c.start + juce::jmax(0.5, c.length));
             auto r = juce::Rectangle<int>(x0, topRuler + 3, juce::jmax(2, x1 - x0), videoStripH() - 6);
-            g.setColour(MiraLookAndFeel::surface2);
+            g.setColour(kPictureColour.withAlpha(0.18f));
             g.fillRoundedRectangle(r.toFloat(), 3.0f);
-            g.setColour(MiraLookAndFeel::border);
-            g.drawRoundedRectangle(r.toFloat().reduced(0.5f), 3.0f, 1.0f);
-            g.setColour(MiraLookAndFeel::textDim);
-            g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
+            g.setColour(kPictureColour.withAlpha(0.75f));
+            g.drawRoundedRectangle(r.toFloat().reduced(0.5f), 3.0f, 1.2f);
+            g.setColour(MiraLookAndFeel::text);
+            g.setFont(laf.sansSemiBold(MiraLookAndFeel::textSize(10.5f)));
             // The length is said out loud in the strip, because a clip whose length
             // AVFoundation would not report is drawn at a made-up half second, and that
             // has to look wrong rather than look like a very short film.
@@ -3347,14 +3355,22 @@ void CanvasView::paintVideoStrip(juce::Graphics& g)
         }
     }
 
+    // The header, tinted rather than plain surface2 -- the tracks below all share one
+    // header colour and take their identity from a stripe, so a tinted header is itself
+    // the signal that this row is not one of them.
     g.setColour(MiraLookAndFeel::surface2);
     g.fillRect(0, topRuler, kHeaderWidth, videoStripH());
+    g.setColour(kPictureColour.withAlpha(0.12f));
+    g.fillRect(0, topRuler, kHeaderWidth, videoStripH());
+    // A solid edge of the colour down the left, the way a track's colour stripe runs.
+    g.setColour(kPictureColour);
+    g.fillRect(0, topRuler, 3, videoStripH());
     g.setColour(MiraLookAndFeel::border);
     g.drawVerticalLine(kHeaderWidth - 1, static_cast<float>(topRuler), static_cast<float>(lanesTop()));
     g.drawHorizontalLine(lanesTop() - 1, 0.0f, static_cast<float>(getWidth()));
-    g.setColour(MiraLookAndFeel::textFaint);
-    g.setFont(laf.monoRegular(MiraLookAndFeel::textSize(9.5f)));
-    g.drawText("PICTURE", juce::Rectangle<int>(10, topRuler, kHeaderWidth - 16, videoStripH()),
+    g.setColour(kPictureColour);
+    g.setFont(laf.monoMedium(MiraLookAndFeel::textSize(10.0f)));
+    g.drawText("PICTURE", juce::Rectangle<int>(12, topRuler, kHeaderWidth - 18, videoStripH()),
                juce::Justification::centredLeft, false);
 }
 

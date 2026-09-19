@@ -266,7 +266,11 @@ accumulating; the reel itself is still owed.
   frame changes how you read it.
 - [x] **1.3** `Canvas ▸ Open Video...`, and `Canvas ▸ Show Picture` for a clip the document
   already holds. A PICTURE track appears above the tracks, with the clip and its length on
-  it. It is in the **Canvas** menu rather than File: File belongs to the library window,
+  it, in a **saturated violet that is deliberately not one of `laneColour`'s eight** — every
+  track colour is a desaturated mid-tone so that eight can sit together without shouting, so
+  a saturated hue reads as a different KIND of row before you have read the word. It is the
+  one lane that carries no audio, sums into nothing and exports nowhere, and it should not
+  look like a track you could mix. It is in the **Canvas** menu rather than File: File belongs to the library window,
   and every other canvas action already lives here.
   The **waveform progress** of the original task moves to Phase 2 — there is no waveform
   until there is a reference track, and 0.3's 200 seconds is that read, not this one.
