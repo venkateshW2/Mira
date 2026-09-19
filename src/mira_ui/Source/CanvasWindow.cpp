@@ -1581,6 +1581,17 @@ juce::String CanvasView::toJson(const juce::File& base) const
     root->setProperty("tcFps", fallbackFps);
     root->setProperty("tcDrop", fallbackDrop);
     root->setProperty("tcStart", fallbackStart);
+    {
+        juce::Array<juce::var> ms;
+        for (const auto& m : markers)
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("at", m.seconds);
+            o->setProperty("name", m.name);
+            ms.add(juce::var(o));
+        }
+        if (!ms.isEmpty()) root->setProperty("markers", juce::var(ms));
+    }
     root->setProperty("muteMask", juce::String(muteMask));
 
     // A document with no `video` array opens exactly as it does today -- that is what
@@ -1665,6 +1676,17 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
     fallbackFps = juce::jlimit(1.0, 240.0, (double) root.getProperty("tcFps", 25.0));
     fallbackDrop = (bool) root.getProperty("tcDrop", false);
     fallbackStart = juce::jmax(0.0, (double) root.getProperty("tcStart", 0.0));
+    markers.clear();
+    if (auto* ms = root.getProperty("markers", {}).getArray())
+        for (const auto& mv : *ms)
+        {
+            Marker m;
+            m.seconds = juce::jmax(0.0, (double) mv.getProperty("at", 0.0));
+            m.name = mv.getProperty("name", "marker").toString();
+            markers.push_back(m);
+        }
+    std::sort(markers.begin(), markers.end(),
+               [](const Marker& a, const Marker& b) { return a.seconds < b.seconds; });
 
     if (auto* blocks = root.getProperty("blocks", {}).getArray())
         for (const auto& b : *blocks)
@@ -2764,7 +2786,12 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
             const auto origin = dragOrigins.find(b.id);
             if (origin == dragOrigins.end()) continue;
             const int laneShift = yToLane(e.y) - dragOriginLane;
-            b.start = juce::jmax(0.0, origin->second.first + deltaSeconds);
+            // 5.3 -- the START snaps to a marker when it lands near one. Only the block
+            // being dragged, and only its start: snapping a whole selection would move
+            // blocks whose starts are nowhere near a marker, and snapping the end as well
+            // would mean two attractors fighting over one gesture.
+            const double wanted = juce::jmax(0.0, origin->second.first + deltaSeconds);
+            b.start = (b.id == dragTarget && !e.mods.isAltDown()) ? snapToMarker(wanted) : wanted;
             // CLAMPED TO TRACKS THAT EXIST. Dragging below the last track used to drop the
             // block onto empty space -- a lane with no header, no fader and no mute, which
             // is not a track, so the block was somewhere you could not mix it from.
@@ -3036,6 +3063,15 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
         {
             if (key.getModifiers().isShiftDown()) splitAtPlayhead();
             else                                  cutAtPlayhead();
+            return true;
+        }
+        // Cmd-M drops a marker, Cmd-shift-M makes the block that runs to the next one.
+        // Not plain M, which is mute -- a documented key that quietly starts doing
+        // something else is worse than a slightly longer one.
+        if (key.getKeyCode() == 'M')
+        {
+            if (key.getModifiers().isShiftDown()) addBlockToNextMarker();
+            else                                  addMarkerAtPlayhead();
             return true;
         }
         // Cmd-up / Cmd-down move the SELECTED TRACK, which is what those keys move in
@@ -3856,6 +3892,19 @@ void CanvasView::showRulerMenu(juce::Point<int> at)
                                  + " fps", true, std::abs(f.fps - choices[i]) < 0.005);
 
     juce::PopupMenu m;
+    // Markers first, and only the ones this click is actually about. A menu whose top item
+    // changes with where you clicked is a menu that answers the question you asked.
+    const int near = markerNear(at.x);
+    if (near >= 0)
+    {
+        m.addSectionHeader(markers[(size_t) near].name + "  " + formatPosition(markers[(size_t) near].seconds));
+        m.addItem(10, "Rename marker...", true, false);
+        m.addItem(11, "Remove marker", true, false);
+        m.addSeparator();
+    }
+    m.addItem(12, "Add marker at the playhead", true, false);
+    m.addItem(13, "Block from here to the next marker", true, false);
+    m.addSeparator();
     m.addItem(1, "Seconds", true, rulerMode == Ruler::Seconds);
     m.addItem(2, "Timecode", true, rulerMode == Ruler::Timecode);
     m.addSeparator();
@@ -3872,7 +3921,7 @@ void CanvasView::showRulerMenu(juce::Point<int> at)
     juce::Component::SafePointer<CanvasView> safe (this);
     const auto onScreen = localPointToGlobal(at);
     m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({ onScreen.x, onScreen.y, 1, 1 }),
-                     [safe, choices](int id) {
+                     [safe, choices, near](int id) {
         if (safe == nullptr || id == 0) return;
         auto& self = *safe;
         if (id >= 100 && id < 100 + (int) (sizeof(choices) / sizeof(choices[0])))
@@ -3883,6 +3932,10 @@ void CanvasView::showRulerMenu(juce::Point<int> at)
             case 2: self.setRulerMode(Ruler::Timecode); break;
             case 3: self.setTimecodeDropFrame(!self.timecodeFormat().dropFrame); break;
             case 4: self.promptStartTimecode(); break;
+            case 10: self.renameMarker(near); break;
+            case 11: self.removeMarker(near); break;
+            case 12: self.addMarkerAtPlayhead(); break;
+            case 13: self.addBlockToNextMarker(); break;
             default: break;
         }
     });
@@ -3916,6 +3969,224 @@ void CanvasView::promptStartTimecode()
         safe->setTimecodeStart(seconds);
         if (safe->onTakeNote) safe->onTakeNote("start timecode " + typed);
     }), false);
+}
+
+// ---- markers: the spotting notes (MIRA-VIDEO.md Phase 5) ----------------------------
+
+void CanvasView::addMarkerAtPlayhead()
+{
+    const double at = juce::jmax(0.0, player.getPositionSeconds());
+    // One marker per place. Dropping a second one on top of the first is a mis-click, not
+    // a thing to keep, and two markers a frame apart cannot be told apart on screen.
+    for (const auto& m : markers)
+        if (std::abs(m.seconds - at) < 0.01)
+        {
+            if (onTakeNote) onTakeNote("there is already a marker there: " + m.name);
+            return;
+        }
+
+    pushUndo();
+    UndoGuard oneEdit (*this);
+    Marker m;
+    m.seconds = at;
+    m.name = "marker " + juce::String((int) markers.size() + 1);
+    markers.push_back(m);
+    std::sort(markers.begin(), markers.end(),
+               [](const Marker& a, const Marker& b) { return a.seconds < b.seconds; });
+    markDirty();
+    if (onTakeNote) onTakeNote("marker at " + formatPosition(at));
+    repaint();
+}
+
+void CanvasView::removeMarker(int index)
+{
+    if (!juce::isPositiveAndBelow(index, (int) markers.size())) return;
+    pushUndo();
+    UndoGuard oneEdit (*this);
+    markers.erase(markers.begin() + index);
+    markDirty();
+    repaint();
+}
+
+void CanvasView::renameMarker(int index)
+{
+    if (!juce::isPositiveAndBelow(index, (int) markers.size())) return;
+    auto* window = new juce::AlertWindow("Marker", "What happens here?",
+                                          juce::MessageBoxIconType::NoIcon);
+    window->addTextEditor("name", markers[(size_t) index].name);
+    window->addButton("Set", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<CanvasView> safe (this);
+    window->enterModalState(true, juce::ModalCallbackFunction::create([safe, window, index](int r) {
+        std::unique_ptr<juce::AlertWindow> owned (window);
+        if (safe == nullptr || r != 1) return;
+        const auto name = window->getTextEditorContents("name").trim();
+        if (name.isEmpty()) return;
+        if (!juce::isPositiveAndBelow(index, (int) safe->markers.size())) return;
+        safe->pushUndo();
+        safe->markers[(size_t) index].name = name;
+        safe->markDirty();
+        safe->repaint();
+    }), false);
+}
+
+int CanvasView::markerNear(int x) const
+{
+    int best = -1, bestDistance = 8;   // pixels, not seconds -- see snapToMarker
+    for (int i = 0; i < (int) markers.size(); ++i)
+    {
+        const int distance = std::abs(secondsToX(markers[(size_t) i].seconds) - x);
+        if (distance <= bestDistance) { bestDistance = distance; best = i; }
+    }
+    return best;
+}
+
+int CanvasView::markerAfter(double seconds) const
+{
+    for (int i = 0; i < (int) markers.size(); ++i)      // kept sorted
+        if (markers[(size_t) i].seconds > seconds + 0.001) return i;
+    return -1;
+}
+
+double CanvasView::snapToMarker(double seconds) const
+{
+    // By PIXELS. What "close enough" means depends on the zoom, and a snap that is a
+    // second wide zoomed out and a frame wide zoomed in is a snap you cannot predict.
+    const int x = secondsToX(seconds);
+    const int i = markerNear(x);
+    return i >= 0 ? markers[(size_t) i].seconds : seconds;
+}
+
+void CanvasView::addBlockToNextMarker()
+{
+    const double at = juce::jmax(0.0, player.getPositionSeconds());
+    const int next = markerAfter(at);
+    if (next < 0)
+    {
+        // Convention 6: the reason, not a no-op. "Nothing happened" and "there is nothing
+        // after the playhead to measure to" look identical from the outside.
+        if (onTakeNote) onTakeNote("no marker after the playhead - add one where the cue has to be out");
+        return;
+    }
+    const double length = markers[(size_t) next].seconds - at;
+    if (length < 0.25) { if (onTakeNote) onTakeNote("that marker is too close to make a block to"); return; }
+
+    addEmptyBlock();
+    if (auto* v = singleSelection())
+    {
+        v->block.start = at;
+        v->block.length = length;
+        markDirty();
+        rebuildAudio();
+        announceSelection();
+        if (onBlockGeometry) onBlockGeometry(v->block.length, tailSecondsOf(*v), v->block.hasAudio());
+        if (onTakeNote)
+            onTakeNote("block from " + formatPosition(at) + " to " + markers[(size_t) next].name
+                        + " - " + juce::String(length, 1) + " s");
+    }
+    repaint();
+}
+
+void CanvasView::paintMarkers(juce::Graphics& g)
+{
+    if (markers.empty()) return;
+    g.setFont(laf.sansMedium(MiraLookAndFeel::textSize(9.5f)));
+    for (const auto& m : markers)
+    {
+        const int x = secondsToX(m.seconds);
+        if (x < kHeaderWidth || x > getWidth()) continue;
+        // The line runs the whole height, faint: a marker is a place on the TIMELINE, not
+        // a mark on the ruler, and you need to see what it cuts through.
+        g.setColour(MiraLookAndFeel::active.withAlpha(0.22f));
+        g.drawVerticalLine(x, (float) topRuler, (float) getHeight());
+        g.setColour(MiraLookAndFeel::active);
+        juce::Path flag;
+        flag.addTriangle((float) x, (float) topRuler - 9.0f,
+                          (float) x + 8.0f, (float) topRuler - 5.0f,
+                          (float) x, (float) topRuler - 1.0f);
+        g.fillPath(flag);
+        g.drawText(m.name, x + 10, topRuler - 12, 160, 12, juce::Justification::centredLeft, false);
+    }
+}
+
+void CanvasView::promptExportCueSheet()
+{
+    if (items.empty()) { if (onTakeNote) onTakeNote("there are no blocks to write down"); return; }
+
+    const auto suggested = documentFile != juce::File()
+                               ? documentFile.getParentDirectory().getChildFile(getDocumentName() + " cues.csv")
+                               : juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+                                     .getChildFile("cues.csv");
+    auto chooser = std::make_shared<juce::FileChooser>("Export the cue sheet", suggested, "*.csv");
+    juce::Component::SafePointer<CanvasView> safe (this);
+    chooser->launchAsync(juce::FileBrowserComponent::saveMode
+                             | juce::FileBrowserComponent::canSelectFiles
+                             | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [safe, chooser](const juce::FileChooser& fc) {
+        if (safe == nullptr) return;
+        auto& self = *safe;
+        const auto dest = fc.getResult();
+        if (dest == juce::File()) return;
+
+        // In TIMECODE whatever the ruler is set to. A cue sheet is paperwork for someone
+        // else, and the someone else counts in timecode.
+        const auto f = self.timecodeFormat();
+        auto quote = [](juce::String v) { return "\"" + v.replace("\"", "\"\"") + "\""; };
+
+        juce::StringArray lines;
+        lines.add("cue,track,in,out,length,seconds,key,tempo,take");
+
+        // In ORDER, which the canvas's own list is not -- items are in the order they were
+        // made. A cue sheet out of order is a cue sheet nobody can read against picture.
+        std::vector<const Visual*> ordered;
+        for (const auto& i : self.items)
+            if (!self.isReferenceLane(i->block.lane)) ordered.push_back(i.get());
+        std::sort(ordered.begin(), ordered.end(), [](const Visual* a, const Visual* b) {
+            return a->block.start < b->block.start;
+        });
+
+        for (const auto* v : ordered)
+        {
+            const auto tags = keyAndTempoOf(v->settings);
+            juce::String key, tempo;
+            // keyAndTempoOf renders "C minor - 120 BPM" for the header; split it back out
+            // so a spreadsheet gets two columns rather than one it has to be taught to cut.
+            if (tags.contains(" - "))
+            {
+                key = tags.upToFirstOccurrenceOf(" - ", false, false).trim();
+                tempo = tags.fromFirstOccurrenceOf(" - ", false, false).trim();
+            }
+            else key = tags;
+
+            lines.add(quote(v->block.name) + ","
+                       + quote(self.laneNames[v->block.lane].isNotEmpty()
+                                   ? self.laneNames[v->block.lane]
+                                   : "track " + juce::String(v->block.lane + 1)) + ","
+                       + quote(tc::format(v->block.start, f)) + ","
+                       + quote(tc::format(v->block.end(), f)) + ","
+                       + quote(tc::formatFrames((juce::int64) std::llround(v->block.length * f.fps),
+                                                 tc::nominalRate(f.fps), f.dropFrame)) + ","
+                       + juce::String(v->block.length, 3) + ","
+                       + quote(key) + "," + quote(tempo) + ","
+                       + quote(v->block.hasAudio() ? v->block.file.getFileName() : juce::String()));
+        }
+
+        // The markers too. A spotting note with no cue against it yet is exactly the row
+        // you want to see on the sheet.
+        for (const auto& m : self.markers)
+            lines.add(quote(m.name) + ",\"(marker)\"," + quote(tc::format(m.seconds, f))
+                       + ",,,\"" + juce::String(m.seconds, 3) + "\",,,");
+
+        if (dest.replaceWithText(lines.joinIntoString("\n") + "\n"))
+        {
+            if (self.onTakeNote)
+                self.onTakeNote("wrote " + juce::String(ordered.size()) + " cues and "
+                                 + juce::String((int) self.markers.size()) + " markers to "
+                                 + dest.getFileName());
+        }
+        else if (self.onTakeNote) self.onTakeNote("could not write " + dest.getFullPathName());
+    });
 }
 
 // ---- picture on the timeline (MIRA-VIDEO.md Phase 1) --------------------------------

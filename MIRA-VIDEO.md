@@ -434,12 +434,27 @@ lane starting where the clip does.
 
 ### Phase 5 — scoring conveniences
 
-Only after 1–4 are real. Listed so they are not forgotten, not to be started early.
+**Built 2026-09-19.**
 
-- [ ] **5.1** Markers on the timeline at timecodes, with names — the spotting notes.
-- [ ] **5.2** "New block at the playhead, as long as the gap to the next marker."
-- [ ] **5.3** Snap a block's start to a marker.
-- [ ] **5.4** Export a cue sheet: block name, in/out timecode, key, tempo.
+- [x] **5.1** **Markers** with names — the spotting notes. `Cmd-M` at the playhead, or the
+  ruler's right-click menu, which shows the marker you clicked ON when there is one. A
+  faint line runs the full height, because a marker is a place on the TIMELINE and you need
+  to see what it cuts through, not a tick on the ruler.
+- [x] **5.2** **`Cmd-shift-M`: a block from the playhead to the next marker.** This is the
+  whole gesture of scoring to picture — you know where the cue starts and where it has to
+  be out by, and the length follows from those two. No marker after the playhead says so
+  rather than doing nothing.
+- [x] **5.3** A dragged block's **start snaps to a marker**, by PIXELS rather than seconds:
+  what "close enough" means depends on the zoom, and a snap a second wide zoomed out and a
+  frame wide zoomed in is a snap you cannot predict. Alt held drags past it. Only the
+  dragged block and only its start — snapping a selection would move blocks whose starts
+  are nowhere near a marker, and snapping the end too would put two attractors on one
+  gesture.
+- [x] **5.4** **Cue sheet** as CSV: cue, track, in, out, length, seconds, key, tempo, take —
+  in timecode whatever the ruler is set to, because a cue sheet is paperwork for someone
+  else and the someone else counts in timecode. Sorted by start, which the canvas's own
+  list is not. The reference track is excluded; the markers are appended as their own rows,
+  because a spotting note with no cue against it yet is exactly the row you want to see.
 
 ---
 

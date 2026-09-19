@@ -1200,7 +1200,9 @@ namespace CanvasMenu {
         // MIRA-VIDEO.md Phase 1.3
         kOpenVideo, kShowPicture,
         kRulerSeconds, kRulerTimecode,
-        kFirst = kPlay, kLast = kRulerTimecode
+        // MIRA-VIDEO.md Phase 5
+        kAddMarker, kBlockToMarker, kExportCues,
+        kFirst = kPlay, kLast = kExportCues
     };
 }
 
@@ -3282,6 +3284,9 @@ public:
                 v.setRulerMode(mira::canvas::CanvasView::Ruler::Seconds); break;
             case CanvasMenu::kRulerTimecode:
                 v.setRulerMode(mira::canvas::CanvasView::Ruler::Timecode); break;
+            case CanvasMenu::kAddMarker:     v.addMarkerAtPlayhead(); break;
+            case CanvasMenu::kBlockToMarker: v.addBlockToNextMarker(); break;
+            case CanvasMenu::kExportCues:    v.promptExportCueSheet(); break;
             case CanvasMenu::kSave:      canvasWindow->saveProject(); break;
             default: break;
         }
@@ -4986,6 +4991,10 @@ public:
             const bool onTimecode = live && canvasRulerIsTimecode && canvasRulerIsTimecode();
             menu.addItem(CanvasMenu::kRulerSeconds, "Ruler: Seconds", live, live && !onTimecode);
             menu.addItem(CanvasMenu::kRulerTimecode, "Ruler: Timecode", live, onTimecode);
+            menu.addSeparator();
+            menu.addItem(CanvasMenu::kAddMarker, "Add Marker at Playhead", live, false);
+            menu.addItem(CanvasMenu::kBlockToMarker, "Block to Next Marker", live, false);
+            menu.addItem(CanvasMenu::kExportCues, "Export Cue Sheet...", live, false);
         }
         else if (topLevelMenuIndex == 8)
         {

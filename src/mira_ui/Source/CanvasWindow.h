@@ -246,6 +246,27 @@ public:
     int videoClipAt(double seconds) const;
     // Right-click a clip in the PICTURE track.
     void showVideoClipMenu(int index, juce::Point<int> at);
+
+    // ---- markers: the spotting notes (MIRA-VIDEO.md Phase 5) --------------------------
+    //
+    // A place on the timeline with a name -- "she turns", "titles out", "hit". This is
+    // what a spotting session produces, and it is the thing a cue's length is decided by,
+    // so it is a first-class object on the canvas rather than an annotation on a block.
+    struct Marker { double seconds = 0.0; juce::String name; };
+    void addMarkerAtPlayhead();
+    void removeMarker(int index);
+    void renameMarker(int index);
+    // The marker nearest this x, within a few pixels, or -1.
+    int markerNear(int x) const;
+    // The first marker strictly after this position, or -1.
+    int markerAfter(double seconds) const;
+    const std::vector<Marker>& getMarkers() const { return markers; }
+    // 5.2 -- a block at the playhead, as long as the gap to the next marker. The whole
+    // gesture of scoring to picture: you know where the cue starts and where it has to be
+    // out by, and the length follows from those two.
+    void addBlockToNextMarker();
+    // 5.4 -- every block as a row: name, in, out, length, key, tempo.
+    void promptExportCueSheet();
     // ---- timecode (MIRA-VIDEO.md Phase 3) ---------------------------------------------
     //
     // SECONDS or TIMECODE, everywhere at once: the ruler, the transport clock and the
@@ -483,6 +504,13 @@ private:
     // 100+i shows take i, 200+i moves it to the Trash.
     void chooseTake(juce::int64 blockId, int menuId);
     std::vector<VideoClip> videoClips;
+    std::vector<Marker> markers;
+    void paintMarkers(juce::Graphics&);
+    // 5.3 -- the nearest marker to snap a dragged block's start to, or the position
+    // unchanged. Snapping is by PIXELS, not by seconds: what "close" means depends on the
+    // zoom, and a snap that is a second wide at one zoom and a frame wide at another is a
+    // snap you cannot predict.
+    double snapToMarker(double seconds) const;
     Ruler rulerMode = Ruler::Seconds;
     // Used only when there is no clip to take them from. A canvas with no picture can
     // still be laid out against a timecode an editor gave you over the phone.

@@ -605,6 +605,8 @@ What undo does not cover: the audio device, and anything outside the document.
 | `Cmd-Z` / `Cmd-shift-Z` | undo / redo |
 | `Cmd-D` | duplicate |
 | `Cmd-↑` / `Cmd-↓` | move the selected track up / down |
+| `Cmd-M` | drop a marker at the playhead |
+| `Cmd-shift-M` | a block from the playhead to the next marker |
 | `Cmd-E` | cut every block the playhead stands on, there |
 | `Cmd-shift-E` | split it into two blocks instead of cutting |
 | `Cmd-N` / `Cmd-O` / `Cmd-S` | new / open / save — handled by the WINDOW, so they work whatever has focus |
