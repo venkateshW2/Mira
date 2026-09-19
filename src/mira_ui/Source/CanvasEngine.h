@@ -134,6 +134,7 @@ public:
     {
         for (auto& g : laneGain) g.store(1.0f);
         for (auto& p : lanePeak) { p[0].store(0.0f); p[1].store(0.0f); }
+        peak[0].store(0.0f); peak[1].store(0.0f);
     }
 
     // Called on the MESSAGE thread. Builds readers, then publishes.
@@ -180,8 +181,18 @@ public:
     double getSampleRate() const { return kTimelineRate; }
     // Highest sample seen since the last read, and cleared by reading it. Summing N takes
     // that each peak near full scale is N times full scale, so a canvas that stacks
-    // alternates WILL clip unless it says so.
-    float readAndClearPeak() { return peak.exchange(0.0f); }
+    // alternates WILL clip unless it says so. Per channel, for the same reason the lane
+    // meters are.
+    float readAndClearPeak(int channel = -1)
+    {
+        if (channel < 0) return juce::jmax(peak[0].exchange(0.0f), peak[1].exchange(0.0f));
+        return peak[juce::jlimit(0, 1, channel)].exchange(0.0f);
+    }
+
+    // ONE master gain, applied after the sum and before the meter reads it -- so the
+    // master meter shows what leaves mira rather than what the tracks added up to.
+    void setMasterGain(float g) { masterGain.store(juce::jlimit(0.0f, 4.0f, g)); }
+    float getMasterGain() const { return masterGain.load(); }
 
 private:
     Arrangement::Ptr active;                 // read by the audio thread
@@ -194,7 +205,8 @@ private:
     std::atomic<juce::uint64> muteMask { 0 }, soloMask { 0 };
     std::atomic<float> laneGain[kMaxLanes];
     std::atomic<float> lanePeak[kMaxLanes][2];
-    std::atomic<float> peak { 0.0f };
+    std::atomic<float> peak[2];
+    std::atomic<float> masterGain { 1.0f };
     int blockSize = 512;
 
     void renderRange(const juce::AudioSourceChannelInfo& info, juce::int64 from, int numSamples);
@@ -237,7 +249,9 @@ public:
     void setLaneMasks(juce::uint64 muted, juce::uint64 soloed) { canvasSource.setLaneMasks(muted, soloed); }
     void setLaneGain(int lane, float gain) { canvasSource.setLaneGain(lane, gain); }
     float readAndClearLanePeak(int lane, int channel) { return canvasSource.readAndClearLanePeak(lane, channel); }
-    float readAndClearPeak() { return canvasSource.readAndClearPeak(); }
+    float readAndClearPeak(int channel = -1) { return canvasSource.readAndClearPeak(channel); }
+    void setMasterGain(float g) { canvasSource.setMasterGain(g); }
+    float getMasterGain() const { return canvasSource.getMasterGain(); }
 
 private:
     juce::TimeSliceThread readThread { "canvas file reader" };

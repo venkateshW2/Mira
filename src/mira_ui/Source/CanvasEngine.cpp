@@ -269,13 +269,20 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
             }
     }
 
-    // One peak for the whole mix, after summing -- which is the only place the stacking
-    // problem is visible. Read and cleared by the UI.
-    for (int ch = 0; ch < outChannels; ++ch)
+    // The master fader, applied to the SUM -- after the tracks, before the meter, which is
+    // the only order in which a master meter answers "what is leaving mira".
+    const float master = masterGain.load();
+    if (master != 1.0f)
+        for (int ch = 0; ch < outChannels; ++ch)
+            info.buffer->applyGain(ch, info.startSample, numSamples, master);
+
+    // One peak for the whole mix, per channel -- the only place the stacking problem is
+    // visible. Read and cleared by the UI.
+    for (int ch = 0; ch < juce::jmin(2, outChannels); ++ch)
     {
         const float m = info.buffer->getMagnitude(ch, info.startSample, numSamples);
-        float seen = peak.load();
-        while (m > seen && !peak.compare_exchange_weak(seen, m)) {}
+        float seen = peak[ch].load();
+        while (m > seen && !peak[ch].compare_exchange_weak(seen, m)) {}
     }
 }
 

@@ -1,10 +1,12 @@
 # CANVAS.md — the block canvas
 
-**Status: experimental, built 2026-09-18/19.** Its own window, its own audio path, one menu
-item. Nothing in the generate window, the take stack or the browser depends on it. If it
-turns out not to feel good it deletes in one commit and what works today is untouched.
+**Status: this is the project window now, as of 2026-09-19.** It started as an experiment
+that nothing else depended on — its own window, its own audio path, one menu item — and it
+earned the promotion: `File ▸ New Project` and `File ▸ Open Project` open it. The old
+project window survives as **Take Pool (generator v1)** for the things the canvas does not
+do yet.
 
-Open it with `Window ▸ Canvas (experimental)`.
+Open it with `Window ▸ Canvas`.
 
 ---
 
@@ -333,11 +335,41 @@ whether or not the transport runs, so the source went on producing peaks after a
 
 ---
 
-## 5. Where this is going
+## 5. The canvas is the project
 
-The canvas is meant to **become the project window** once generation through it is proven.
-Until then both exist and neither depends on the other — the canvas has to earn the
-replacement rather than be handed it.
+**`File ▸ New Project` and `File ▸ Open Project` open the canvas.** It earned it: the
+blocks, the tracks, the mixer and the generator are all here, and it is the thing that has
+a document.
+
+The old project window survives as **Take Pool (generator v1)** under Window. It still does
+what the canvas does not — cues, the take stack, keep-to-cue — and it is named for what it
+is rather than pretending to still be the main event. Nothing was deleted; the canvas simply
+stopped being the experiment.
+
+### The side panel is tabbed
+
+One column of window with a vertical tab strip down its inside edge, against the canvas it
+belongs to — Blockhead's arrangement, and the reason is the same: each tool would otherwise
+want a window of its own to arrange.
+
+| | |
+|---|---|
+| **GENERATE** | the selected block's generator — the real one |
+| **MASTER** | the sum that leaves mira: fader and stereo meter on the same scale the tracks use |
+| **FILES** | every take the project holds, newest first, across every block |
+
+Adding the next one is a row in an enum and a component.
+
+**The master meter is not a luxury.** The tracks sum here, and two takes at −1 dBFS is +5,
+four is +11 — while every track's own meter says everything is fine. It is the only meter
+that can answer "is this going to clip".
+
+**FILES is a view of the filesystem, not a second index.** The block folders *are* the pool,
+so there is nothing to keep in step with them: it lists the wavs under the project folder,
+newest first, and polls for the ones a generation drops in. Double-click places one as its
+own block on its own track — the same rule a dropped file follows.
+
+### Still open
 
 ### Open, in rough order
 

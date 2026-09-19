@@ -70,6 +70,16 @@ public:
     double getLengthSeconds() const { return player.getLengthSeconds(); }
     int getBlockCount() const { return static_cast<int>(items.size()); }
     void zoomBy(double factor, int aroundX);
+    // ONE SCALE for the fader and the meter, on the tracks and on the master. That is what
+    // makes a channel strip readable: a fader sitting at -12 lines up with a meter reading
+    // -12, and you can see the headroom you have left without arithmetic on a decibel.
+    //
+    // Warped rather than linear, the way a console is: the top 18 dB -- where you actually
+    // work -- gets nearly half the travel, and the bottom 30 dB, where the difference
+    // between -52 and -58 matters to nobody, gets a quarter.
+    static double dbToNorm(double db);
+    static double normToDb(double norm);
+    static constexpr double kFaderTopDb = 6.0, kFaderBottomDb = -60.0;
     void zoomVertical(double pixels);
     void panBy(double seconds);
     // END every block the playhead stands on, there. One block, its audio cut to the
@@ -172,6 +182,10 @@ public:
     void adoptTake(const juce::File& folder, const juce::File& take);
     float readAndClearPeak() { return player.readAndClearPeak(); }
     double getDeviceRate() const { return player.getDeviceRate(); }
+    float readAndClearPeak(int channel) { return player.readAndClearPeak(channel); }
+    void setMasterGain(float g) { player.setMasterGain(g); }
+    float getMasterGain() const { return player.getMasterGain(); }
+    juce::File getProjectFolder() const { return projectFolder; }
     static constexpr double getTimelineRate() { return CanvasPlayer::getTimelineRate(); }
     std::function<void()> onStateChanged;
 
@@ -280,9 +294,7 @@ private:
     // Warped rather than linear, the way a console is: the top 18 dB -- where you actually
     // work -- gets nearly half the travel, and the bottom 30 dB, where the difference
     // between -52 and -58 matters to nobody, gets a quarter.
-    static double dbToNorm(double db);
-    static double normToDb(double norm);
-    static constexpr double kFaderTopDb = 6.0, kFaderBottomDb = -60.0;
+
     juce::Rectangle<int> nameBoxFor(int lane) const;
     void beginRename(int lane);
     void commitRename();

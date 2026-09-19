@@ -2144,11 +2144,387 @@ void CanvasView::timerCallback()
 
 // ---- window -------------------------------------------------------------------------
 
+
+// ---- the side panel's tabs ----------------------------------------------------------
+//
+// A vertical tab strip down the panel's inside edge, the way Blockhead has it: the panel
+// is one column of window and the tabs say which tool is in it, rather than each tool
+// getting a window of its own to arrange. Adding the next one is a row in an enum and a
+// component -- which is the point of doing it this way rather than stacking panes.
+enum class SideTab { Generate = 0, Master, Files, Count };
+
+static const char* sideTabName (SideTab t)
+{
+    switch (t)
+    {
+        case SideTab::Generate: return "GENERATE";
+        case SideTab::Master:   return "MASTER";
+        case SideTab::Files:    return "FILES";
+        default:                return "";
+    }
+}
+
+class TabStrip : public juce::Component
+{
+public:
+    explicit TabStrip (const MiraLookAndFeel& lafIn) : laf (lafIn) {}
+
+    std::function<void(SideTab)> onTab;
+    SideTab current = SideTab::Generate;
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (MiraLookAndFeel::surface2);
+        g.setColour (MiraLookAndFeel::border);
+        g.drawVerticalLine (getWidth() - 1, 0.0f, (float) getHeight());
+
+        for (int i = 0; i < (int) SideTab::Count; ++i)
+        {
+            auto box = boxFor (i);
+            const bool on = (SideTab) i == current;
+            if (on)
+            {
+                g.setColour (MiraLookAndFeel::surface);
+                g.fillRect (box);
+                // The marker is on the INSIDE edge, against the content it selects, so the
+                // tab reads as attached to the panel rather than as a button near it.
+                g.setColour (MiraLookAndFeel::accent);
+                g.fillRect (box.getRight() - 2, box.getY(), 2, box.getHeight());
+            }
+
+            // Rotated, because a vertical strip wide enough for horizontal words is not a
+            // strip any more -- it is a second panel in front of the panel.
+            juce::Graphics::ScopedSaveState state (g);
+            g.addTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi,
+                                                              (float) box.getCentreX(),
+                                                              (float) box.getCentreY()));
+            g.setColour (on ? MiraLookAndFeel::text : MiraLookAndFeel::textFaint);
+            g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (10.0f)));
+            g.drawText (sideTabName ((SideTab) i),
+                        juce::Rectangle<int> (box.getCentreX() - box.getHeight() / 2,
+                                               box.getCentreY() - box.getWidth() / 2,
+                                               box.getHeight(), box.getWidth()),
+                        juce::Justification::centred, false);
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        for (int i = 0; i < (int) SideTab::Count; ++i)
+            if (boxFor (i).contains (e.getPosition()))
+            {
+                current = (SideTab) i;
+                if (onTab) onTab (current);
+                repaint();
+                return;
+            }
+    }
+
+private:
+    juce::Rectangle<int> boxFor (int i) const
+    {
+        constexpr int kTab = 86;
+        return { 0, 6 + i * (kTab + 2), getWidth(), kTab };
+    }
+
+    const MiraLookAndFeel& laf;
+};
+
+// ---- MASTER --------------------------------------------------------------------------
+//
+// The same strip the tracks have, one size larger, on the same scale. It is the sum that
+// leaves mira, so it is the one meter that can answer "is this going to clip" -- stacking
+// N takes that each peak near full scale is N times full scale, and the tracks' own meters
+// each say everything is fine.
+class MasterStrip : public juce::Component, private juce::Timer
+{
+public:
+    MasterStrip (const MiraLookAndFeel& lafIn, CanvasView& viewIn) : laf (lafIn), view (viewIn)
+    {
+        startTimerHz (30);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (MiraLookAndFeel::surface);
+
+        auto r = getLocalBounds().reduced (18, 16);
+        g.setColour (MiraLookAndFeel::accent);
+        g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (11.0f)));
+        g.drawText ("MASTER", r.removeFromTop (18), juce::Justification::centredLeft, false);
+        r.removeFromTop (10);
+
+        auto column = r.removeFromLeft (juce::jmin (54, r.getWidth()));
+        auto strip = column.withWidth (44);
+
+        g.setColour (MiraLookAndFeel::surface.darker (0.5f));
+        g.fillRoundedRectangle (strip.toFloat(), 4.0f);
+        g.setColour (MiraLookAndFeel::border.withAlpha (0.5f));
+        g.drawRoundedRectangle (strip.toFloat().reduced (0.5f), 4.0f, 1.0f);
+
+        auto yFor = [&] (double db) {
+            return (float) strip.getBottom() - (float) strip.getHeight() * (float) CanvasView::dbToNorm (db);
+        };
+
+        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (9.0f)));
+        for (double tick : { 6.0, 0.0, -6.0, -12.0, -24.0, -40.0 })
+        {
+            const float y = yFor (tick);
+            g.setColour (MiraLookAndFeel::border.withAlpha (tick == 0.0 ? 0.9f : 0.45f));
+            g.fillRect ((float) strip.getX() + 1.0f, y, (float) strip.getWidth() - 2.0f, 1.0f);
+            g.setColour (MiraLookAndFeel::textFaint.withAlpha (tick == 0.0 ? 0.9f : 0.6f));
+            g.drawText (tick > 0 ? "+" + juce::String ((int) tick) : juce::String ((int) tick),
+                        juce::Rectangle<int> (strip.getRight() + 5, (int) y - 6, 30, 12),
+                        juce::Justification::centredLeft, false);
+        }
+
+        // The stereo meter, inside the same well as the fader -- one control.
+        auto meterArea = juce::Rectangle<int> (strip.getX() + 3, strip.getY(), 16, strip.getHeight());
+        const float barW = (meterArea.getWidth() - 3.0f) * 0.5f;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float x = meterArea.getX() + 1.0f + ch * (barW + 1.0f);
+            if (level[(size_t) ch] > 0.0005f)
+            {
+                const double db = juce::Decibels::gainToDecibels (level[(size_t) ch]);
+                auto band = [&] (double lo, double hi, juce::Colour c) {
+                    if (db < lo) return;
+                    const float y0 = yFor (juce::jmin (hi, db)), y1 = yFor (lo);
+                    if (y0 >= y1) return;
+                    g.setColour (c);
+                    g.fillRect (juce::Rectangle<float> (x, y0, barW, y1 - y0));
+                };
+                band (-60.0, -6.0, MiraLookAndFeel::active);
+                band (-6.0, -1.0, MiraLookAndFeel::accent);
+                band (-1.0, 6.0, MiraLookAndFeel::warn);
+            }
+            if (hold[(size_t) ch] > 0.0005f)
+            {
+                const double db = juce::Decibels::gainToDecibels (hold[(size_t) ch]);
+                g.setColour (db > -1.0 ? MiraLookAndFeel::warn : MiraLookAndFeel::text.withAlpha (0.85f));
+                g.fillRect (x, yFor (db) - 1.0f, barW, 1.5f);
+            }
+        }
+
+        // The fader groove and its cap, spanning the whole well.
+        auto groove = juce::Rectangle<float> ((float) strip.getX() + 26.0f, (float) strip.getY(),
+                                               3.0f, (float) strip.getHeight());
+        g.setColour (MiraLookAndFeel::surface.darker (0.35f));
+        g.fillRoundedRectangle (groove, 1.5f);
+        const float capY = yFor (db());
+        g.setColour (MiraLookAndFeel::accent.withAlpha (0.75f));
+        g.fillRoundedRectangle (groove.withTop (capY), 1.5f);
+        auto cap = juce::Rectangle<float> ((float) strip.getX() + 1.0f, capY - 5.0f,
+                                            (float) strip.getWidth() - 2.0f, 10.0f);
+        g.setColour (MiraLookAndFeel::accent.brighter (0.2f));
+        g.fillRoundedRectangle (cap, 3.0f);
+        g.setColour (MiraLookAndFeel::surface.darker (0.6f));
+        g.drawRoundedRectangle (cap, 3.0f, 1.0f);
+        g.fillRect (cap.getX() + 3.0f, cap.getCentreY() - 0.5f, cap.getWidth() - 6.0f, 1.0f);
+
+        // The numbers. A master with no readout is a control you cannot put back.
+        g.setColour (MiraLookAndFeel::text);
+        g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (14.0f)));
+        auto right = juce::Rectangle<int> (strip.getRight() + 44, strip.getY(),
+                                            juce::jmax (60, getWidth() - strip.getRight() - 60), 22);
+        g.drawText (db() <= -60.0 ? juce::String ("-inf") : juce::String (db(), 1) + " dB",
+                    right, juce::Justification::centredLeft, false);
+
+        const float peakDb = juce::Decibels::gainToDecibels (juce::jmax (hold[0], hold[1], 1.0e-6f));
+        g.setColour (clipped ? MiraLookAndFeel::warn : MiraLookAndFeel::textDim);
+        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (11.0f)));
+        g.drawText (clipped ? "CLIP  " + juce::String (peakDb, 1) + " dB peak"
+                            : "peak " + juce::String (peakDb, 1) + " dB",
+                    right.withY (right.getBottom() + 4).withHeight (18),
+                    juce::Justification::centredLeft, false);
+
+        g.setColour (MiraLookAndFeel::textFaint);
+        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (10.0f)));
+        g.drawFittedText ("The tracks sum here. Two takes at -1 dBFS is +5, four is +11 --\n"
+                          "which is why this meter exists and the track meters are not enough.\n\n"
+                          "click to set, cmd-click for unity, double-click to clear the clip",
+                          right.withY (right.getBottom() + 28).withHeight (90).withWidth (right.getWidth() + 40),
+                          juce::Justification::topLeft, 6);
+        faderBox = strip;
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override { drag (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { drag (e); }
+    void mouseDoubleClick (const juce::MouseEvent&) override { clipped = false; repaint(); }
+
+private:
+    void drag (const juce::MouseEvent& e)
+    {
+        if (faderBox.isEmpty() || !faderBox.expanded (8, 4).contains (e.getPosition())) return;
+        if (e.mods.isCommandDown()) { setDb (0.0); return; }
+        setDb (CanvasView::normToDb (1.0 - (double) (e.y - faderBox.getY())
+                                              / (double) faderBox.getHeight()));
+    }
+
+    double db() const
+    {
+        const float g = view.getMasterGain();
+        return g <= 0.0f ? -60.0 : juce::jlimit (-60.0, 6.0, (double) juce::Decibels::gainToDecibels (g));
+    }
+
+    void setDb (double d)
+    {
+        d = juce::jlimit (-60.0, 6.0, d);
+        view.setMasterGain (d <= -60.0 ? 0.0f : juce::Decibels::decibelsToGain ((float) d));
+        repaint();
+    }
+
+    void timerCallback() override
+    {
+        bool moved = false;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float hit = view.isPlaying() ? view.readAndClearPeak (ch) : 0.0f;
+            auto& l = level[(size_t) ch];
+            auto& h = hold[(size_t) ch];
+            const float wasL = l, wasH = h;
+            l = hit > l ? hit : l * 0.80f;
+            h = hit > h ? hit : h * 0.995f;
+            if (hit >= 0.999f) clipped = true;
+            if (std::abs (l - wasL) > 0.0005f || std::abs (h - wasH) > 0.0005f) moved = true;
+        }
+        if (moved) repaint();
+    }
+
+    const MiraLookAndFeel& laf;
+    CanvasView& view;
+    juce::Rectangle<int> faderBox;
+    std::array<float, 2> level { 0.0f, 0.0f }, hold { 0.0f, 0.0f };
+    bool clipped = false;
+};
+
+// ---- FILES ----------------------------------------------------------------------------
+//
+// Every wav the project holds, across every block, in one list. The block folders ARE the
+// pool -- there is no separate library to keep in step with them -- so this is a view of
+// the filesystem rather than a second index that can disagree with it.
+class FilesPanel : public juce::Component,
+                   private juce::ListBoxModel,
+                   private juce::Timer
+{
+public:
+    FilesPanel (const MiraLookAndFeel& lafIn, CanvasView& viewIn,
+                juce::AudioFormatManager& formatsIn)
+        : laf (lafIn), view (viewIn), formats (formatsIn)
+    {
+        list.setModel (this);
+        list.setRowHeight (34);
+        list.setColour (juce::ListBox::backgroundColourId, MiraLookAndFeel::surface);
+        addAndMakeVisible (list);
+        startTimer (1500);      // the folder changes underneath us every generation
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (10, 8);
+        header = r.removeFromTop (34);
+        list.setBounds (r);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (MiraLookAndFeel::surface);
+        g.setColour (MiraLookAndFeel::accent);
+        g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (11.0f)));
+        g.drawText ("FILES", header.removeFromTop (16), juce::Justification::centredLeft, false);
+        g.setColour (MiraLookAndFeel::textFaint);
+        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (10.0f)));
+        g.drawText (juce::String (rows.size()) + " takes in this project"
+                     + juce::String (" - double-click to place on a new track"),
+                    header, juce::Justification::centredLeft, false);
+    }
+
+    void refresh()
+    {
+        rows.clear();
+        const auto root = view.getProjectFolder();
+        if (root.isDirectory())
+            for (const auto& f : root.findChildFiles (juce::File::findFiles, true, "*.wav"))
+            {
+                Row r;
+                r.file = f;
+                // The BLOCK it belongs to, which is its parent folder. That is the only
+                // grouping this list needs, and it costs nothing to read.
+                r.block = f.getParentDirectory() == root ? juce::String ("-")
+                                                         : f.getParentDirectory().getFileName();
+                rows.push_back (r);
+            }
+        std::sort (rows.begin(), rows.end(), [] (const Row& a, const Row& b) {
+            return a.file.getLastModificationTime() > b.file.getLastModificationTime();
+        });
+        list.updateContent();
+        repaint();
+    }
+
+private:
+    struct Row { juce::File file; juce::String block; };
+
+    int getNumRows() override { return (int) rows.size(); }
+
+    void paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool selected) override
+    {
+        if (row < 0 || row >= (int) rows.size()) return;
+        const auto& r = rows[(size_t) row];
+        if (selected) { g.setColour (MiraLookAndFeel::surface3); g.fillRect (0, 0, w, h); }
+
+        g.setColour (MiraLookAndFeel::text);
+        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (11.0f)));
+        g.drawText (r.file.getFileNameWithoutExtension(),
+                    juce::Rectangle<int> (8, 2, w - 16, 16), juce::Justification::centredLeft, true);
+
+        g.setColour (MiraLookAndFeel::textFaint);
+        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (9.5f)));
+        g.drawText (r.block + "   " + juce::File::descriptionOfSizeInBytes (r.file.getSize()),
+                    juce::Rectangle<int> (8, 17, w - 16, 14), juce::Justification::centredLeft, true);
+        g.setColour (MiraLookAndFeel::border.withAlpha (0.4f));
+        g.fillRect (0, h - 1, w, 1);
+    }
+
+    void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override
+    {
+        if (row < 0 || row >= (int) rows.size()) return;
+        // Placed the way a dropped file is: its own block, on its own track, at the
+        // playhead. One rule for how audio arrives on the canvas.
+        view.addFiles ({ rows[(size_t) row].file }, juce::jmax (0.0, view.getPositionSeconds()), 0);
+    }
+
+    juce::var getDragSourceDescription (const juce::SparseSet<int>& selectedRows) override
+    {
+        if (selectedRows.isEmpty()) return {};
+        const int row = selectedRows[0];
+        if (row < 0 || row >= (int) rows.size()) return {};
+        return rows[(size_t) row].file.getFullPathName();
+    }
+
+    void timerCallback() override
+    {
+        // Polled rather than watched: a generation lands from another thread and a
+        // directory watcher for one folder that changes every few minutes is more moving
+        // parts than the problem has.
+        const auto root = view.getProjectFolder();
+        const auto stamp = root.isDirectory() ? root.getLastModificationTime() : juce::Time();
+        if (stamp != lastStamp || (int) rows.size() == 0) { lastStamp = stamp; refresh(); }
+    }
+
+    const MiraLookAndFeel& laf;
+    CanvasView& view;
+    juce::AudioFormatManager& formats;
+    juce::ListBox list;
+    std::vector<Row> rows;
+    juce::Rectangle<int> header;
+    juce::Time lastStamp;
+};
+
 struct CanvasWindow::Content : juce::Component, private juce::Timer
 {
     Content(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
             juce::AudioThumbnailCache& cache, GenerateContent* panelIn)
-        : view(laf, formats, cache), panel(panelIn)
+        : view(laf, formats, cache), panel(panelIn), tabs(laf)
     {
         auto button = [this](juce::TextButton& b, const juce::String& text) {
             b.setButtonText(text);
@@ -2186,12 +2562,30 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             panel->onRemix  = [this] { view.extendSelection(true);  };
         }
         button(addTrackButton, "+ Track");
-        button(panelToggle, "Generate >");
+        addAndMakeVisible(tabs);
+        master = std::make_unique<MasterStrip>(laf, view);
+        files  = std::make_unique<FilesPanel>(laf, view, formats);
+        addChildComponent(*master);
+        addChildComponent(*files);
+        tabs.onTab = [this](SideTab t) {
+            tab = t;
+            // Switching tabs OPENS the panel. A tab you can click while the panel is
+            // folded that then does nothing visible is a control that lies.
+            if (panelCollapsed)
+            {
+                panelCollapsed = false;
+                panelToggle.setButtonText("Panel >");
+            }
+            applyTab();
+            resized();
+        };
+
+        button(panelToggle, "Panel >");
         panelToggle.onClick = [this] {
             panelCollapsed = !panelCollapsed;
-            panelToggle.setButtonText(panelCollapsed ? "Generate <" : "Generate >");
-            if (panel != nullptr) panel->setVisible(!panelCollapsed);
-            blockLabel.setVisible(!panelCollapsed);
+            panelToggle.setButtonText(panelCollapsed ? "Panel <" : "Panel >");
+            applyTab();
+            blockLabel.setVisible(!panelCollapsed && tab == SideTab::Generate);
             resized();
         };
         newProjectButton.onClick  = [this] { promptNewProject(); };
@@ -2217,9 +2611,11 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         // or floats -- the panel is always there and always about whatever is selected,
         // which is what "feels united" means in practice.
         view.onRevealGenerator = [this] {
-            if (!panelCollapsed) return;
+            // Double-clicking a block is asking for its GENERATOR, so the tab follows.
+            tabs.current = tab = SideTab::Generate;
+            if (!panelCollapsed) { applyTab(); resized(); return; }
             panelCollapsed = false;
-            panelToggle.setButtonText("Generate >");
+            panelToggle.setButtonText("Panel >");
             if (panel != nullptr) panel->setVisible(true);
             blockLabel.setVisible(true);
             resized();
@@ -2396,16 +2792,37 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         masterMeter = bar.removeFromRight(120).withSizeKeepingCentre(120, 10);
         hint.setBounds(bar);
 
-        if (panel != nullptr && !panelCollapsed)
+        if (!panelCollapsed)
         {
             const int wanted = juce::roundToInt(r.getWidth() * panelFraction);
             auto side = r.removeFromRight(juce::jlimit(260, juce::jmax(280, r.getWidth() - 320), wanted));
-            blockLabel.setBounds(side.removeFromTop(22).reduced(10, 0));
-            panel->setBounds(side);
+            // The tab strip is part of the panel and sits on its INSIDE edge, against the
+            // canvas -- so the tabs are next to the thing they change.
+            tabs.setBounds(side.removeFromLeft(kTabStripWidth));
+            if (tab == SideTab::Generate)
+            {
+                blockLabel.setBounds(side.removeFromTop(22).reduced(10, 0));
+                if (panel != nullptr) panel->setBounds(side);
+            }
+            else if (tab == SideTab::Master) master->setBounds(side);
+            else                             files->setBounds(side);
             sideDivider = r.removeFromRight(6);
         }
-        else sideDivider = {};
+        else { tabs.setBounds({}); sideDivider = {}; }
         view.setBounds(r);
+    }
+
+    // One place that decides what the panel column is showing. Three setVisible calls in
+    // three different handlers is how a panel ends up with two tools drawn over each other.
+    void applyTab()
+    {
+        const bool open = !panelCollapsed;
+        if (panel != nullptr) panel->setVisible(open && tab == SideTab::Generate);
+        blockLabel.setVisible(open && tab == SideTab::Generate);
+        master->setVisible(open && tab == SideTab::Master);
+        files->setVisible(open && tab == SideTab::Files);
+        tabs.setVisible(open);
+        if (open && tab == SideTab::Files) files->refresh();
     }
 
     void paint(juce::Graphics& g) override
@@ -2521,11 +2938,19 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::Rectangle<int> masterMeter;
     bool panelCollapsed = false;
     juce::Label hint, clock, meter;
+    // The side panel is one column with a tab strip, not a stack of panes fighting for
+    // height. GENERATE is the block's generator; MASTER is the sum; FILES is every take
+    // the project holds. Adding the next tool is an enum row and a component.
+    TabStrip tabs;
+    std::unique_ptr<MasterStrip> master;
+    std::unique_ptr<FilesPanel> files;
+    SideTab tab = SideTab::Generate;
+    static constexpr int kTabStripWidth = 26;
 };
 
 CanvasWindow::CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager& formats,
                            juce::AudioThumbnailCache& cache, GenerateContent* panel)
-    : juce::DocumentWindow("Canvas (experimental)", MiraLookAndFeel::surface,
+    : juce::DocumentWindow("Canvas", MiraLookAndFeel::surface,
                             juce::DocumentWindow::closeButton)
 {
     content = std::make_unique<Content>(laf, formats, cache, panel);

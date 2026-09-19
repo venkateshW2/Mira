@@ -1220,10 +1220,13 @@ public:
         folderTree->onProjectOpened = [this](const juce::File& f) {
             setCurrentProject(f);
             rememberRecentProject(f);
-            // Opening a project is how a generating session starts, so it opens the
-            // window that session happens in -- File > New Project otherwise leaves you
-            // looking at an empty folder with no hint of what comes next.
-            showProjectWindow();
+            // Opening a project is how a session starts, so it opens the window that
+            // session happens in -- and that window is the CANVAS now. The blocks, the
+            // tracks, the mixer and the generator are all there, and it is the thing that
+            // has a document. File > New Project otherwise leaves you looking at an empty
+            // folder with no hint of what comes next.
+            showCanvasWindow();
+            if (canvasWindow != nullptr) canvasWindow->getView().setProject(f);
         };
         folderTree->onCollectionSelected = [this](int64_t collectionId) {
             fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
@@ -1681,6 +1684,12 @@ public:
         // now on. Phase 2's project window will bind to this the same way; until then
         // this is what "switching project switches the output folder" means.
         if (generateWindow != nullptr) generateWindow->content->setOutputFolder(projectTakesFolder());
+        // The canvas follows the current project, because the canvas IS the project. A
+        // canvas left pointing at the folder you just switched away from would be the
+        // "which project am I actually editing" ambiguity the .mira document exists to
+        // remove, reintroduced one level up.
+        if (canvasWindow != nullptr && folder.isDirectory())
+            canvasWindow->getView().setProject(folder);
         // Project windows are NOT rebound here any more. Each one owns the project it
         // was opened with, which is what lets two run side by side; switching the
         // "current" project used to reach into the open window and change what it was
@@ -3255,12 +3264,18 @@ public:
     // One way in, used by the folder tree, the File menu, the menu-bar glyph and the
     // launch dialog. Anything that opens a project goes through here, so none of them
     // can disagree about what opening one means.
+    // OPENING A PROJECT OPENS THE CANVAS. The canvas is the project now: it is where the
+    // blocks, the tracks, the mixer and the generator are, and it is the thing that has a
+    // document. The old project window is still reachable from Window -- it is the take
+    // pool and the cue list, which the canvas does not do yet -- but it is no longer what
+    // "open a project" means.
     void openProject(const juce::File& folder)
     {
         if (!folder.isDirectory()) return;
         setCurrentProject(folder);
         rememberRecentProject(folder);
-        showProjectWindow();
+        showCanvasWindow();
+        if (canvasWindow != nullptr) canvasWindow->getView().setProject(folder);
     }
 
     void showProjectWindow()
@@ -4816,12 +4831,16 @@ public:
             // window kept the app alive (MIRA-GENERATE.md §3.3).
             menu.addItem(22, "Library");
             menu.addSeparator();
-            menu.addItem(MainComponent::kShowProject, "Project Window...");
+            // The CANVAS is the project window now -- it is what File > New/Open opens and
+            // where the work happens -- so it leads this menu. The old project window
+            // stays as the take pool and the cue list, which the canvas does not do; it is
+            // named for what it is rather than pretending to still be the main event.
+            menu.addItem(MainComponent::kShowCanvas, "Canvas");
+            menu.addItem(MainComponent::kShowProject, "Take Pool (generator v1)...");
+            menu.addSeparator();
             menu.addItem(MainComponent::kShowLoraLibrary, "LoRA Library...");
             menu.addItem(MainComponent::kShowGenerate, "SA3 Generate...");
             menu.addItem(MainComponent::kShowPrepare, "Prepare for Training...");
-            menu.addSeparator();
-            menu.addItem(MainComponent::kShowCanvas, "Canvas (experimental)...");
             menu.addSeparator();
             menu.addItem(MainComponent::kShowLog, "Log...");
             menu.addSeparator();
