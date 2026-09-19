@@ -1,5 +1,6 @@
 #include "CanvasWindow.h"
 #include "mira/db/PathNormalise.h"
+#include "NativeWindowChrome.h"
 
 namespace mira::canvas {
 
@@ -3081,6 +3082,11 @@ CanvasWindow::CanvasWindow(const MiraLookAndFeel& laf, juce::AudioFormatManager&
     setResizable(true, false);
     centreWithSize(1100, 640);
     setVisible(true);
+    // The native title bar is OS-gray by default, which reads as a different app sitting
+    // on top of mira's dark surface. surface2 is what Content paints its toolbar row, so
+    // the bar and the row below it are one strip. After setVisible -- that is what creates
+    // the peer this needs.
+    mira_ui::chrome::applyDarkTitleBar(*this, MiraLookAndFeel::surface2);
 }
 
 CanvasWindow::~CanvasWindow() = default;
