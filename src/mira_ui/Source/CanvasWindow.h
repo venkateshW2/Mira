@@ -115,6 +115,11 @@ public:
     std::function<void()> onDocumentChanged;   // title, mostly
     std::function<void()> onSaveRequested, onOpenRequested, onNewRequested;
     void addLane();
+    // Removes a track and everything on it, and closes the gap -- blocks on the tracks
+    // below move up, because a track numbered 4 with nothing above it is not a hole you
+    // meant to leave.
+    void removeLane(int lane);
+    int getSelectedLane() const { return selectedLane; }
     juce::String nextBlockName() const;
     // A COPY, not another version. The trim, the fades, the gain, the generator settings
     // and the same chosen take -- so four bars you like can become four bars you like
@@ -260,6 +265,9 @@ private:
     // clip that shows for 200 ms is a clip you will miss.
     std::vector<bool> laneClipped;
     int faderLane = -1;            // which lane's fader is being dragged, or -1
+    // Which TRACK is selected, or -1. Separate from the block selection because deleting a
+    // track and deleting the blocks on it are different things to want.
+    int selectedLane = -1;
     std::unique_ptr<juce::TextEditor> renameEditor;
     int renamingLane = -1;
     double loopStart = 0.0, loopEnd = 0.0;

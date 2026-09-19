@@ -2,6 +2,8 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <cmath>
+
 namespace mira_ui::chrome
 {
 namespace {
@@ -27,6 +29,38 @@ NSColor* toNSColor(juce::Colour colour)
 }
 
 } // namespace
+
+int useFullSizeContentView(juce::Component& windowComponent)
+{
+    NSWindow* window = nativeWindowFor(windowComponent);
+    if (window == nil) return 0;
+
+    window.styleMask |= NSWindowStyleMaskFullSizeContentView;
+    window.titlebarAppearsTransparent = YES;
+    // The title text would otherwise sit on top of the toolbar row, centred, over whatever
+    // button happens to be in the middle.
+    window.titleVisibility = NSWindowTitleHidden;
+
+    const CGFloat full = window.frame.size.height;
+    const CGFloat content = [window contentRectForFrameRect:window.frame].size.height;
+    const int bar = (int) std::lround(full - content);
+    // With FullSizeContentView the content rect IS the frame, so the difference is zero and
+    // the real bar height has to come from the button instead.
+    if (bar > 0) return bar;
+    if (NSButton* close = [window standardWindowButton:NSWindowCloseButton])
+        return (int) std::lround(close.superview.frame.size.height);
+    return 28;
+}
+
+int trafficLightInset(juce::Component& windowComponent)
+{
+    NSWindow* window = nativeWindowFor(windowComponent);
+    if (window == nil) return 0;
+    NSButton* zoom = [window standardWindowButton:NSWindowZoomButton];
+    if (zoom == nil) return 78;
+    const NSRect r = [zoom convertRect:zoom.bounds toView:nil];
+    return (int) std::lround(NSMaxX(r)) + 12;
+}
 
 void applyDarkTitleBar(juce::Component& windowComponent, juce::Colour background)
 {

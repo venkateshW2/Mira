@@ -39,4 +39,21 @@ void applyDarkTitleBar(juce::Component& windowComponent, juce::Colour background
 // of the ghost-outline behaviour the earlier attempt hit.
 void applyRoundedCorners(juce::Component& windowComponent, float cornerRadius);
 
+// Lets the window's CONTENT run under the title bar, so a toolbar row can live in the
+// same strip as the traffic lights instead of below them -- the unified look every native
+// macOS app has, and a whole row of vertical space back.
+//
+// No NSToolbar: an NSToolbar hosting JUCE components means an NSToolbarItem per button and
+// a delegate to keep them in step with the ones JUCE already owns. Full-size content view
+// plus a transparent title bar gets the same picture with the buttons staying exactly the
+// JUCE buttons they were, and the only thing the caller owes is an inset wide enough for
+// the traffic lights.
+//
+// Returns the height of the title bar so the caller knows how much of the top to reserve,
+// or 0 where there is no peer yet (or on any platform but macOS).
+int useFullSizeContentView(juce::Component& windowComponent);
+
+// How far in from the left the traffic lights reach, so a toolbar can start after them.
+int trafficLightInset(juce::Component& windowComponent);
+
 } // namespace mira_ui::chrome

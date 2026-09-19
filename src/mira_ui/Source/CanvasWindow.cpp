@@ -1,11 +1,43 @@
 #include "CanvasWindow.h"
 #include "mira/db/PathNormalise.h"
+#include "NativeWindowChrome.h"
 
 namespace mira::canvas {
 
 // A generator with nothing in it. Not the same as "no settings": no settings means we have
 // not looked yet and something else might know, and an empty recipe means there is nothing
 // to know -- which is what a new block is.
+// What a block IS, in two words, read off its own prompt. SA3 prompts are
+// "Key: value, Key: value" so the facts are already in there -- "Keyscale: C minor,
+// BPM: 64" -- and a block that says "C minor . 64" in its corner is one you can arrange
+// against without opening anything.
+//
+// From the PROMPT rather than from mira's analysis on purpose: the prompt is what the
+// block was asked for, it is there before a single sample exists, and an empty block can
+// carry it. Analysis of the audio is the better answer once there IS audio, and it can
+// replace this later without moving anything.
+static juce::String promptField (const juce::String& prompt, const juce::String& key)
+{
+    const int at = prompt.indexOfIgnoreCase (key + ":");
+    if (at < 0) return {};
+    auto rest = prompt.substring (at + key.length() + 1);
+    const int end = rest.indexOfChar (',');
+    return (end >= 0 ? rest.substring (0, end) : rest).trim();
+}
+
+static juce::String keyAndTempoOf (const juce::var& settings)
+{
+    if (!settings.isObject()) return {};
+    const auto prompt = settings.getProperty ("prompt", "").toString();
+    if (prompt.isEmpty()) return {};
+    const auto key = promptField (prompt, "Keyscale");
+    const auto bpm = promptField (prompt, "BPM");
+    if (key.isEmpty() && bpm.isEmpty()) return {};
+    if (key.isEmpty()) return bpm + " bpm";
+    if (bpm.isEmpty()) return key;
+    return key + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + bpm;
+}
+
 static juce::var emptyRecipe()
 {
     auto* o = new juce::DynamicObject();
@@ -355,6 +387,46 @@ void CanvasView::addLane()
     ++laneCount;
     if (laneNames[laneCount - 1].isEmpty()) laneNames.set(laneCount - 1, "track " + juce::String(laneCount));
     markDirty();
+    repaint();
+}
+
+void CanvasView::removeLane(int lane)
+{
+    if (lane < 0 || lane >= laneCount || laneCount <= 1) return;
+    pushUndo();
+    UndoGuard oneEdit (*this);
+
+    items.erase(std::remove_if(items.begin(), items.end(),
+                                [lane](const std::unique_ptr<Visual>& v) {
+                                    return v->block.lane == lane;
+                                }),
+                 items.end());
+    // Everything below moves UP. A track numbered 4 with nothing above it is not a hole
+    // anyone meant to leave, and the lane index is what mute, solo and the faders are
+    // keyed on -- a gap in it is a gap in the mixer.
+    for (auto& v : items)
+        if (v->block.lane > lane) --v->block.lane;
+
+    laneNames.remove(lane);
+    if (lane < (int) laneDb.size()) laneDb.erase(laneDb.begin() + lane);
+
+    // The mask bits above the removed lane shift down with it, or mute and solo would
+    // apply to whichever track happened to slide into the slot.
+    auto shift = [lane](juce::uint64 mask) {
+        const juce::uint64 below = mask & ((juce::uint64 (1) << lane) - 1);
+        const juce::uint64 above = mask >> (lane + 1);
+        return below | (above << lane);
+    };
+    muteMask = shift(muteMask);
+    soloMask = shift(soloMask);
+    applyMasks();
+
+    --laneCount;
+    selectedLane = juce::jlimit(-1, laneCount - 1, selectedLane >= laneCount ? laneCount - 1 : selectedLane);
+    selected.clear();
+    pointPanelAt(nullptr);
+    markDirty();
+    rebuildAudio();
     repaint();
 }
 
@@ -1023,10 +1095,24 @@ void CanvasView::paint(juce::Graphics& g)
     const int lanes = laneCount;
     for (int lane = 0; lane < lanes; ++lane)
     {
-        auto r = juce::Rectangle<int>(0, laneToY(lane), getWidth(), laneHeight);
-        if (lane % 2 == 1) { g.setColour(MiraLookAndFeel::surface2.withAlpha(0.35f)); g.fillRect(r); }
-        g.setColour(MiraLookAndFeel::border.withAlpha(0.5f));
-        g.drawHorizontalLine(r.getBottom() - 1, 0.0f, static_cast<float>(getWidth()));
+        // EACH TRACK IS ITS OWN SLAB, with a gap between it and the next. A row of
+        // alternating tints separated by a hairline read as one striped surface -- "the
+        // track looks joined with other track" -- and a track is the thing you mix with,
+        // so it has to look like a thing.
+        auto r = juce::Rectangle<int>(0, laneToY(lane), getWidth(), laneHeight).reduced(0, 2);
+        const bool chosen = lane == selectedLane;
+        g.setColour(chosen ? laneColour(lane).withAlpha(0.10f)
+                           : MiraLookAndFeel::surface.withAlpha(0.55f));
+        g.fillRect(r);
+        // A colour rail down the left of the lane body, so which track a block is on is
+        // answerable from the canvas as well as from the header.
+        g.setColour(laneColour(lane).withAlpha(chosen ? 0.9f : 0.35f));
+        g.fillRect(kHeaderWidth, r.getY(), 2, r.getHeight());
+        if (chosen)
+        {
+            g.setColour(laneColour(lane).withAlpha(0.55f));
+            g.drawRect(r, 1);
+        }
     }
 
     // The loop region, under everything, so a block sitting in it still reads normally.
@@ -1234,9 +1320,24 @@ void CanvasView::paint(juce::Graphics& g)
                              + (item->block.hasAudio()
                                     ? "  -  " + item->block.file.getFileNameWithoutExtension()
                                     : juce::String());
-            g.drawText(label, r.reduced(6, 2).removeFromTop(14)
-                                  .withTrimmedLeft(mb.isEmpty() ? 0 : mb.getWidth() + 4),
-                        juce::Justification::centredLeft, true);
+            auto headerRow = r.reduced(6, 2).removeFromTop(14)
+                               .withTrimmedLeft(mb.isEmpty() ? 0 : mb.getWidth() + 4);
+
+            // Key and tempo on the RIGHT of the same row, so the name can be as long as it
+            // likes without pushing them off.
+            if (const auto tags = keyAndTempoOf(item->settings); tags.isNotEmpty()
+                                                                 && headerRow.getWidth() > 150)
+            {
+                auto tagBox = headerRow.removeFromRight(juce::jmin(130, headerRow.getWidth() / 2));
+                g.setColour(isSelected ? MiraLookAndFeel::text.withAlpha(0.75f)
+                                       : tint.brighter(0.15f).withAlpha(0.8f));
+                g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.5f)));
+                g.drawText(tags, tagBox, juce::Justification::centredRight, true);
+                g.setColour(isSelected ? MiraLookAndFeel::text : tint.brighter(0.4f));
+                g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
+            }
+
+            g.drawText(label, headerRow, juce::Justification::centredLeft, true);
         }
     }
 
@@ -1502,6 +1603,10 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
         // be cleared or they stop meaning "this happened" and start meaning "this happened
         // at some point, once, maybe ages ago".
         if (lane < (int) laneClipped.size()) laneClipped[(size_t) lane] = false;
+        // Clicking a header SELECTS the track. That is what makes "delete this track" a
+        // thing you can ask for, and it costs nothing -- M, S and the fader all still do
+        // their own jobs because they are tested before this takes effect.
+        selectedLane = lane;
         if (lane < CanvasAudioSource::kMaxLanes)
         {
             const juce::uint64 bit = juce::uint64 (1) << lane;
@@ -1541,6 +1646,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     auto* hit = hitTest(e.getPosition(), what);
     if (hit == nullptr)
     {
+        selectedLane = -1;      // clicking the canvas is not about a track
         if (!e.mods.isShiftDown()) selected.clear();
         announceSelection();
         pointPanelAt(nullptr);
@@ -1972,6 +2078,9 @@ void CanvasView::togglePlay()
 
 void CanvasView::removeSelected()
 {
+    // A selected TRACK is what Remove is about when there is one: you clicked the header,
+    // not a block, and deleting "the selection" has to mean the thing you selected.
+    if (selected.empty() && selectedLane >= 0) { removeLane(selectedLane); return; }
     if (selected.empty()) return;
     pushUndo();
     items.erase(std::remove_if(items.begin(), items.end(),
@@ -2248,14 +2357,14 @@ public:
     {
         g.fillAll (MiraLookAndFeel::surface);
 
-        auto r = getLocalBounds().reduced (18, 16);
+        auto r = getLocalBounds().reduced (14, 14);
         g.setColour (MiraLookAndFeel::accent);
         g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (11.0f)));
         g.drawText ("MASTER", r.removeFromTop (18), juce::Justification::centredLeft, false);
         r.removeFromTop (10);
 
-        auto column = r.removeFromLeft (juce::jmin (54, r.getWidth()));
-        auto strip = column.withWidth (44);
+        auto strip = r.removeFromLeft (44);
+        r.removeFromLeft (36);        // the scale's own column, labelled below
 
         g.setColour (MiraLookAndFeel::surface.darker (0.5f));
         g.fillRoundedRectangle (strip.toFloat(), 4.0f);
@@ -2274,7 +2383,7 @@ public:
             g.fillRect ((float) strip.getX() + 1.0f, y, (float) strip.getWidth() - 2.0f, 1.0f);
             g.setColour (MiraLookAndFeel::textFaint.withAlpha (tick == 0.0 ? 0.9f : 0.6f));
             g.drawText (tick > 0 ? "+" + juce::String ((int) tick) : juce::String ((int) tick),
-                        juce::Rectangle<int> (strip.getRight() + 5, (int) y - 6, 30, 12),
+                        juce::Rectangle<int> (strip.getRight() + 5, (int) y - 6, 28, 12),
                         juce::Justification::centredLeft, false);
         }
 
@@ -2322,29 +2431,26 @@ public:
         g.drawRoundedRectangle (cap, 3.0f, 1.0f);
         g.fillRect (cap.getX() + 3.0f, cap.getCentreY() - 0.5f, cap.getWidth() - 6.0f, 1.0f);
 
-        // The numbers. A master with no readout is a control you cannot put back.
+        // The numbers, beside the strip. A master with no readout is a control you cannot
+        // put back where it was.
+        auto right = r.withHeight (22);
         g.setColour (MiraLookAndFeel::text);
-        g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (14.0f)));
-        auto right = juce::Rectangle<int> (strip.getRight() + 44, strip.getY(),
-                                            juce::jmax (60, getWidth() - strip.getRight() - 60), 22);
+        g.setFont (laf.sansMedium (MiraLookAndFeel::textSize (15.0f)));
         g.drawText (db() <= -60.0 ? juce::String ("-inf") : juce::String (db(), 1) + " dB",
-                    right, juce::Justification::centredLeft, false);
+                    right, juce::Justification::topLeft, false);
 
         const float peakDb = juce::Decibels::gainToDecibels (juce::jmax (hold[0], hold[1], 1.0e-6f));
         g.setColour (clipped ? MiraLookAndFeel::warn : MiraLookAndFeel::textDim);
-        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (11.0f)));
-        g.drawText (clipped ? "CLIP  " + juce::String (peakDb, 1) + " dB peak"
-                            : "peak " + juce::String (peakDb, 1) + " dB",
-                    right.withY (right.getBottom() + 4).withHeight (18),
-                    juce::Justification::centredLeft, false);
+        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (10.5f)));
+        g.drawText (clipped ? "CLIP " + juce::String (peakDb, 1) : "peak " + juce::String (peakDb, 1) + " dB",
+                    right.withY (right.getBottom() + 2).withHeight (16),
+                    juce::Justification::topLeft, false);
 
         g.setColour (MiraLookAndFeel::textFaint);
-        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (10.0f)));
-        g.drawFittedText ("The tracks sum here. Two takes at -1 dBFS is +5, four is +11 --\n"
-                          "which is why this meter exists and the track meters are not enough.\n\n"
-                          "click to set, cmd-click for unity, double-click to clear the clip",
-                          right.withY (right.getBottom() + 28).withHeight (90).withWidth (right.getWidth() + 40),
-                          juce::Justification::topLeft, 6);
+        g.setFont (laf.sansRegular (MiraLookAndFeel::textSize (9.5f)));
+        g.drawFittedText ("drag to set\ncmd-click unity\ndouble-click clears clip",
+                          right.withY (right.getBottom() + 26).withHeight (54),
+                          juce::Justification::topLeft, 3);
         faderBox = strip;
     }
 
@@ -2762,7 +2868,20 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     void resized() override
     {
         auto r = getLocalBounds();
-        auto bar = r.removeFromTop(34).reduced(8, 5);
+
+        // THE TOOLBAR LIVES IN THE TITLE BAR. The window's content runs under it, so the
+        // row that sat below the traffic lights is now beside them -- the unified strip
+        // every native macOS app has, and a whole row of canvas back.
+        //
+        // Measured from the window, not assumed: the bar's height and how far the traffic
+        // lights reach are both AppKit's to decide, and a hardcoded inset is a button
+        // hiding under a close button on the first machine that disagrees.
+        titleBarHeight = mira_ui::chrome::useFullSizeContentView(*this);
+        titleInset     = mira_ui::chrome::trafficLightInset(*this);
+
+        const int barHeight = juce::jmax(34, titleBarHeight);
+        auto bar = r.removeFromTop(barHeight).reduced(8, 5);
+        if (titleInset > 0) bar.removeFromLeft(juce::jmax(0, titleInset - 8));
         playButton.setBounds(bar.removeFromLeft(70));
         bar.removeFromLeft(6);
         loopButton.setBounds(bar.removeFromLeft(110));
@@ -2794,8 +2913,18 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
         if (!panelCollapsed)
         {
-            const int wanted = juce::roundToInt(r.getWidth() * panelFraction);
-            auto side = r.removeFromRight(juce::jlimit(260, juce::jmax(280, r.getWidth() - 320), wanted));
+            // EACH TAB ASKS FOR WHAT IT NEEDS. The master strip is a fader, a meter and
+            // two numbers; giving it a third of the window because the generator wants one
+            // is a third of the window spent on empty panel.
+            const int wanted = tab == SideTab::Master
+                                   ? 228
+                               : tab == SideTab::Files
+                                   ? juce::jmax(300, juce::roundToInt(r.getWidth() * panelFraction * 0.8))
+                                   : juce::roundToInt(r.getWidth() * panelFraction);
+            const int floorW = tab == SideTab::Master ? 200 : 300;
+            auto side = r.removeFromRight(juce::jlimit(floorW,
+                                                        juce::jmax(floorW + 20, r.getWidth() - 320),
+                                                        wanted + kTabStripWidth));
             // The tab strip is part of the panel and sits on its INSIDE edge, against the
             // canvas -- so the tabs are next to the thing they change.
             tabs.setBounds(side.removeFromLeft(kTabStripWidth));
@@ -2938,6 +3067,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::Rectangle<int> masterMeter;
     bool panelCollapsed = false;
     juce::Label hint, clock, meter;
+    int titleBarHeight = 0, titleInset = 0;
     // The side panel is one column with a tab strip, not a stack of panes fighting for
     // height. GENERATE is the block's generator; MASTER is the sum; FILES is every take
     // the project holds. Adding the next tool is an enum row and a component.
