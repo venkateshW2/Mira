@@ -639,17 +639,26 @@ void FolderTreeView::promptNewProject()
 
 void FolderTreeView::promptOpenProject()
 {
+    // A PROJECT IS A DOCUMENT, so Open asks for the document. It used to ask for a
+    // FOLDER, and a folder is ambiguous in exactly the way that bites: the canvas would
+    // take the first ".mira" it happened to find inside, or -- finding none, because the
+    // chooser landed one level up -- decide the folder WAS a new project and write an
+    // empty document into it. Either way the saved blocks did not come back.
+    //
+    // ".mira" spelled out rather than reached for from CanvasView::kExtension: the folder
+    // tree has no business including the canvas, and this is the one string they share.
     folderChooser = std::make_unique<juce::FileChooser>(
-        "Open a project folder", juce::File::getSpecialLocation(juce::File::userMusicDirectory));
-    auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
+        "Open a mira project", juce::File::getSpecialLocation(juce::File::userMusicDirectory),
+        "*.mira");
+    auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
     folderChooser->launchAsync(flags, [this](const juce::FileChooser& chooser) {
-        auto folder = chooser.getResult();
-        if (!folder.isDirectory()) return; // cancelled
-        registerProject(folder);
+        auto document = chooser.getResult();
+        if (!document.existsAsFile()) return; // cancelled
+        registerProject(document.getParentDirectory(), document);
     });
 }
 
-void FolderTreeView::registerProject(const juce::File& folder)
+void FolderTreeView::registerProject(const juce::File& folder, const juce::File& document)
 {
     auto path = folder.getFullPathName().toStdString();
     bool isNewRoot = true;
@@ -670,7 +679,10 @@ void FolderTreeView::registerProject(const juce::File& folder)
     // Only scan a root mira has never seen. Reopening a project must not re-trigger a
     // full scan of a folder that is already indexed and being added to take by take.
     if (isNewRoot && onFolderAdded) onFolderAdded(folder);
-    if (onProjectOpened) onProjectOpened(folder);
+    // The EXACT document when one was chosen, so a folder holding two of them cannot open
+    // the wrong one. Only the folder when there is none yet (New Project), which is the
+    // case the canvas creates a document for.
+    if (onProjectOpened) onProjectOpened(folder, document);
 }
 
 void FolderTreeView::promptRecategorizeRoot(const juce::File& folder)

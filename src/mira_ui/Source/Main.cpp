@@ -1230,7 +1230,7 @@ public:
         folderTree->onFolderAdded = [this](const juce::File& f) { enqueueScan(f.getFullPathName()); };
         // MIRA-GENERATE.md Phase 1: a project is just a folder root, so the tree already
         // knows how to make and file one -- all that is "current" about it lives here.
-        folderTree->onProjectOpened = [this](const juce::File& f) {
+        folderTree->onProjectOpened = [this](const juce::File& f, const juce::File& document) {
             setCurrentProject(f);
             rememberRecentProject(f);
             // Opening a project is how a session starts, so it opens the window that
@@ -1239,7 +1239,14 @@ public:
             // has a document. File > New Project otherwise leaves you looking at an empty
             // folder with no hint of what comes next.
             showCanvasWindow();
-            if (canvasWindow != nullptr) canvasWindow->getView().setProject(f);
+            // The document when Open named one, the folder otherwise. setProject on a
+            // folder guesses (first .mira wins, and writes an empty one when there is
+            // none) -- fine for New Project, wrong for Open.
+            if (canvasWindow != nullptr)
+            {
+                if (document.existsAsFile()) canvasWindow->getView().openDocument(document);
+                else                          canvasWindow->getView().setProject(f);
+            }
         };
         folderTree->onCollectionSelected = [this](int64_t collectionId) {
             fileList->setScope(juce::String(kCollectionScopePrefix) + juce::String(collectionId));
@@ -4754,6 +4761,9 @@ public:
 class MiraMenuBarModel : public juce::MenuBarModel
 {
 public:
+    // Its own range, clear of the canvas ids at 300 and the shared 700 action space.
+    static constexpr int kRecentFirst = 400;
+
 
     std::function<void()> onAddFolder;
     std::function<void()> onAddFiles;
@@ -4801,6 +4811,9 @@ public:
     std::function<bool()> hasCanvas;
     std::function<void(int)> onCanvasAction;
 
+    std::function<juce::StringArray()> getRecent;
+    std::function<void(int)> onRecentChosen;
+
     juce::StringArray getMenuBarNames() override
     {
         // "Cues" is top-level rather than a section inside Segments -- review round 7, item
@@ -4817,6 +4830,15 @@ public:
         {
             menu.addItem(20, "New Project...");
             menu.addItem(21, "Open Project...");
+            {
+                // Recents existed but only the tray and the launch window ever showed
+                // them -- and the launch window is gone the moment a session starts.
+                juce::PopupMenu recentMenu;
+                const auto recent = getRecent ? getRecent() : juce::StringArray {};
+                for (int i = 0; i < recent.size(); ++i)
+                    recentMenu.addItem(kRecentFirst + i, juce::File(recent[i]).getFileName());
+                menu.addSubMenu("Open Recent", recentMenu, !recent.isEmpty());
+            }
             menu.addSeparator();
             menu.addItem(23, "Reload from Library");
             menu.addSeparator();
@@ -4926,6 +4948,8 @@ public:
         else if (menuItemID == 6 && onAudioSettings) onAudioSettings();
         else if (menuItemID == 4 && onUndo) onUndo();
         else if (menuItemID == 5 && onRedo) onRedo();
+        else if (menuItemID >= kRecentFirst && menuItemID < kRecentFirst + 32 && onRecentChosen)
+            onRecentChosen(menuItemID - kRecentFirst);
         else if (menuItemID >= CanvasMenu::kFirst && menuItemID <= CanvasMenu::kLast && onCanvasAction)
             onCanvasAction(menuItemID);
         else if (menuItemID >= 700 && onAction) onAction(menuItemID); // Tags/Segments/View share one id space
@@ -4998,6 +5022,12 @@ public:
         };
         // (wired below, next to the other table callbacks)
         menuModel.onAction = [this](int actionId) { mainWindow->getMainComponent().performMenuAction(actionId); };
+        menuModel.getRecent = [this] { return mainWindow->getMainComponent().getRecentProjects(); };
+        menuModel.onRecentChosen = [this](int index) {
+            auto recent = mainWindow->getMainComponent().getRecentProjects();
+            if (juce::isPositiveAndBelow(index, recent.size()))
+                mainWindow->getMainComponent().openProject(juce::File(recent[index]));
+        };
         menuModel.hasCanvas = [this] { return mainWindow->getMainComponent().hasCanvasWindow(); };
         menuModel.onCanvasAction = [this](int id) { mainWindow->getMainComponent().performCanvasAction(id); };
         mainWindow->getMainComponent().onMenuStateChanged = [this] { menuModel.menuItemsChanged(); };

@@ -161,7 +161,9 @@ public:
     // stores it as the current project (window title, and the generate window's output
     // folder once Phase 2 lands) -- this class knows how to make one, not what being
     // "current" means.
-    std::function<void(const juce::File&)> onProjectOpened;
+    // The folder, and the .mira document inside it when Open chose one (an invalid File
+    // for New Project, which has no document yet).
+    std::function<void(const juce::File&, const juce::File&)> onProjectOpened;
 
     // Fires with every click on a folder row (left-click; right-click still opens the
     // "Scan this folder..." menu independently) — TASKS.md Phase 5 discussion: clicking
@@ -225,7 +227,7 @@ private:
     // and Open so a reopened project is filed exactly like a freshly created one --
     // addFolderRoot is idempotent, so opening a project already in the library is a
     // no-op plus a regrouping, never a duplicate row.
-    void registerProject(const juce::File& folder);
+    void registerProject(const juce::File& folder, const juce::File& document = {});
     void newGroupClicked();
     void promptRenameRoot(const juce::File& folder);
     void promptMoveToGroup(const juce::File& folder);

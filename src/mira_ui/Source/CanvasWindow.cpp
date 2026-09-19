@@ -2782,6 +2782,15 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         blockLabel.setFont(laf.sansMedium(MiraLookAndFeel::textSize(12.0f)));
         blockLabel.setColour(juce::Label::textColourId, MiraLookAndFeel::accent);
         addAndMakeVisible(blockLabel);
+
+        emptyHint.setText("No blocks yet.\n\nA block is what the generator writes into -- it owns the "
+                          "folder the take lands in and the prompt it is made from.\n\n"
+                          "+ Block, or drop audio onto the canvas.",
+                          juce::dontSendNotification);
+        emptyHint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(12.0f)));
+        emptyHint.setColour(juce::Label::textColourId, MiraLookAndFeel::textDim);
+        emptyHint.setJustificationType(juce::Justification::topLeft);
+        addChildComponent(emptyHint);
         startTimerHz(10);
         addAndMakeVisible(view);
     }
@@ -2914,7 +2923,9 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
                                : tab == SideTab::Files
                                    ? juce::jmax(300, juce::roundToInt(r.getWidth() * panelFraction * 0.8))
                                    : juce::roundToInt(r.getWidth() * panelFraction);
-            const int floorW = tab == SideTab::Master ? 200 : 300;
+            // The floor is per tab too, or the slim master strip is clamped straight back
+            // up to the generator's minimum and the width it asked for means nothing.
+            const int floorW = tab == SideTab::Master ? 120 : 300;
             auto side = r.removeFromRight(juce::jlimit(floorW,
                                                         juce::jmax(floorW + 20, r.getWidth() - 320),
                                                         wanted + kTabStripWidth));
@@ -2924,6 +2935,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             if (tab == SideTab::Generate)
             {
                 blockLabel.setBounds(side.removeFromTop(22).reduced(10, 0));
+                emptyHint.setBounds(side.reduced(14, 8));
                 if (panel != nullptr) panel->setBounds(side);
             }
             else if (tab == SideTab::Master) master->setBounds(side);
@@ -2939,12 +2951,22 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     void applyTab()
     {
         const bool open = !panelCollapsed;
-        if (panel != nullptr) panel->setVisible(open && tab == SideTab::Generate);
-        blockLabel.setVisible(open && tab == SideTab::Generate);
+        // NO BLOCK, NO GENERATOR. A block IS the generator's target -- it owns the folder
+        // the take lands in and the settings the take is made from -- so a generate pane
+        // over an empty canvas is a control with nothing behind it. It showed a prompt,
+        // a duration and a Generate button and could not answer where the audio would go.
+        // The tab stays in place and comes back the moment a block exists; what it shows
+        // in the meantime says what to do rather than going blank.
+        const bool haveBlocks = view.getBlockCount() > 0;
+        const bool generate = open && tab == SideTab::Generate;
+        if (panel != nullptr) panel->setVisible(generate && haveBlocks);
+        blockLabel.setVisible(generate && haveBlocks);
+        emptyHint.setVisible(generate && !haveBlocks);
         master->setVisible(open && tab == SideTab::Master);
         files->setVisible(open && tab == SideTab::Files);
         tabs.setVisible(open);
         if (open && tab == SideTab::Files) files->refresh();
+        lastBlockCount = view.getBlockCount();
     }
 
     void paint(juce::Graphics& g) override
@@ -3029,6 +3051,11 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
                                       ? khz(devRate)
                                       : khz(CanvasView::getTimelineRate()) + " -> " + khz(devRate));
 
+        // The generate pane appears and disappears with the first and last block, and
+        // blocks arrive from a drop, a menu, an undo -- too many paths to notify from each
+        // one. The count is already read here every tick; comparing it is free.
+        if (view.getBlockCount() != lastBlockCount) { applyTab(); resized(); }
+
         clock.setText(formatTime(view.getPositionSeconds()) + " / " + formatTime(view.getLengthSeconds())
                        + "   " + juce::String(view.getBlockCount()) + " blocks   " + rates,
                       juce::dontSendNotification);
@@ -3053,7 +3080,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::Rectangle<int> sideDivider;
     bool draggingSide = false;
     juce::File currentBlockFolder;
-    juce::Label blockLabel;
+    juce::Label blockLabel, emptyHint;
+    int lastBlockCount = -1;
     juce::TextButton playButton, loopButton, fitButton, deleteButton,
                      addBlockButton, addTrackButton, duplicateButton,
                      newProjectButton, openProjectButton, saveProjectButton, panelToggle;
