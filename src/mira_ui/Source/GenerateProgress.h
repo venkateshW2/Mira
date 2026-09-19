@@ -59,6 +59,15 @@ public:
         return running ? (juce::Time::getMillisecondCounter() - startMs) / 1000.0 : 0.0;
     }
 
+    // How far along, for anyone drawing their own indicator -- the canvas paints one ON
+    // the block being generated into. Negative when nothing is running, so "not running"
+    // and "just started" cannot be confused.
+    double fraction() const
+    {
+        if (!running) return -1.0;
+        return estimate > 0.0 ? juce::jlimit(0.01, 0.985, elapsedSeconds() / estimate) : 0.5;
+    }
+
     // Seconds per (step x second-of-audio) on this machine. Persisted by the owner.
     void setCalibration(double k) { calibration = k > 0.0 ? k : 0.0; }
     double getCalibration() const { return calibration; }

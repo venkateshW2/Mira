@@ -454,6 +454,10 @@ public:
     // the view and the explanation belongs where every other outcome already appears.
     void setStatus(const juce::String& text) { statusLabel.setText(text, juce::dontSendNotification); }
 
+    // How far the running generation has got, for an owner that wants to draw it
+    // somewhere of its own. Negative when nothing is running.
+    double generationFraction() const { return genProgress.fraction(); }
+
     void setNoTarget(const juce::String& reason = "select a block")
     {
         outputFolder = juce::File();

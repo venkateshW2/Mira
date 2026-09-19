@@ -21,6 +21,18 @@ void CanvasAudioSource::setArrangement(Arrangement::Ptr next)
             retired.remove(i);
 }
 
+void CanvasAudioSource::renderOffline(juce::AudioBuffer<float>& destination,
+                                      juce::int64 from, int numSamples)
+{
+    // Not attached to a device, or attached at a small block size: renderRange chunks to
+    // the scratch buffer, so it only has to be big enough to be useful, never big enough
+    // for the whole render.
+    if (scratch.getNumSamples() < kScratchSamples)
+        scratch.setSize(2, kScratchSamples, false, true, true);
+    juce::AudioSourceChannelInfo info (&destination, 0, numSamples);
+    renderRange(info, from, numSamples);
+}
+
 void CanvasAudioSource::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
     juce::ignoreUnused(sampleRate);

@@ -70,6 +70,16 @@ public:
     double getLengthSeconds() const { return player.getLengthSeconds(); }
     int getBlockCount() const { return static_cast<int>(items.size()); }
     void zoomBy(double factor, int aroundX);
+    // The generation strip drawn ON the block being generated into, so the progress is
+    // where you are looking rather than on the far side of the window. Negative means
+    // nothing is running.
+    void setGenerationProgress(double fraction);
+    // 0 = this block, 1 = its track, 2 = every track as its own file. All three render
+    // through the player, so what lands on disk is what the canvas plays.
+    void promptExport(int what, juce::int64 id);
+    // Moves every take no block is showing to the Trash. Asks first, with the count and
+    // the size.
+    void promptCleanup();
     // ONE SCALE for the fader and the meter, on the tracks and on the master. That is what
     // makes a channel strip readable: a fader sitting at -12 lines up with a meter reading
     // -12, and you can see the headroom you have left without arithmetic on a decibel.
@@ -214,7 +224,7 @@ private:
         double audioSeconds = 0.0;
     };
 
-    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan };
+    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain };
 
     const MiraLookAndFeel& laf;
     juce::AudioFormatManager& formats;
@@ -282,7 +292,8 @@ private:
     juce::int64 dragTarget = 0;
     double dragGrabSeconds = 0.0;
     double dragOriginStart = 0.0, dragOriginLength = 0.0, dragOriginOffset = 0.0;
-    double dragOriginFadeIn = 0.0, dragOriginFadeOut = 0.0;
+    double dragOriginFadeIn = 0.0, dragOriginFadeOut = 0.0, dragOriginGain = 0.0;
+    juce::Point<int> dragStart;
     int dragOriginLane = 0;
     juce::Point<int> dragFrom;
     // Where every selected block WAS when the drag began. Offsets are applied from these,
@@ -311,6 +322,12 @@ private:
 
     juce::Rectangle<int> nameBoxFor(int lane) const;
     void beginRename(int lane);
+    // Renaming a BLOCK, not a lane. The block's name IS its folder, so this moves the
+    // takes with it -- see the definition.
+    void beginRenameBlock(juce::int64 id);
+    bool renderToFile(const juce::File& dest, int lane, double fromSeconds, double toSeconds,
+                      juce::String& errorOut);
+    juce::String exportNameFor(const Visual* v, const juce::String& suffix) const;
     void commitRename();
     double laneDbAt(int lane) const { return lane < (int) laneDb.size() ? laneDb[(size_t) lane] : 0.0; }
     void setLaneDb(int lane, double db);
@@ -329,6 +346,11 @@ private:
     // because "not this bar" and "not this layer" are different questions and only one of
     // them has ever had a button.
     juce::Rectangle<int> blockMuteBox(const Visual& v) const;
+    juce::Rectangle<int> blockGainBox(const Visual& v) const;
+    double genFraction = -1.0;   // <0 = nothing generating
+    std::unique_ptr<juce::TextEditor> blockRenameEditor;
+    juce::int64 renamingBlock = 0;
+    void commitBlockRename();
     void setSelectionMuted(bool muted);
     static constexpr int kFadeGrab = 9;    // px either side of a fade handle
     static constexpr int kFadeBand = 14;   // px down from the block top that drags a fade

@@ -219,6 +219,323 @@ juce::Rectangle<int> CanvasView::nameBoxFor(int lane) const
                : juce::Rectangle<int>(8, laneToY(lane), kHeaderWidth - 84, laneHeight);
 }
 
+// RENAMING A BLOCK RENAMES ITS FOLDER. The name is not a label: blockFolderFor builds the
+// take folder out of it, so a block called "block 3" keeps its audio in "<project>/block 3"
+// and the generator writes there. Rename the block without moving the folder and the next
+// generation goes somewhere new while the takes it already has stay behind under the old
+// name -- which is the split-brain the folder-is-the-name rule exists to prevent.
+//
+// So the folder moves with it, and if it cannot, the rename does not happen.
+// ---- export ---------------------------------------------------------------------------
+//
+// WHAT YOU HEAR, NOT WHAT IS ON DISK. A block's take knows nothing about the trim, the
+// fades, the gain, the cut, or the crossfade with the block overlapping it -- all of that
+// lives on the canvas. Handing over the take file would hand over something that is not
+// the piece.
+//
+// So export renders through the PLAYER, at the timeline's 44,100: one mixer for the
+// speakers and the file, which is the only way the two cannot drift apart. A track is a
+// solo, not a second filter -- the lane masks already exist and already work.
+juce::String CanvasView::exportNameFor(const Visual* v, const juce::String& suffix) const
+{
+    // Name, key and tempo, with a missing field dropping its token rather than guessing
+    // one (convention 1, and the same rule Export.h follows for takes).
+    juce::String name = documentFile != juce::File() ? documentFile.getFileNameWithoutExtension()
+                                                     : juce::String("canvas");
+    if (v != nullptr && v->block.name.isNotEmpty()) name += "_" + v->block.name;
+    if (suffix.isNotEmpty()) name += "_" + suffix;
+    if (v != nullptr)
+    {
+        const auto field = promptField(v->settings, "Keyscale");
+        const auto bpm   = promptField(v->settings, "BPM");
+        if (field.isNotEmpty()) name += "_" + field.replace(" ", "").replace("#", "s");
+        if (bpm.isNotEmpty())   name += "_" + bpm + "bpm";
+    }
+    return juce::File::createLegalFileName(name);
+}
+
+bool CanvasView::renderToFile(const juce::File& dest, int lane, double fromSeconds,
+                              double toSeconds, juce::String& errorOut)
+{
+    const double rate = CanvasPlayer::getTimelineRate();
+    const auto from = (juce::int64) std::llround(juce::jmax(0.0, fromSeconds) * rate);
+    const auto to   = (juce::int64) std::llround(juce::jmax(fromSeconds, toSeconds) * rate);
+    const auto total = to - from;
+    if (total <= 0) { errorOut = "nothing to export"; return false; }
+
+    // One lane means SOLO that lane, using the mask the mixer already honours. Restored in
+    // every exit path below -- leaving a solo latched after an export would silence the
+    // canvas and look like a playback bug.
+    const auto savedMute = muteMask, savedSolo = soloMask;
+    if (lane >= 0 && lane < CanvasAudioSource::kMaxLanes)
+        player.setLaneMasks(muteMask, juce::uint64(1) << lane);
+
+    struct Restore {
+        CanvasPlayer& p; juce::uint64 m, s;
+        ~Restore() { p.setLaneMasks(m, s); }
+    } restore { player, savedMute, savedSolo };
+
+    dest.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::FileOutputStream> stream (dest.createOutputStream());
+    if (stream == nullptr) { errorOut = "could not write " + dest.getFullPathName(); return false; }
+    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor(stream.get(), rate, 2, 24, {}, 0));
+    if (writer == nullptr) { errorOut = "could not create a writer"; return false; }
+    stream.release();
+
+    juce::AudioBuffer<float> buffer (2, 8192);
+    for (juce::int64 done = 0; done < total;)
+    {
+        const int n = (int) juce::jmin<juce::int64>(buffer.getNumSamples(), total - done);
+        buffer.clear();
+        player.renderOffline(buffer, from + done, n);
+        if (!writer->writeFromAudioSampleBuffer(buffer, 0, n)) { errorOut = "write failed"; return false; }
+        done += n;
+    }
+    return true;
+}
+
+void CanvasView::promptExport(int what, juce::int64 id)
+{
+    const Visual* v = nullptr;
+    for (const auto& i : items) if (i->block.id == id) { v = i.get(); break; }
+    if (what == 0 && v == nullptr) return;
+
+    // Exporting while the transport runs would have two things pulling on one mixer.
+    if (player.isPlaying()) togglePlay();
+
+    const auto suggested = documentFile != juce::File()
+                               ? documentFile.getParentDirectory()
+                               : juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+    auto chooser = std::make_shared<juce::FileChooser>(
+        what == 2 ? "Export every track into a folder" : "Export to", suggested,
+        what == 2 ? juce::String() : juce::String("*.wav"));
+    const int flags = what == 2
+                          ? (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectDirectories)
+                          : (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                             | juce::FileBrowserComponent::warnAboutOverwriting);
+
+    juce::Component::SafePointer<CanvasView> safe (this);
+    chooser->launchAsync(flags, [safe, chooser, what, id](const juce::FileChooser& fc) {
+        if (safe == nullptr) return;
+        auto& self = *safe;
+        const auto picked = fc.getResult();
+        if (picked == juce::File()) return;
+
+        const Visual* v = nullptr;
+        for (const auto& i : self.items) if (i->block.id == id) { v = i.get(); break; }
+
+        juce::String error;
+        juce::StringArray written;
+        if (what == 0 && v != nullptr)
+        {
+            // The block alone, over its own span -- not the whole timeline with silence
+            // either side of it.
+            if (self.renderToFile(picked.withFileExtension("wav"), v->block.lane,
+                                  v->block.start, v->block.end(), error))
+                written.add(picked.getFileName());
+        }
+        else if (what == 1 && v != nullptr)
+        {
+            if (self.renderToFile(picked.withFileExtension("wav"), v->block.lane,
+                                  0.0, self.contentEnd(), error))
+                written.add(picked.getFileName());
+        }
+        else if (what == 2)
+        {
+            auto folder = picked.existsAsFile() ? picked.getParentDirectory() : picked;
+            folder.createDirectory();
+            const double end = self.contentEnd();
+            for (int lane = 0; lane < self.laneCount && error.isEmpty(); ++lane)
+            {
+                // Lanes with nothing on them are not silent files nobody asked for.
+                const Visual* first = nullptr;
+                for (const auto& i : self.items)
+                    if (i->block.lane == lane && i->block.hasAudio()) { first = i.get(); break; }
+                if (first == nullptr) continue;
+                const auto name = self.exportNameFor(first, self.laneNames[lane].isNotEmpty()
+                                                                ? self.laneNames[lane]
+                                                                : "track" + juce::String(lane + 1));
+                if (self.renderToFile(folder.getChildFile(name + ".wav"), lane, 0.0, end, error))
+                    written.add(name + ".wav");
+            }
+        }
+
+        if (self.onTakeNote)
+            self.onTakeNote(error.isNotEmpty()
+                                ? "export failed: " + error
+                                : "exported " + juce::String(written.size()) + " file"
+                                      + (written.size() == 1 ? "" : "s") + " - "
+                                      + written.joinIntoString(", "));
+    });
+}
+
+// ---- cleanup --------------------------------------------------------------------------
+//
+// A block keeps every take it ever generated -- that is deliberate, it is what makes
+// "go back to the one before" possible at all. But nine takes in ten are never used, and
+// at ~10 MB a minute a project fills a drive quickly.
+//
+// USED means "a block is pointing at it", nothing cleverer. Anything else is a take you
+// tried and moved on from. Deliberately conservative in two ways: it only ever looks
+// inside folders that belong to blocks ON THIS CANVAS, so a folder mira does not
+// recognise is never touched; and it goes to the TRASH, not to oblivion, because a
+// judgement about which audio you still want is not one a program should make final.
+void CanvasView::promptCleanup()
+{
+    if (!projectFolder.isDirectory())
+    {
+        if (onTakeNote) onTakeNote("save the canvas first - there is no project folder to clean");
+        return;
+    }
+
+    juce::StringArray keep;
+    juce::Array<juce::File> doomed;
+    juce::int64 bytes = 0;
+    for (const auto& i : items)
+        if (i->block.hasAudio()) keep.add(i->block.file.getFullPathName());
+
+    for (const auto& i : items)
+    {
+        const auto folder = blockFolderFor(*i);
+        if (!folder.isDirectory()) continue;
+        for (const auto& f : folder.findChildFiles(juce::File::findFiles, false, "*.wav"))
+        {
+            // Convention 9: never compare paths with ==. A block named with an accent in
+            // it gives one byte sequence from the document and another from the directory
+            // walk, and the take would read as unused and be deleted.
+            bool used = false;
+            for (const auto& k : keep)
+                if (mira::pathsEquivalent(k.toStdString(), f.getFullPathName().toStdString()))
+                    { used = true; break; }
+            if (used) continue;
+            if (doomed.contains(f)) continue;
+            doomed.add(f);
+            bytes += f.getSize();
+        }
+    }
+
+    if (doomed.isEmpty())
+    {
+        if (onTakeNote) onTakeNote("nothing to clean up - every take in this project is in use");
+        return;
+    }
+
+    const auto mb = juce::String(bytes / (1024.0 * 1024.0), 1);
+    juce::Component::SafePointer<CanvasView> safe (this);
+    juce::AlertWindow::showOkCancelBox(
+        juce::AlertWindow::QuestionIcon, "Clean up unused takes",
+        juce::String(doomed.size()) + " take" + (doomed.size() == 1 ? "" : "s")
+            + " (" + mb + " MB) are not on the canvas.\n\nThey go to the Trash, not away for good.",
+        "Move to Trash", "Cancel", nullptr,
+        juce::ModalCallbackFunction::create([safe, doomed](int result) {
+            if (safe == nullptr || result == 0) return;
+            int gone = 0;
+            for (const auto& f : doomed)
+            {
+                // The sidecar goes with its audio, or the folder fills with recipes for
+                // takes that no longer exist.
+                f.withFileExtension("json").moveToTrash();
+                if (f.moveToTrash()) ++gone;
+            }
+            if (safe->onTakeNote)
+                safe->onTakeNote("moved " + juce::String(gone) + " unused take"
+                                 + (gone == 1 ? "" : "s") + " to the Trash");
+        }));
+}
+
+void CanvasView::beginRenameBlock(juce::int64 id)
+{
+    commitBlockRename();
+    Visual* v = nullptr;
+    for (auto& i : items) if (i->block.id == id) { v = i.get(); break; }
+    if (v == nullptr) return;
+
+    const auto r = boundsOf(*v);
+    if (r.getHeight() < 46) return;
+    renamingBlock = id;
+    blockRenameEditor = std::make_unique<juce::TextEditor>();
+    blockRenameEditor->setText(v->block.name, juce::dontSendNotification);
+    blockRenameEditor->setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
+    auto box = r.reduced(6, 2).removeFromTop(14);
+    if (const auto gb = blockGainBox(*v); !gb.isEmpty())
+        box = box.withTrimmedLeft(gb.getRight() - r.getX() - 2);
+    blockRenameEditor->setBounds(box.withWidth(juce::jmin(220, box.getWidth())));
+    blockRenameEditor->setBorder(juce::BorderSize<int>(0));
+    blockRenameEditor->setIndents(2, 1);
+    blockRenameEditor->setColour(juce::TextEditor::backgroundColourId, MiraLookAndFeel::surface.darker(0.2f));
+    blockRenameEditor->setColour(juce::TextEditor::outlineColourId, MiraLookAndFeel::accent);
+    blockRenameEditor->setColour(juce::TextEditor::textColourId, MiraLookAndFeel::text);
+    blockRenameEditor->onReturnKey  = [this] { commitBlockRename(); };
+    blockRenameEditor->onEscapeKey  = [this] { renamingBlock = 0; blockRenameEditor.reset(); repaint(); };
+    blockRenameEditor->onFocusLost  = [this] { commitBlockRename(); };
+    addAndMakeVisible(*blockRenameEditor);
+    blockRenameEditor->selectAll();
+    blockRenameEditor->grabKeyboardFocus();
+}
+
+void CanvasView::commitBlockRename()
+{
+    if (blockRenameEditor == nullptr || renamingBlock == 0) { renamingBlock = 0; return; }
+    const auto wanted = blockRenameEditor->getText().trim();
+    const auto id = renamingBlock;
+    renamingBlock = 0;
+    blockRenameEditor.reset();
+
+    Visual* v = nullptr;
+    for (auto& i : items) if (i->block.id == id) { v = i.get(); break; }
+    if (v == nullptr || wanted.isEmpty() || wanted == v->block.name) { repaint(); return; }
+
+    // A name that is not a usable folder name is not a usable block name.
+    const auto legal = juce::File::createLegalFileName(wanted);
+    if (legal.isEmpty()) { if (onTakeNote) onTakeNote("that name cannot be a folder"); repaint(); return; }
+    for (const auto& i : items)
+        if (i->block.id != id && i->block.name.equalsIgnoreCase(legal))
+        {
+            if (onTakeNote) onTakeNote("there is already a block called " + legal);
+            repaint();
+            return;
+        }
+
+    pushUndo();
+    const auto from = blockFolderFor(*v);
+    v->block.name = legal;
+    const auto to = blockFolderFor(*v);
+    if (from.isDirectory() && from != to)
+    {
+        if (from.moveFileTo(to))
+        {
+            // The block's file lived under the old folder, so it has to be re-pointed or
+            // the block is left holding a path that no longer exists.
+            if (v->block.hasAudio())
+                v->block.file = to.getChildFile(v->block.file.getFileName());
+        }
+        else
+        {
+            v->block.name = from.getFileName();   // put it back rather than split the two
+            if (onTakeNote) onTakeNote("could not rename the folder - the block keeps its name");
+            repaint();
+            return;
+        }
+    }
+    // The panel points at this block by id, so it has to be told the folder moved.
+    if (panelBlockId == id) pointPanelAt(v);
+    rebuildAudio();
+    markDirty();
+    repaint();
+}
+
+void CanvasView::setGenerationProgress(double fraction)
+{
+    const double next = fraction < 0.0 ? -1.0 : juce::jlimit(0.0, 1.0, fraction);
+    // Only when it MOVED enough to see. This is called from a 30 Hz timer over every
+    // block on the canvas, and repainting the world for a thousandth of a bar is how a
+    // progress indicator ends up costing more than the thing it is reporting on.
+    if (std::abs(next - genFraction) < 0.004 && (next < 0.0) == (genFraction < 0.0)) return;
+    genFraction = next;
+    repaint();
+}
+
 void CanvasView::beginRename(int lane)
 {
     commitRename();
@@ -280,6 +597,25 @@ void CanvasView::mouseDoubleClick(const juce::MouseEvent& e)
     Drag what = Drag::None;
     if (auto* hit = hitTest(e.getPosition(), what); hit != nullptr)
     {
+        // Double-click the gain box for unity -- the one gain value worth having an exact
+        // way back to.
+        if (blockGainBox(*hit).contains(e.getPosition()))
+        {
+            pushUndo();
+            hit->block.gainDb = 0.0;
+            rebuildAudio(); markDirty(); repaint();
+            return;
+        }
+        // Double-click the NAME to rename the block, the same gesture a lane already had.
+        const auto r = boundsOf(*hit);
+        if (r.getHeight() >= 46 && e.y - r.getY() <= 18
+            && e.x > blockGainBox(*hit).getRight())
+        {
+            selected.clear();
+            selected.insert(hit->block.id);
+            beginRenameBlock(hit->block.id);
+            return;
+        }
         selected.clear();
         selected.insert(hit->block.id);
         if (onRevealGenerator) onRevealGenerator();
@@ -315,6 +651,22 @@ juce::Rectangle<int> CanvasView::blockMuteBox(const Visual& v) const
     // is worse than no button.
     if (r.getHeight() < 46 || r.getWidth() < 52) return {};
     return { r.getX() + 5, r.getY() + 3, 15, 13 };
+}
+
+// The block's own gain, beside its mute. CANVAS.md listed "a gain handle on a block" as
+// open; the field and the mixing were already there (Block::gainDb, applied per voice in
+// CanvasEngine) with nothing on screen to move it.
+//
+// Drag, rather than a slider: a block is small and a real fader would cost more of it than
+// the waveform can spare. Double-click returns to unity, which is the only value anyone
+// ever wants to get back to exactly.
+juce::Rectangle<int> CanvasView::blockGainBox(const Visual& v) const
+{
+    auto mb = blockMuteBox(v);
+    if (mb.isEmpty()) return {};
+    auto r = boundsOf(v);
+    if (r.getWidth() < 96) return {};       // not at the cost of the name
+    return { mb.getRight() + 3, mb.getY(), 30, mb.getHeight() };
 }
 
 juce::File CanvasView::blockFolderFor(const Visual& v) const
@@ -606,6 +958,7 @@ void CanvasView::showBlockMenu(Visual& v)
     }
 
     const bool muted = v.block.muted;
+    const auto id = v.block.id;
     const bool hasFades = v.block.fadeIn > 0.0 || v.block.fadeOut > 0.0;
     const int shape = (int) v.block.fadeShape;
 
@@ -625,13 +978,21 @@ void CanvasView::showBlockMenu(Visual& v)
     m.addItem(7, "Cut at playhead");
     m.addItem(4, "Split into two at playhead");
     m.addItem(5, "Remove");
+    m.addSeparator();
+    m.addItem(8, "Rename block...");
+    // EXPORT WHAT YOU HEAR. The take on disk is the raw generation -- it knows nothing
+    // about the trim, the fades, the gain or where the audio was cut. Exporting the file
+    // would hand over something different from what the canvas plays.
+    m.addItem(20, "Export block...", v.block.hasAudio());
+    m.addItem(21, "Export this track...");
+    m.addItem(22, "Export every track...");
 
     juce::Component::SafePointer<CanvasView> safe (this);
     // AT THE MOUSE. withTargetComponent(this) anchors the menu to the whole canvas, which
     // is the size of the window -- so the menu opened at the canvas's top-left corner,
     // nowhere near the block you right-clicked.
     m.showMenuAsync(juce::PopupMenu::Options().withMousePosition(),
-                     [safe, muted] (int result)
+                     [safe, muted, id] (int result)
                      {
                          if (safe == nullptr || result == 0) return;
                          auto& self = *safe;
@@ -661,6 +1022,8 @@ void CanvasView::showBlockMenu(Visual& v)
                              self.announceSelection(); self.repaint();
                              return;
                          }
+                         if (result == 8) { self.beginRenameBlock(id); return; }
+                         if (result >= 20 && result <= 22) { self.promptExport(result - 20, id); return; }
                          if (result == 3) { self.duplicateSelection(); return; }
                          if (result == 4) { self.splitAtPlayhead();   return; }
                          if (result == 7) { self.cutAtPlayhead();     return; }
@@ -1379,6 +1742,20 @@ void CanvasView::paint(juce::Graphics& g)
                 g.drawText("M", mb, juce::Justification::centred, false);
             }
 
+            if (const auto gb = blockGainBox(*item); !gb.isEmpty())
+            {
+                const bool unity = std::abs(item->block.gainDb) < 0.05;
+                g.setColour(tint.withAlpha(unity ? 0.25f : 0.5f));
+                g.fillRoundedRectangle(gb.toFloat(), 2.5f);
+                g.setColour(unity ? MiraLookAndFeel::text.withAlpha(0.5f)
+                                  : MiraLookAndFeel::text.withAlpha(0.9f));
+                g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.0f)));
+                g.drawText(unity ? juce::String("0.0")
+                                 : juce::String(item->block.gainDb, 1).replace("-", juce::String(
+                                       juce::CharPointer_UTF8("\xe2\x88\x92"))),
+                           gb, juce::Justification::centred, false);
+            }
+
             g.setColour(isSelected ? MiraLookAndFeel::text : tint.brighter(0.4f));
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
             // "block1 _ name of the file": the block's own name AND what is in it. The
@@ -1388,8 +1765,10 @@ void CanvasView::paint(juce::Graphics& g)
                              + (item->block.hasAudio()
                                     ? "  -  " + item->block.file.getFileNameWithoutExtension()
                                     : juce::String());
+            const auto gb = blockGainBox(*item);
             auto headerRow = r.reduced(6, 2).removeFromTop(14)
-                               .withTrimmedLeft(mb.isEmpty() ? 0 : mb.getWidth() + 4);
+                               .withTrimmedLeft(gb.isEmpty() ? (mb.isEmpty() ? 0 : mb.getWidth() + 4)
+                                                             : gb.getRight() - r.getX() - 2);
 
             // Key and tempo on the RIGHT of the same row, so the name can be as long as it
             // likes without pushing them off.
@@ -1406,6 +1785,19 @@ void CanvasView::paint(juce::Graphics& g)
             }
 
             g.drawText(label, headerRow, juce::Justification::centredLeft, true);
+        }
+
+        // THE GENERATION HAPPENS ON THIS BLOCK, so the progress belongs on it. It used to
+        // live only in the side panel's status line -- the far side of the window from the
+        // thing being filled in, and invisible entirely when the panel was folded away.
+        if (genFraction >= 0.0 && item->block.id == panelBlockId)
+        {
+            auto strip = r.reduced(4, 0).removeFromBottom(5).withTrimmedBottom(2);
+            g.setColour(MiraLookAndFeel::surface.withAlpha(0.65f));
+            g.fillRoundedRectangle(strip.toFloat(), 2.0f);
+            g.setColour(MiraLookAndFeel::accent.withAlpha(0.9f));
+            g.fillRoundedRectangle(strip.toFloat().withWidth(
+                juce::jmax(4.0f, (float) strip.getWidth() * (float) genFraction)), 2.0f);
         }
     }
 
@@ -1636,6 +2028,10 @@ CanvasView::Visual* CanvasView::hitTest(juce::Point<int> p, Drag& what)
             if (std::abs(p.x - fo) <= kFadeGrab) { what = Drag::FadeOut; return it->get(); }
         }
 
+        // The gain box wins over trimming and moving: it is a control sitting ON the
+        // block, and a three-pixel miss that drags the whole block instead of nudging its
+        // level is the kind of thing that makes a control not worth having.
+        if (blockGainBox(**it).contains(p))     { what = Drag::Gain; return it->get(); }
         if (p.x - r.getX() <= kEdgeGrab)        what = Drag::TrimLeft;
         else if (r.getRight() - p.x <= kEdgeGrab) what = Drag::TrimRight;
         else                                     what = Drag::Move;
@@ -1758,6 +2154,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     // ONE snapshot per gesture, taken as the drag begins -- not per mouse event, or
     // undoing a slow drag would take fifty presses to get back where you started.
     if (what == Drag::Move || what == Drag::TrimLeft || what == Drag::TrimRight
+        || what == Drag::Gain
         || what == Drag::FadeIn || what == Drag::FadeOut) pushUndo();
 
     drag = what;
@@ -1774,6 +2171,8 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     dragOriginStart = hit->block.start;
     dragOriginLength = hit->block.length;
     dragOriginOffset = hit->block.sourceOffset;
+    dragOriginGain = hit->block.gainDb;
+    dragStart = e.getPosition();
     dragOriginLane = hit->block.lane;
     repaint();
 }
@@ -1854,6 +2253,15 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
             // is the thing an extend needs to know and a trim never meant to say.
             b.length = juce::jmax(0.05, dragOriginLength + deltaSeconds);
         }
+        else if (drag == Drag::Gain && b.id == dragTarget)
+        {
+            // Vertical, and inverted the way every fader is: up is louder. 0.08 dB per
+            // pixel gives the whole -24..+12 range in about 450 px of travel, which is
+            // more than the window is tall -- so you can be precise without the drag
+            // running out of screen.
+            b.gainDb = juce::jlimit(-24.0, 12.0,
+                                     dragOriginGain - (double) (e.y - dragStart.y) * 0.08);
+        }
         else if (drag == Drag::FadeIn && b.id == dragTarget)
         {
             // A fade can reach the whole block but no further -- past that it would be
@@ -1873,6 +2281,7 @@ void CanvasView::mouseUp(const juce::MouseEvent&)
 {
     faderLane = -1;
     const bool changed = drag == Drag::Move || drag == Drag::TrimLeft || drag == Drag::TrimRight
+                      || drag == Drag::Gain
                       || drag == Drag::FadeIn || drag == Drag::FadeOut;
     drag = Drag::None;
     marquee = {};
@@ -3022,6 +3431,20 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
 
     // One place that decides what the panel column is showing. Three setVisible calls in
     // three different handlers is how a panel ends up with two tools drawn over each other.
+    // THE DOCUMENT SHORTCUTS BELONG TO THE WINDOW, not to the canvas view. They were in
+    // CanvasView::keyPressed, which only ever fires when the CANVAS has keyboard focus --
+    // so Cmd-S did nothing the moment you had clicked into the prompt field, which is
+    // most of the time you would want to save. A key travels up from whatever is focused
+    // through its parents, and everything in this window is a child of this.
+    bool keyPressed(const juce::KeyPress& key) override
+    {
+        if (!key.getModifiers().isCommandDown()) return false;
+        if (key.getKeyCode() == 'S') { saveOrAsk();        return true; }
+        if (key.getKeyCode() == 'O') { promptOpenProject(); return true; }
+        if (key.getKeyCode() == 'N') { promptNewProject();  return true; }
+        return false;
+    }
+
     void applyTab()
     {
         const bool open = !panelCollapsed;
@@ -3124,6 +3547,11 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
                                : (std::abs(devRate - CanvasView::getTimelineRate()) < 1.0
                                       ? khz(devRate)
                                       : khz(CanvasView::getTimelineRate()) + " -> " + khz(devRate));
+
+        // The generation strip on the block. Polled rather than pushed: the panel already
+        // owns the estimate and this timer already runs, so a callback would be a second
+        // path to the same number.
+        if (panel != nullptr) view.setGenerationProgress(panel->generationFraction());
 
         // The generate pane appears and disappears with the first and last block, and
         // blocks arrive from a drop, a menu, an undo -- too many paths to notify from each

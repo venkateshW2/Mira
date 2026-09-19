@@ -1195,7 +1195,8 @@ namespace CanvasMenu {
         kPlay = 300, kLoop, kFit,
         kAddTrack, kAddBlock, kDuplicate, kRemove,
         kSave,
-        kFirst = kPlay, kLast = kSave
+        kExportTracks, kCleanup,
+        kFirst = kPlay, kLast = kCleanup
     };
 }
 
@@ -3249,6 +3250,8 @@ public:
             case CanvasMenu::kRemove:    v.removeSelected(); break;
             // Save is the WINDOW's, not the view's: the project folder, the dirty flag and
             // the save-as prompt all live there.
+            case CanvasMenu::kExportTracks: v.promptExport(2, 0); break;
+            case CanvasMenu::kCleanup:      v.promptCleanup(); break;
             case CanvasMenu::kSave:      canvasWindow->saveProject(); break;
             default: break;
         }
@@ -4904,6 +4907,9 @@ public:
             menu.addItem(CanvasMenu::kAddBlock, "Add Block", live, false);
             menu.addItem(CanvasMenu::kDuplicate, "Duplicate", live, false);
             menu.addItem(CanvasMenu::kRemove, "Remove", live, false);
+            menu.addSeparator();
+            menu.addItem(CanvasMenu::kExportTracks, "Export Every Track...", live, false);
+            menu.addItem(CanvasMenu::kCleanup, "Clean Up Unused Takes...", live, false);
             menu.addSeparator();
             menu.addItem(CanvasMenu::kSave, "Save Canvas", live, false);
         }

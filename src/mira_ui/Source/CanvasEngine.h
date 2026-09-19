@@ -152,6 +152,14 @@ public:
 
     void setLoopRange(double startSeconds, double endSeconds);
 
+    // OFFLINE RENDER, on the calling thread. Export goes through this so the file is
+    // mixed by exactly the code that plays it -- crossfades between overlapping blocks,
+    // fade shapes, per-block gain, mute, solo and the per-voice resampler included --
+    // rather than by a second implementation that would drift from the first the moment
+    // either changed. Honours the lane masks, which is what lets "export this track"
+    // be a solo rather than a filter written twice.
+    void renderOffline(juce::AudioBuffer<float>& destination, juce::int64 from, int numSamples);
+
     // Mute and solo as BITMASKS, updated atomically, so toggling either takes effect on
     // the next block with no rebuild. Rebuilding would reopen every file on disk just to
     // silence one lane, and the gap while it did would be audible.
@@ -252,6 +260,10 @@ public:
     float readAndClearPeak(int channel = -1) { return canvasSource.readAndClearPeak(channel); }
     void setMasterGain(float g) { canvasSource.setMasterGain(g); }
     float getMasterGain() const { return canvasSource.getMasterGain(); }
+    // For export. See CanvasAudioSource::renderOffline -- the point is that the file and
+    // the speakers come out of one mixer.
+    void renderOffline(juce::AudioBuffer<float>& destination, juce::int64 from, int numSamples)
+    { canvasSource.renderOffline(destination, from, numSamples); }
 
 private:
     juce::TimeSliceThread readThread { "canvas file reader" };
