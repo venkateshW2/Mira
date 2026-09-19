@@ -1,5 +1,10 @@
 #include "CanvasEngine.h"
 
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <vector>
+
 namespace mira::canvas {
 
 void CanvasAudioSource::setArrangement(Arrangement::Ptr next)
@@ -190,9 +195,12 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
                 float env = v.gain * laneLevel;
                 const juce::int64 at = intoVoice + i;
                 if (v.fadeInSamples > 0 && at < v.fadeInSamples)
-                    env *= static_cast<float>(at) / static_cast<float>(v.fadeInSamples);
+                    env *= fadeGain (static_cast<float>(at) / static_cast<float>(v.fadeInSamples),
+                                      v.fadeInShape);
                 if (v.fadeOutSamples > 0 && at >= v.lengthSamples - v.fadeOutSamples)
-                    env *= static_cast<float>(v.lengthSamples - at) / static_cast<float>(v.fadeOutSamples);
+                    env *= fadeGain (static_cast<float>(v.lengthSamples - at)
+                                          / static_cast<float>(v.fadeOutSamples),
+                                      v.fadeOutShape);
                 const float sample = src[i] * env;
                 voicePeak = juce::jmax(voicePeak, std::abs(sample));
                 dst[i] += sample;
@@ -262,9 +270,55 @@ void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatMa
 
     std::map<juce::String, std::shared_ptr<juce::AudioFormatReader>> stillUsed;
 
-    auto next = new Arrangement();
+    // ---- crossfades, worked out here rather than stored on the block -----------------
+    //
+    // Two blocks that OVERLAP ON THE SAME TRACK crossfade across the overlap: the earlier
+    // one fades out over it, the later one fades in. Only on the same track -- blocks on
+    // different tracks are meant to sound together, which is the whole point of stacking
+    // them, and crossfading those would be the canvas deciding your arrangement for you.
+    //
+    // Computed, not written back: the block keeps the fade YOU drew, and dragging the
+    // overlap apart restores it instead of leaving a fade you never asked for.
+    std::vector<Block> laid;
     for (const auto& b : blocks)
+        if (!b.muted) laid.push_back (b);     // a muted block crossfades with nothing
+
+    std::vector<FadeShape> inShape (laid.size()), outShape (laid.size());
+    for (size_t i = 0; i < laid.size(); ++i)
+        inShape[i] = outShape[i] = laid[i].fadeShape;
+
     {
+        std::map<int, std::vector<size_t>> byLane;
+        for (size_t i = 0; i < laid.size(); ++i) byLane[laid[i].lane].push_back (i);
+        for (auto& lane : byLane)
+        {
+            auto& idx = lane.second;
+            std::sort (idx.begin(), idx.end(),
+                       [&laid] (size_t a, size_t b) { return laid[a].start < laid[b].start; });
+            for (size_t k = 0; k + 1 < idx.size(); ++k)
+            {
+                auto& a = laid[idx[k]];
+                auto& b = laid[idx[k + 1]];
+                const double overlap = a.end() - b.start;
+                if (overlap <= 0.0) continue;
+                // Never longer than either block: a short block swallowed by a long one
+                // would otherwise be asked to fade for longer than it exists.
+                const double x = juce::jmin (overlap, a.length, b.length);
+                if (x <= 0.0) continue;
+                a.fadeOut = juce::jmax (a.fadeOut, x);
+                b.fadeIn  = juce::jmax (b.fadeIn,  x);
+                // Equal power across the join, so the sum holds level through the middle
+                // instead of dipping 3 dB.
+                outShape[idx[k]]     = FadeShape::EqualPower;
+                inShape[idx[k + 1]]  = FadeShape::EqualPower;
+            }
+        }
+    }
+
+    auto next = new Arrangement();
+    for (size_t bi = 0; bi < laid.size(); ++bi)
+    {
+        const auto& b = laid[bi];
         if (!b.file.existsAsFile() || b.length <= 0.0) continue;
 
         const auto key = b.file.getFullPathName();
@@ -283,6 +337,8 @@ void CanvasPlayer::rebuild(const std::vector<Block>& blocks, juce::AudioFormatMa
         v.fadeOutSamples = static_cast<juce::int64>(b.fadeOut * rate);
         v.gain           = juce::Decibels::decibelsToGain(static_cast<float>(b.gainDb));
         v.lane           = b.lane;
+        v.fadeInShape    = inShape[bi];
+        v.fadeOutShape   = outShape[bi];
         v.reader         = std::move(reader);
         next->totalSamples = juce::jmax(next->totalSamples, v.startSample + v.lengthSamples);
         next->voices.push_back(std::move(v));

@@ -286,17 +286,12 @@ void CanvasView::addEmptyBlock()
     // thirty seconds long -- and a full-window frame on an empty canvas reads as an error
     // rather than as an invitation.
     constexpr double kNewBlockSeconds = 8.0;
+    // A NEW BLOCK ALWAYS OPENS ON A NEW TRACK. Hunting for a free gap on an existing
+    // track put two unrelated blocks on one fader, and a track is the thing you mix with
+    // -- so a block that arrives sharing one arrives already mixed into something else.
+    // The exception is the very first block on an empty canvas, which has a track waiting.
     int lane = 0;
-    for (; lane < laneCount; ++lane)
-    {
-        bool clash = false;
-        for (const auto& i : items)
-            if (i->block.lane == lane && i->block.start < at + kNewBlockSeconds && i->block.end() > at) clash = true;
-        if (!clash) break;
-    }
-    // Every existing track is busy here, so make one -- rather than dropping the block on
-    // a track that does not exist yet and leaving a gap in the numbering.
-    if (lane >= laneCount) { addLane(); lane = laneCount - 1; }
+    if (!items.empty()) { addLane(); lane = laneCount - 1; }
 
     auto v = std::make_unique<Visual>();
     v->block.lane = lane;
@@ -304,6 +299,7 @@ void CanvasView::addEmptyBlock()
     v->block.length = kNewBlockSeconds;
     v->block.id = nextId++;
     v->block.name = nextBlockName();
+    v->block.colour = lane;    // born here, and it keeps this colour wherever it goes
     if (laneNames[lane].isEmpty()) laneNames.set(lane, "track " + juce::String(lane + 1));
     laneCount = juce::jmax(laneCount, lane + 1);
     selected.clear();
@@ -387,6 +383,78 @@ void CanvasView::chooseTakeForSelection(const juce::File& take)
     }
 }
 
+void CanvasView::setSelectionMuted(bool muted)
+{
+    if (selected.empty()) return;
+    for (auto& i : items)
+        if (selected.count(i->block.id)) i->block.muted = muted;
+    // A rebuild rather than an atomic bit, unlike the TRACK mute. A muted block is left
+    // out of the arrangement entirely, which is also what keeps it from crossfading with
+    // the block next to it -- an inaudible block pulling its neighbour down is worse than
+    // no mute at all. Readers are cached, so the rebuild costs nothing on disk.
+    rebuildAudio();
+    markDirty();
+    repaint();
+}
+
+void CanvasView::showBlockMenu(Visual& v)
+{
+    // Right-clicking something you have not selected selects it first. Otherwise the menu
+    // is about one block and the action lands on another.
+    if (selected.count(v.block.id) == 0)
+    {
+        selected.clear();
+        selected.insert(v.block.id);
+        pointPanelAt(&v);
+    }
+
+    const bool muted = v.block.muted;
+    const bool hasFades = v.block.fadeIn > 0.0 || v.block.fadeOut > 0.0;
+    const int shape = (int) v.block.fadeShape;
+
+    juce::PopupMenu fades;
+    fades.addItem(10, "Linear",      true, shape == 0);
+    fades.addItem(11, "Equal power", true, shape == 1);
+    fades.addItem(12, "Exponential", true, shape == 2);
+
+    juce::PopupMenu m;
+    m.addSectionHeader(v.block.name);
+    m.addItem(1, muted ? "Unmute block" : "Mute block");
+    m.addSubMenu("Fade shape", fades);
+    m.addItem(2, "Clear fades", hasFades);
+    m.addSeparator();
+    m.addItem(3, "Duplicate");
+    m.addItem(4, "Split at playhead");
+    m.addItem(5, "Remove");
+
+    juce::Component::SafePointer<CanvasView> safe (this);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+                     [safe, muted] (int result)
+                     {
+                         if (safe == nullptr || result == 0) return;
+                         auto& self = *safe;
+                         if (result == 1) { self.setSelectionMuted(!muted); return; }
+                         if (result == 2)
+                         {
+                             for (auto& i : self.items)
+                                 if (self.selected.count(i->block.id))
+                                     i->block.fadeIn = i->block.fadeOut = 0.0;
+                             self.rebuildAudio(); self.markDirty(); self.repaint();
+                             return;
+                         }
+                         if (result == 3) { self.duplicateSelection(); return; }
+                         if (result == 4) { self.splitAtPlayhead();   return; }
+                         if (result == 5) { self.removeSelected();    return; }
+                         if (result >= 10 && result <= 12)
+                         {
+                             for (auto& i : self.items)
+                                 if (self.selected.count(i->block.id))
+                                     i->block.fadeShape = (FadeShape) (result - 10);
+                             self.rebuildAudio(); self.markDirty(); self.repaint();
+                         }
+                     });
+}
+
 void CanvasView::announceSelection() {}
 
 void CanvasView::pointPanelAt(const Visual* v)
@@ -452,6 +520,9 @@ void CanvasView::writeTo(const juce::File& miraFile) const
         o->setProperty("fadeIn", i->block.fadeIn);
         o->setProperty("fadeOut", i->block.fadeOut);
         o->setProperty("gainDb", i->block.gainDb);
+        o->setProperty("colour", i->block.colour);
+        o->setProperty("muted", i->block.muted);
+        o->setProperty("fadeShape", (int) i->block.fadeShape);
         if (i->block.hasAudio())
         {
             // Relative when it lives under the document, absolute when it does not. A
@@ -513,6 +584,11 @@ bool CanvasView::readFrom(const juce::File& miraFile)
             v->block.fadeIn = (double) b.getProperty("fadeIn", 0.0);
             v->block.fadeOut = (double) b.getProperty("fadeOut", 0.0);
             v->block.gainDb = (double) b.getProperty("gainDb", 0.0);
+            // Documents written before blocks owned a colour fall back to their track,
+            // which is exactly what they looked like when they were saved.
+            v->block.colour = (int) b.getProperty("colour", v->block.lane);
+            v->block.muted = (bool) b.getProperty("muted", false);
+            v->block.fadeShape = (FadeShape) juce::jlimit(0, 2, (int) b.getProperty("fadeShape", 0));
             v->block.id = nextId++;
             v->settings = b.getProperty("settings", {});
             laneCount = juce::jmax(laneCount, v->block.lane + 1);
@@ -685,7 +761,10 @@ void CanvasView::paint(juce::Graphics& g)
             continue;
         }
 
-        const auto tint = laneColour(item->block.lane);
+        // The BLOCK's colour, not the track's. Dragging a block to another track used to
+        // recolour it, so the one thing you were following down a stack changed identity
+        // exactly when you moved it.
+        const auto tint = laneColour(item->block.colour);
         g.setColour(tint.withAlpha(laneMuted ? 0.07f : 0.17f));
         g.fillRoundedRectangle(r.toFloat(), 5.0f);
 
@@ -701,30 +780,63 @@ void CanvasView::paint(juce::Graphics& g)
                                        item->block.sourceOffset + item->block.length, 1.0f);
         }
 
-        // The fades, drawn as the wedges they are, same as the take waveform does.
-        if (item->block.fadeIn > 0.0 || item->block.fadeOut > 0.0)
+        // The fades, drawn along the CURVE the mixer actually applies -- fadeGain() is the
+        // same function CanvasEngine uses per sample. A straight wedge over a sine fade is
+        // a picture of something the audio is not doing, and the take editor has already
+        // been caught drawing a selection nobody could see.
         {
-            g.setColour(MiraLookAndFeel::surface.withAlpha(0.55f));
-            if (item->block.fadeIn > 0.0)
+            const float top = (float) r.getY(), bottom = (float) r.getBottom();
+            const float h = bottom - top;
+            auto wedge = [&] (float edgeX, float w, bool rising)
             {
-                const int w = juce::roundToInt(item->block.fadeIn * pixelsPerSecond);
+                if (w <= 0.5f) return;
                 juce::Path p;
-                p.startNewSubPath((float) r.getX(), (float) r.getY());
-                p.lineTo((float) (r.getX() + w), (float) r.getY());
-                p.lineTo((float) r.getX(), (float) r.getBottom());
+                p.startNewSubPath(edgeX, bottom);
+                constexpr int kSteps = 24;
+                for (int k = 0; k <= kSteps; ++k)
+                {
+                    const float t = (float) k / (float) kSteps;
+                    const float gain = fadeGain(t, item->block.fadeShape);
+                    p.lineTo(edgeX + (rising ? t * w : -t * w), bottom - gain * h);
+                }
+                p.lineTo(edgeX + (rising ? w : -w), top);
+                p.lineTo(edgeX, top);
                 p.closeSubPath();
+                g.setColour(MiraLookAndFeel::surface.withAlpha(0.6f));
                 g.fillPath(p);
-            }
-            if (item->block.fadeOut > 0.0)
+                g.setColour(tint.brighter(0.5f).withAlpha(0.7f));
+                g.strokePath(p, juce::PathStrokeType(1.0f));
+            };
+            wedge((float) r.getX(),     (float) (item->block.fadeIn  * pixelsPerSecond), true);
+            wedge((float) r.getRight(), (float) (item->block.fadeOut * pixelsPerSecond), false);
+
+            // The handles, on the selected block only. Always shown once selected, even at
+            // zero fade -- a grab point you cannot see is a feature nobody finds.
+            if (isSelected && r.getHeight() >= 26)
             {
-                const int w = juce::roundToInt(item->block.fadeOut * pixelsPerSecond);
-                juce::Path p;
-                p.startNewSubPath((float) r.getRight(), (float) r.getY());
-                p.lineTo((float) (r.getRight() - w), (float) r.getY());
-                p.lineTo((float) r.getRight(), (float) r.getBottom());
-                p.closeSubPath();
-                g.fillPath(p);
+                g.setColour(MiraLookAndFeel::text.withAlpha(0.9f));
+                const int fi = r.getX() + juce::roundToInt(item->block.fadeIn * pixelsPerSecond);
+                const int fo = r.getRight() - juce::roundToInt(item->block.fadeOut * pixelsPerSecond);
+                for (int hx : { fi, fo })
+                    g.fillRoundedRectangle((float) (juce::jlimit(r.getX(), r.getRight() - 7, hx - 3)),
+                                            (float) (r.getY() + 3), 7.0f, 7.0f, 2.0f);
             }
+        }
+
+        // A MUTED BLOCK has to read as muted at a glance, not on inspection: hatched, so
+        // it is distinguishable from a quiet one even in a screenshot.
+        if (item->block.muted)
+        {
+            g.setColour(MiraLookAndFeel::surface.withAlpha(0.72f));
+            g.fillRoundedRectangle(r.toFloat(), 5.0f);
+            // CLIPPED to the block. Without this the hatching runs the full width of the
+            // lane, so a muted block reads as a muted TRACK -- the one thing it is not.
+            juce::Graphics::ScopedSaveState clip (g);
+            g.reduceClipRegion(r);
+            g.setColour(tint.withAlpha(0.35f));
+            for (int x = r.getX() - r.getHeight(); x < r.getRight(); x += 9)
+                g.drawLine((float) x, (float) r.getBottom(),
+                            (float) (x + r.getHeight()), (float) r.getY(), 1.0f);
         }
 
         g.setColour(isSelected ? MiraLookAndFeel::text : tint.withAlpha(0.55f));
@@ -737,7 +849,8 @@ void CanvasView::paint(juce::Graphics& g)
             // "block1 _ name of the file": the block's own name AND what is in it. The
             // block name alone says nothing about which take you chose, and the filename
             // alone loses which part of the piece this is.
-            const auto label = item->block.name
+            const auto label = juce::String(item->block.muted ? "M  " : "")
+                             + item->block.name
                              + (item->block.hasAudio()
                                     ? "  -  " + item->block.file.getFileNameWithoutExtension()
                                     : juce::String());
@@ -906,6 +1019,19 @@ CanvasView::Visual* CanvasView::hitTest(juce::Point<int> p, Drag& what)
     {
         auto r = boundsOf(**it);
         if (!r.contains(p)) continue;
+        const auto& b = (*it)->block;
+
+        // The fade handles ride the TOP of the block, where the wedge meets the edge, and
+        // they win over trimming there. Trim still has the whole height below the band, so
+        // one corner is not asked to mean two things at the same y.
+        if (r.getHeight() >= 26 && p.y - r.getY() <= kFadeBand)
+        {
+            const int fi = r.getX() + juce::roundToInt(b.fadeIn * pixelsPerSecond);
+            const int fo = r.getRight() - juce::roundToInt(b.fadeOut * pixelsPerSecond);
+            if (std::abs(p.x - fi) <= kFadeGrab) { what = Drag::FadeIn;  return it->get(); }
+            if (std::abs(p.x - fo) <= kFadeGrab) { what = Drag::FadeOut; return it->get(); }
+        }
+
         if (p.x - r.getX() <= kEdgeGrab)        what = Drag::TrimLeft;
         else if (r.getRight() - p.x <= kEdgeGrab) what = Drag::TrimRight;
         else                                     what = Drag::Move;
@@ -921,6 +1047,8 @@ void CanvasView::mouseMove(const juce::MouseEvent& e)
     hitTest(e.getPosition(), what);
     setMouseCursor(what == Drag::TrimLeft || what == Drag::TrimRight
                        ? juce::MouseCursor::LeftRightResizeCursor
+                   : (what == Drag::FadeIn || what == Drag::FadeOut)
+                       ? juce::MouseCursor::PointingHandCursor
                        : juce::MouseCursor::NormalCursor);
 }
 
@@ -994,8 +1122,18 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
         selected.insert(hit->block.id);
     }
 
+    if (e.mods.isPopupMenu())
+    {
+        drag = Drag::None;
+        repaint();
+        showBlockMenu(*hit);
+        return;
+    }
+
     drag = what;
     dragTarget = hit->block.id;
+    dragOriginFadeIn  = hit->block.fadeIn;
+    dragOriginFadeOut = hit->block.fadeOut;
     announceSelection();
     // Selecting a block IS opening its generator now that the panel is always on screen.
     pointPanelAt(hit);
@@ -1058,7 +1196,11 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
             if (origin == dragOrigins.end()) continue;
             const int laneShift = yToLane(e.y) - dragOriginLane;
             b.start = juce::jmax(0.0, origin->second.first + deltaSeconds);
-            b.lane = juce::jmax(0, origin->second.second + laneShift);
+            // CLAMPED TO TRACKS THAT EXIST. Dragging below the last track used to drop the
+            // block onto empty space -- a lane with no header, no fader and no mute, which
+            // is not a track, so the block was somewhere you could not mix it from.
+            b.lane = juce::jlimit(0, juce::jmax(0, laneCount - 1),
+                                  origin->second.second + laneShift);
         }
         else if (drag == Drag::TrimLeft && b.id == dragTarget)
         {
@@ -1076,6 +1218,16 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
         {
             b.length = juce::jmax(0.05, dragOriginLength + deltaSeconds);
         }
+        else if (drag == Drag::FadeIn && b.id == dragTarget)
+        {
+            // A fade can reach the whole block but no further -- past that it would be
+            // asked to fade for longer than there is audio to fade.
+            b.fadeIn = juce::jlimit(0.0, b.length, dragOriginFadeIn + deltaSeconds);
+        }
+        else if (drag == Drag::FadeOut && b.id == dragTarget)
+        {
+            b.fadeOut = juce::jlimit(0.0, b.length, dragOriginFadeOut - deltaSeconds);
+        }
     }
 
     repaint();
@@ -1084,7 +1236,8 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
 void CanvasView::mouseUp(const juce::MouseEvent&)
 {
     faderLane = -1;
-    const bool changed = drag == Drag::Move || drag == Drag::TrimLeft || drag == Drag::TrimRight;
+    const bool changed = drag == Drag::Move || drag == Drag::TrimLeft || drag == Drag::TrimRight
+                      || drag == Drag::FadeIn || drag == Drag::FadeOut;
     drag = Drag::None;
     marquee = {};
     if (changed) { rebuildAudio(); markDirty(); }
@@ -1360,7 +1513,11 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
         reader.reset();
 
         auto v = std::make_unique<Visual>();
-        v->block.lane = juce::jlimit(0, laneCount, lane);
+        // Each dropped file is its own block, so each gets its own track -- the same rule
+        // "+ Block" follows. Dropping four stems used to lay them end to end on one fader.
+        if (!items.empty()) { addLane(); lane = laneCount - 1; }
+        v->block.lane = juce::jlimit(0, juce::jmax(0, laneCount - 1), lane);
+        v->block.colour = v->block.lane;
         v->block.start = at;
         v->block.length = len;
         v->block.id = nextId++;
@@ -1396,7 +1553,8 @@ void CanvasView::addFiles(const juce::Array<juce::File>& files, double atSeconds
         selected.clear();
         selected.insert(v->block.id);
         items.push_back(std::move(v));
-        at += len;
+        // NOT `at += len`. Four stems dropped together belong at the same moment on four
+        // tracks, not one after another down a queue.
     }
     markDirty();
     rebuildAudio();

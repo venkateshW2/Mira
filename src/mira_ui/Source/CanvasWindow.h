@@ -142,7 +142,7 @@ private:
         juce::var settings;
     };
 
-    enum class Drag { None, Move, TrimLeft, TrimRight, Playhead, Marquee, Pan };
+    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan };
 
     const MiraLookAndFeel& laf;
     juce::AudioFormatManager& formats;
@@ -196,6 +196,7 @@ private:
     juce::int64 dragTarget = 0;
     double dragGrabSeconds = 0.0;
     double dragOriginStart = 0.0, dragOriginLength = 0.0, dragOriginOffset = 0.0;
+    double dragOriginFadeIn = 0.0, dragOriginFadeOut = 0.0;
     int dragOriginLane = 0;
     juce::Point<int> dragFrom;
     // Where every selected block WAS when the drag began. Offsets are applied from these,
@@ -217,6 +218,12 @@ private:
     void commitRename();
     double laneDbAt(int lane) const { return lane < (int) laneDb.size() ? laneDb[(size_t) lane] : 0.0; }
     void setLaneDb(int lane, double db);
+    // Right-click on a block: mute it, change its fade shape, split or remove it. The
+    // things a block IS, in one place, rather than five shortcuts to remember.
+    void showBlockMenu(Visual& v);
+    void setSelectionMuted(bool muted);
+    static constexpr int kFadeGrab = 9;    // px either side of a fade handle
+    static constexpr int kFadeBand = 14;   // px down from the block top that drags a fade
     int laneToY(int lane) const { return topRuler + lane * laneHeight; }
     int yToLane(int y) const { return juce::jmax(0, (y - topRuler) / laneHeight); }
     // Declared after Visual, which they take by reference.

@@ -47,6 +47,51 @@ N takes each peaking near full scale sum to N times full scale — two at −1 d
 is +11. Keeping alternates inside the block removes the clipping risk by construction
 rather than by remembering to mute things.
 
+### A block carries its own properties
+
+A block is not a rectangle that borrows everything from the track under it. It has:
+
+| | |
+|---|---|
+| **a generator** | the real one, pointed at this block's folder |
+| **fades** | dragged on the block, with a shape — linear, equal power, exponential |
+| **a mute** | per block, not just per track |
+| **a colour** | **its own**, kept when it moves to another track |
+| **a name** | which is also its folder, and so its generation target |
+
+**Colour belongs to the block.** It used to come from whatever track the block sat on, so
+dragging a block to another track recoloured it — and the one thing you were following down
+a stack changed identity exactly when you moved it. A block takes its colour from the track
+it was *born* on and keeps it; the track headers keep their own.
+
+Fades are drawn along the curve the mixer actually applies: `fadeGain()` in
+[CanvasEngine.h](src/mira_ui/Source/CanvasEngine.h) is the same function the audio thread
+calls per sample. A straight wedge over a sine fade is a picture of something the audio is
+not doing, and mira has been caught drawing exactly that kind of lie before.
+
+### Blocks that overlap on the same track crossfade
+
+Automatically, across the overlap, **equal power** — two linear fades summing through their
+middle lose 3 dB and you hear the join as a dip. Only on the same track: blocks on
+different tracks are *meant* to sound together, and crossfading those would be the canvas
+deciding your arrangement for you.
+
+The crossfade is **computed at mix time, not written onto the block**. Drag the overlap
+apart and the fade you drew comes back, rather than leaving behind one you never asked for.
+A muted block crossfades with nothing — an inaudible block pulling its neighbour down is
+worse than no mute at all.
+
+### A new block always opens on a new track
+
+Hunting for a free gap on an existing track put two unrelated blocks on one fader, and a
+track is the thing you mix with — so a block arriving that way arrives already mixed into
+something else. Dropped files follow the same rule: four stems land on four tracks at the
+same moment, not end to end down one.
+
+Blocks are also **clamped to tracks that exist**. Dragging below the last track used to drop
+a block into empty space — a lane with no header, no fader and no mute, which is not a
+track, so the block was somewhere you could not mix it from.
+
 ### A track is a lane, and lanes just sum
 
 Stacking is the point: drums on one track, guitars on another, playing together. So tracks
@@ -175,7 +220,6 @@ replacement rather than be handed it.
 - [ ] **Sample rate handling for blocks.** Mixed-rate sources currently ride on the
       transport's resampler; export already does the right thing per take
       ([Export.cpp](src/mira_ui/Source/Export.cpp)) and the canvas should match it.
-- [ ] **Fades on blocks**, dragged on the block the way `WaveformView` does them.
 - [ ] **Zoom controls** — buttons and a fit-to-selection, not only `cmd-wheel` and `F`.
 - [ ] Undo. There is none, and `ValueTree` + `UndoManager` is the JUCE answer.
 - [ ] Gain handle on a block.
@@ -221,3 +265,5 @@ when it is notched. `G`/`H` do the same thing on every device and on a laptop wi
 to hand.
 | double-click a track name | rename |
 | double-click a block | open its generator |
+| right-click a block | mute, fade shape, clear fades, duplicate, split, remove |
+| drag a block's top corner | its fade in / out |

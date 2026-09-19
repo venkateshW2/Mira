@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -28,6 +30,26 @@
 // nobody can reproduce.
 namespace mira::canvas {
 
+// How a fade gets from silence to full. Linear is what a drawn wedge LOOKS like; equal
+// power is what a CROSSFADE needs, because two linear fades summing through their middle
+// lose 3 dB and you hear the join as a dip.
+enum class FadeShape { Linear = 0, EqualPower = 1, Exponential = 2 };
+
+// ONE curve, shared by the mixer and the drawing. A wedge drawn as a straight line over a
+// fade that is actually a sine is a picture of something the audio is not doing, and the
+// take editor has already been caught doing exactly that.
+inline float fadeGain (float t, FadeShape shape) noexcept
+{
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    switch (shape)
+    {
+        case FadeShape::EqualPower:  return std::sin (t * 1.5707963267948966f);
+        case FadeShape::Exponential: return t * t;
+        case FadeShape::Linear:
+        default:                     return t;
+    }
+}
+
 // One block on the canvas. Times are in SECONDS on the canvas timeline; `sourceOffset` is
 // where in the file the block starts, so trimming the left edge moves the offset rather
 // than the audio.
@@ -43,6 +65,15 @@ struct Block
     double fadeOut = 0.0;
     juce::String name;      // the BLOCK's name -- its folder, and what the track shows
     juce::int64 id = 0;
+    // The block's OWN colour, taken from the track it was born on and kept when it moves.
+    // Colour used to come from whatever track the block was sitting on, so dragging a
+    // block to another track recoloured it -- and a block that changes colour when you
+    // move it has no identity to follow down a stack.
+    int colour = 0;
+    // Muted PER BLOCK, as well as per track. A track mute answers "not this layer"; a
+    // block mute answers "not this bar", which is the question you ask while arranging.
+    bool muted = false;
+    FadeShape fadeShape = FadeShape::Linear;
     // An empty block has no file yet: a frame you placed before you generated into it.
     // That is the point of it -- lay out the shape of the piece first, fill it after.
     bool hasAudio() const { return file != juce::File(); }
@@ -73,6 +104,10 @@ public:
         juce::int64 fadeOutSamples = 0;
         float gain = 1.0f;
         double rateRatio = 1.0;          // source rate / timeline rate; 1.0 for 44.1 on 44.1
+        // Per EDGE, not per block: an automatic crossfade forces equal power on the two
+        // edges that meet and leaves the block's other end alone.
+        FadeShape fadeInShape = FadeShape::Linear;
+        FadeShape fadeOutShape = FadeShape::Linear;
     };
 
     std::vector<Voice> voices;
