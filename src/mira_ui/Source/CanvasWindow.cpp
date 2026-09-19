@@ -3,6 +3,19 @@
 
 namespace mira::canvas {
 
+// A generator with nothing in it. Not the same as "no settings": no settings means we have
+// not looked yet and something else might know, and an empty recipe means there is nothing
+// to know -- which is what a new block is.
+static juce::var emptyRecipe()
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("prompt", "");
+    o->setProperty("negative_prompt", "");
+    o->setProperty("loras", juce::var(juce::Array<juce::var>{}));
+    return juce::var(o);
+}
+
+
 namespace {
 juce::String formatTime(double seconds)
 {
@@ -319,6 +332,7 @@ void CanvasView::addEmptyBlock()
     v->block.id = nextId++;
     v->block.name = nextBlockName();
     v->block.colour = lane;    // born here, and it keeps this colour wherever it goes
+    v->settings = emptyRecipe();   // a new block generates nothing until you tell it what
     if (laneNames[lane].isEmpty()) laneNames.set(lane, "track " + juce::String(lane + 1));
     laneCount = juce::jmax(laneCount, lane + 1);
     selected.clear();
@@ -527,19 +541,30 @@ double CanvasView::tailSecondsOf(const Visual& v) const
     return juce::jmax(0.0, v.block.length - soundingSecondsOf(v));
 }
 
-std::pair<double, double> CanvasView::selectionGeometry() const
+CanvasView::Geometry CanvasView::selectionGeometry() const
 {
     for (const auto& i : items)
         if (selected.size() == 1 && selected.count(i->block.id))
-            return { i->block.length, tailSecondsOf(*i) };
-    return { 0.0, 0.0 };
+            return { i->block.length, tailSecondsOf(*i), i->block.hasAudio() };
+    return { 0.0, 0.0, false };
 }
 
 void CanvasView::extendSelection(bool remix)
 {
     auto* v = singleSelection();
     if (v == nullptr || onExtendRequested == nullptr) return;
-    if (!v->block.hasAudio() || tailSecondsOf(*v) <= 0.05) return;
+    if (!v->block.hasAudio()) return;
+    if (!remix && tailSecondsOf(*v) <= 0.05) return;   // nothing to fill
+
+    // THE PROMPT ON SCREEN IS THE PROMPT THAT RUNS. Extend used to re-apply the block's
+    // stored recipe first, which overwrote whatever you had just typed -- you edited the
+    // prompt, pressed the button, and watched your edit disappear and the old trigger
+    // generate again. A visible, editable field that is silently ignored is worse than no
+    // field at all.
+    //
+    // Capturing it into the block first is what keeps the block's record honest: what it
+    // says it was made with is what it was actually made with.
+    syncPanelSettings();
 
     // Where the audio runs out INSIDE the block. Trimming the left edge moves the offset
     // rather than the audio, so the sounding part is shorter than the file by exactly that
@@ -549,10 +574,7 @@ void CanvasView::extendSelection(bool remix)
     // ended in ten seconds of silence used to hand the inpainter a range starting after
     // the silence, so the silence stayed baked in and the continuation began late.
     const double sounding = soundingSecondsOf(*v);
-    // Whatever you typed for a remix; the block's own recipe for an extend, so a
-    // continuation continues in the voice that made the thing it continues.
-    onExtendRequested(v->block.file, sounding, v->block.length,
-                       remix ? juce::var() : v->settings);
+    onExtendRequested(v->block.file, sounding, v->block.length, remix);
 }
 
 void CanvasView::announceSelection()
@@ -562,7 +584,7 @@ void CanvasView::announceSelection()
     // to switch them off again.
     if (onBlockGeometry == nullptr) return;
     const auto g = selectionGeometry();
-    onBlockGeometry(g.first, g.second);
+    onBlockGeometry(g.length, g.tail, g.hasAudio);
 }
 
 void CanvasView::syncPanelSettings()
@@ -584,7 +606,7 @@ void CanvasView::pointPanelAt(const Visual* v)
     {
         panelBlockId = 0;
         onOpenGenerator({}, {}, {});
-        if (onBlockGeometry) onBlockGeometry(0.0, 0.0);
+        if (onBlockGeometry) onBlockGeometry(0.0, 0.0, false);
         return;
     }
     const auto folder = blockFolderFor(*v);
@@ -597,9 +619,11 @@ void CanvasView::pointPanelAt(const Visual* v)
     // freshly opened project had no stored settings, so every block copied the last one
     // looked at, and nothing ever appeared to change but the title.
     //
-    // Only when there is no take and no sidecar does the panel's current state carry over,
-    // which is the "a new block with the previous block's settings" case and the only one
-    // where there is nothing better to show.
+    // With no take and no sidecar the generator opens EMPTY. It used to inherit whatever
+    // was on screen, which meant a brand-new block arrived carrying the last block's
+    // prompt and LoRAs -- a recipe nobody chose for it, ready to generate from by
+    // accident. Copying a previous block's settings is what Duplicate is for, and it
+    // copies them explicitly.
     auto* mutableV = const_cast<Visual*>(v);
     if (mutableV->settings.isVoid() && v->block.hasAudio())
     {
@@ -610,8 +634,7 @@ void CanvasView::pointPanelAt(const Visual* v)
             if (parsed.isObject()) mutableV->settings = parsed;
         }
     }
-    if (mutableV->settings.isVoid() && onCaptureSettings != nullptr)
-        mutableV->settings = onCaptureSettings();
+    if (mutableV->settings.isVoid()) mutableV->settings = emptyRecipe();
 
     panelBlockId = v->block.id;
     onOpenGenerator(v->block.name
@@ -622,7 +645,7 @@ void CanvasView::pointPanelAt(const Visual* v)
     // AFTER the settings. applySettings restores the `seconds` the block was last
     // generated at, and the block's length is the newer answer -- you resized the frame
     // since then, and the frame is what says how long the part should be.
-    if (onBlockGeometry) onBlockGeometry(v->block.length, tailSecondsOf(*v));
+    if (onBlockGeometry) onBlockGeometry(v->block.length, tailSecondsOf(*v), v->block.hasAudio());
 }
 
 void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
@@ -641,7 +664,7 @@ void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
             setFileOn(*i, take);
             rebuildAudio();
             markDirty();
-            if (onBlockGeometry) onBlockGeometry(i->block.length, tailSecondsOf(*i));
+            if (onBlockGeometry) onBlockGeometry(i->block.length, tailSecondsOf(*i), i->block.hasAudio());
             repaint();
             return;
         }
@@ -1567,7 +1590,7 @@ void CanvasView::mouseUp(const juce::MouseEvent&)
         if (onBlockGeometry)
         {
             const auto g = selectionGeometry();
-            if (g.first > 0.0) onBlockGeometry(g.first, g.second);
+            if (g.length > 0.0) onBlockGeometry(g.length, g.tail, g.hasAudio);
         }
     }
     repaint();
@@ -2069,21 +2092,20 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             blockLabel.setVisible(true);
             resized();
         };
-        view.onBlockGeometry = [this](double lengthSeconds, double tailSeconds) {
+        view.onBlockGeometry = [this](double lengthSeconds, double tailSeconds, bool hasAudio) {
             // The block's length IS the duration. Resizing the frame is how you ask for a
             // different length, rather than typing a number somewhere else on screen.
             if (panel != nullptr) panel->setDuration(lengthSeconds);
-            const bool canFill = tailSeconds > 0.05;
-            extendButton.setEnabled(canFill);
-            remixButton.setEnabled(canFill);
+            // Extend needs somewhere to put the audio; remix only needs audio to remix.
+            extendButton.setEnabled(tailSeconds > 0.05);
+            remixButton.setEnabled(hasAudio && lengthSeconds > 0.0);
         };
         view.onExtendRequested = [this](const juce::File& take, double rangeStart,
-                                         double totalSeconds, const juce::var& settings) {
+                                         double totalSeconds, bool remix) {
             if (panel == nullptr) return;
-            // The block's own recipe FIRST when extending, so the prompt that generated
-            // what is already there is the prompt that continues it.
-            if (!settings.isVoid()) panel->applySettings(settings);
-            panel->generateExtension(take, rangeStart, totalSeconds);
+            // Neither one touches the prompt. What is on screen is what runs.
+            if (remix) panel->generateRemix(take, totalSeconds);
+            else       panel->generateExtension(take, rangeStart, totalSeconds);
         };
         view.onCaptureSettings = [this]() -> juce::var {
             return panel != nullptr ? panel->captureSettings() : juce::var();

@@ -148,15 +148,17 @@ public:
     // The block's geometry, which the generator reads as its duration: length is the
     // duration to generate, tail is how much of it is empty and therefore what an extend
     // would fill.
-    std::function<void(double lengthSeconds, double tailSeconds)> onBlockGeometry;
-    // Extend or remix the selected block. `settings` is the block's own recipe for an
-    // EXTEND -- continue what is already there, in the voice that made it -- and void for
-    // a REMIX, which keeps whatever you have just typed.
+    std::function<void(double lengthSeconds, double tailSeconds, bool hasAudio)> onBlockGeometry;
+    // Extend or remix the selected block, both using the prompt exactly as it stands on
+    // screen. EXTEND fills the empty tail and leaves the existing audio bit-exact; REMIX
+    // regenerates the whole block, guided by the take it already has.
     std::function<void(const juce::File& take, double rangeStart, double totalSeconds,
-                       const juce::var& settings)> onExtendRequested;
+                       bool remix)> onExtendRequested;
     void extendSelection(bool remix);
-    // Length and tail of the single selection, or {0,0}. What enables the two buttons.
-    std::pair<double, double> selectionGeometry() const;
+    // Length, tail and whether there is audio, for the single selection. What decides
+    // whether Extend and Remix can do anything.
+    struct Geometry { double length = 0.0, tail = 0.0; bool hasAudio = false; };
+    Geometry selectionGeometry() const;
     // Fold the panel's current state into whichever block it belongs to. Called before a
     // save and whenever the panel changes block, because otherwise a prompt typed and
     // never switched away from would not be in the document.

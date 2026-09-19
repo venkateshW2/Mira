@@ -947,6 +947,31 @@ bool GenerateContent::generateExtension(const juce::File& source, double rangeSt
     return true;
 }
 
+bool GenerateContent::generateRemix(const juce::File& source, double totalSeconds)
+{
+    if (!source.existsAsFile())
+    {
+        statusLabel.setText("the block has no take to remix", juce::dontSendNotification);
+        return false;
+    }
+    if (totalSeconds > secondsSlider.getMaximum() + 0.001)
+    {
+        const auto msg = "block is " + juce::String(totalSeconds, 1) + "s - the model tops out at "
+                       + juce::String(secondsSlider.getMaximum(), 0) + "s";
+        statusLabel.setText(msg, juce::dontSendNotification);
+        log(msg);
+        return false;
+    }
+
+    initAudio = source;
+    // INPAINT OFF. The take becomes init audio -- guidance for a new generation of the
+    // whole block -- rather than a thing to preserve and fill around.
+    inpaintToggle.setToggleState(false, juce::sendNotificationSync);
+    secondsSlider.setValue(totalSeconds, juce::sendNotificationSync);
+    generate();
+    return true;
+}
+
 // ---- MIRA-GENERATE.md Phase 7: share -----------------------------------------------
 
 // Reads the child's stdout off the message thread, same shape as PrepareWindow's reader.

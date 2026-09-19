@@ -419,6 +419,10 @@ public:
     // Returns false and says why when the length is past what the model will generate,
     // rather than quietly truncating it (convention 6).
     bool generateExtension(const juce::File& source, double rangeStart, double totalSeconds);
+    // REMIX: regenerate the WHOLE block at its length, guided by the take it already has.
+    // Not an inpaint -- nothing is preserved -- which is the difference between "carry on
+    // from here" and "do this again, differently". Both run the prompt as it stands.
+    bool generateRemix(const juce::File& source, double totalSeconds);
 
     void setNoTarget()
     {

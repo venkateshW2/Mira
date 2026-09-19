@@ -64,11 +64,15 @@ and its numbers with it. The panel used to change only its *title*, so every blo
 to share one recipe — the same confusion the take stack caused, one level up.
 
 A block the document has no settings for takes them from **its own take's `.json`
-sidecar**, the recipe that made exactly that sound. Falling back to whatever was on screen
-is what produced the illusion: on a freshly opened project no block had stored settings, so
-each one copied the last block looked at, and nothing ever changed but the name. The
-panel's current state is now the fallback of last resort — a block with no take and no
-sidecar, which is the "new block with the previous block's settings" case.
+sidecar**, the recipe that made exactly that sound. With no take and no sidecar the
+generator opens **empty**.
+
+It used to fall back to whatever was on screen, and that was wrong twice over. On a freshly
+opened project no block had stored settings, so each one copied the last block looked at and
+nothing ever changed but the name. And a brand-new block arrived carrying the previous
+block's prompt and LoRAs — a recipe nobody chose for it, ready to generate from by accident.
+**A new block generates nothing until you tell it what.** Copying a previous block's
+settings is what **Duplicate** is for, and it copies them explicitly.
 
 The settings are captured back out of the panel when you click away from a block and before
 a save, so a prompt typed and never clicked away from still reaches the document.
@@ -128,8 +132,15 @@ with how many seconds it holds. Two buttons fill it:
 
 | | |
 |---|---|
-| **Extend** | restores the block's own recipe first — the continuation continues in the voice that made what it continues |
-| **Remix** | keeps the prompt exactly as you have just typed it |
+| **Extend** | fills the empty tail; the existing audio stays bit-exact |
+| **Remix** | regenerates the *whole* block at its length, guided by the take it already has |
+
+**Both run the prompt exactly as it stands on screen.** Extend used to re-apply the block's
+stored recipe first, which overwrote whatever you had just typed — you edited the prompt,
+pressed the button, and watched your edit vanish and the old trigger generate again. A
+visible, editable field that is silently ignored is worse than no field at all. The prompt
+is captured into the block on the way, so what a block says it was made with is what it was
+actually made with.
 
 Everything the inpainter needs is already on screen: **the take is the source, the empty
 tail is the range, the block's length is the total.** Nothing to drag in, nothing to line
