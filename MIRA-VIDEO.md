@@ -68,24 +68,47 @@ correct duration, no special case. That resampler is monitoring-grade rather tha
 mastering-grade — which is exactly right for the one track in the session that is a
 reference rather than a deliverable.
 
-### How the chase works
+### How the chase works — **measured 2026-09-19, and it is simpler than feared**
 
-`juce::VideoComponent` gives us `setPlayPosition`, `getPlayPosition` **and `setPlaySpeed`**.
-That last one matters: drift can be corrected by *nudging the rate* rather than by seeking,
-so the picture eases back into step instead of jumping.
+Phase 0.2 ran a muted `VideoComponent` against a free-running audio device for **700
+seconds** of an 11-minute cut, comparing AVPlayer's position to samples the device had
+actually consumed — the audio clock, not wall time.
 
 ```
-on play / locate      seek the video to the transport position, then play
-every ~200 ms         error = videoPosition − transportPosition
-  |error| < ½ frame   do nothing
-  |error| < 1 second  setPlaySpeed(1.0 − k·error)   — ease back, invisible
-  |error| ≥ 1 second  setPlayPosition(transport)    — something went wrong; jump
+start latency        -290.3 ms      constant
+worst drift from it     8.1 ms      0.20 frames at 25
+mean drift             -2.9 ms
+```
+
+**The error is an offset, not a drift.** It settles at −290 ms within the first seconds —
+`play()` takes that long to put a frame up — and then stays within ±8 ms of that for the
+rest of the reel. The worst value was reached in the first 30 seconds and **never grew
+again**: at 30 s it was 8.0 ms, and at 692 s it was 8.1 ms. Nothing accumulates.
+
+That changes the design. A fixed offset is corrected **once**; only a diverging clock has to
+be chased forever, and there is no divergence here.
+
+```
+on play / locate      seek the video to (transport position − startLatency), then play
+every ~500 ms         error = videoPosition − transportPosition − startLatency
+  |error| < ½ frame   do nothing                    ← the measured case, always
+  |error| ≥ ½ frame   setPlaySpeed(1.0 − k·error)   ← ease back; kept as a safety net
+  |error| ≥ 1 second  setPlayPosition(transport)    ← a seek, a stall, something real
 on stop               stop the video, leave it parked at the transport position
 ```
 
-**Phase 0 has to measure the real drift before any of these numbers are trusted.** The
-thresholds above are a starting guess and are written here to be replaced by measurements,
-not defended (convention 2).
+The rate-nudge stays in the plan, but as a **safety net rather than the mechanism** — for
+the cases the spike could not produce: a system under load, a seek mid-playback, a drive
+stalling. ±8 ms against a 40 ms frame is a fifth of a frame; nobody will see it.
+
+**The start latency has to be measured per machine, not hardcoded.** −290 ms is this
+machine with this device at 48 kHz. Phase 1 measures it once at load by seeking to a known
+position and comparing, rather than shipping a number that is right on one laptop.
+
+**And a real gap found on the way:** `getVideoDuration()` returned **0.00 for the whole
+run**, even after polling for five seconds. `load()` succeeds, playback works, the duration
+is simply never reported. Phase 1 cannot use it to decide the clip's length — take that
+from the audio reader, or from an `AVAsset` query of our own.
 
 ---
 
@@ -101,20 +124,54 @@ The worry is RAM. Measured against how mira is already built, RAM is not the pro
 - **The waveform** — an `AudioThumbnail` at 512 samples per point over 40 minutes is about
   **206,000 points, ≈3.3 MB**. `ThumbnailStore` and `AudioThumbnailCache` already exist.
 
-So the real cost is not memory but **the first read**: building that thumbnail means
-reading 40 minutes of audio once. It must be on a background thread with visible progress
-and a cached result. A freeze on load is the failure mode here, not an out-of-memory.
+So the real cost is not memory but **the first read** — and Phase 0.3 says how much:
 
-### The spike that could remove a whole phase
+| | | |
+|---|---|---|
+| 93 s mp4, internal SSD | 0.24 s | **385× realtime** |
+| 705 s mp4, external USB drive | 58.9 s | **12× realtime** |
 
-`registerBasicFormats()` on macOS already registers `CoreAudioFormat`, which asks the system
-for the extensions it can open — and that list usually includes `.mp4` and `.mov`. **mira may
-be able to read the audio track straight out of the video file**, with no demux, no temp
-file, and no new dependency.
+Extrapolated to a 40-minute film: **6 seconds from the internal disk, 200 seconds from an
+external one.** Three and a half minutes is not a wait anyone will sit through silently, and
+a cut is exactly the kind of file that lives on the drive it arrived on.
 
-If it can, the reference track is just a block pointing at the `.mp4`. If it cannot, Phase 1
-needs an `AVAssetReader` pass that writes a wav beside the project once. Ten lines answer it;
-nothing else in this plan should be written until it has.
+So: background thread, visible progress, and a **cached result keyed to the file** —
+`ThumbnailStore` and `AudioThumbnailCache` already exist for this. A freeze on load is the
+failure mode to design against, not an out-of-memory.
+
+### Reading the film's audio — **measured 2026-09-19: `.mp4` yes, `.mov` no**
+
+`registerBasicFormats()` registers `CoreAudioFormat`, which advertises this on macOS 15:
+
+```
+.m1a .oga .adts .snd .aif .3gpp .aac .caff .ac3 .aiff .3gp2 .w64 .caf .mp1 .flac .mpa
+.3gp .mp2 .au .wav .mov .aifc .opus .mp3 .3g2 .m2a .mpg4 .awb .eac3 .mp4 .m4a .ogg
+.mpeg .ec3 .loas .latm .xhe .m4b .m4r .amr .sd2 .qt
+```
+
+`.mov` is in that list. **It does not work.**
+
+| file | | |
+|---|---|---|
+| `Absolut_DC90_060826.mp4` | 48 kHz, 2 ch, 92.99 s | read ok, −0.0 dBFS |
+| `Absolut_30Ssec_V14.mp4` | 48 kHz, 2 ch, 33.00 s | read ok, −9.9 dBFS |
+| `Mermaids+v.mp4` | 48 kHz, 2 ch, 705.24 s | read ok, −14.8 dBFS |
+| `2026-04-11 17-46-57.mov` | — | **no reader** |
+| `2026-04-11 17-40-00.mov` | — | **no reader** |
+| `Mermaids.mov` | — | **no reader** |
+| `LS Trailer 07012023 (1).mov` | — | **no reader** |
+
+**4 of 4 `.mp4` succeed, 0 of 4 `.mov`.** All eight are AAC 48 kHz stereo and `afinfo` opens
+every one of them, so Core Audio itself decodes the `.mov` files perfectly well — it is
+JUCE's reader that cannot, while `canHandleFile` cheerfully says it can.
+
+**An extension list that lies is exactly what a spike is for.** Written as reasoning rather
+than measured, Phase 2.1 would have been "point a block at the video file", which works on
+every `.mp4` anyone tries first and fails on the first `.mov` an editor sends — and `.mov`
+is what an editor sends.
+
+So the reference track **tries the direct read and falls back to a demux**, and **says which
+one it did** (convention 6). The fallback is the main path, not the edge case.
 
 ---
 
@@ -175,25 +232,31 @@ opens exactly as it does today — that is what makes this additive rather than 
 Nothing else is written until both are answered. This is the same discipline
 [spike/README.md](spike/README.md) used for the six risky assumptions.
 
-- [ ] **0.1** Print `CoreAudioFormat`'s extension list on this machine, then try
-  `createReaderFor` on a real `.mp4` and a real `.mov`. Does mira already read film audio?
-- [ ] **0.2** Link `juce::juce_video`, put a `VideoComponent` in a bare window, play a
-  40-minute clip alongside the canvas transport, and **log the drift every 10 seconds for
-  the whole reel**. Answer: how far does it go, does it accumulate linearly, and is
-  `setPlaySpeed` enough to hold it?
-- [ ] **0.3** Time the first thumbnail of a 40-minute 48 kHz stereo file. If it is minutes,
-  Phase 1 needs progress and a cache before it needs anything else.
+**Done 2026-09-19.** `spike/07_video_sync/` — the answers are in §3 and §4 above, and each
+one changed the plan.
 
-**Write the three answers into this file before starting Phase 1.** A plan built on 0.1
-being "yes" when it is "no" is a plan for a different program.
+- [x] **0.1** `.mp4` reads directly, `.mov` does not, and the extension list claims both.
+  → Phase 2.1 needs a fallback and has to say which route it took.
+- [x] **0.2** Not drift — a **constant −290 ms start latency**, then ±8 ms for 700 s with no
+  accumulation at all. → the chase loop becomes a safety net; the offset is the mechanism.
+  Also: `getVideoDuration()` never reports, so Phase 1 must get length elsewhere.
+- [x] **0.3** 385× realtime on the internal disk, **12× on an external one** — 200 s for a
+  40-minute film off the drive it arrived on. → progress and a cache, not optional.
+
+The spike stays in the tree. It is the only thing that can re-answer these when JUCE, macOS
+or the machine changes, and every number above has a date on it for that reason.
 
 ### Phase 1 — a video window that follows the playhead
 
 - [ ] **1.1** `juce::juce_video` added to `src/mira_ui/CMakeLists.txt`.
 - [ ] **1.2** `VideoWindow` — a floating, always-on-top window holding a `VideoComponent`,
   with no native controls (mira's transport is the only transport).
-- [ ] **1.3** `File ▸ Open Video...` on the canvas. One video track appears.
-- [ ] **1.4** The chase loop of §3, with the thresholds Phase 0 measured. Muted, always.
+- [ ] **1.3** `File ▸ Open Video...` on the canvas. One video track appears. Progress while
+  the waveform builds — 0.3 says that is 200 s for a 40-minute film on an external drive.
+- [ ] **1.4** Measure this machine's start latency once at load (seek to a known position,
+  compare), then the §3 loop with that offset. Muted, always.
+- [ ] **1.4b** Clip length from the audio reader or our own `AVAsset` query —
+  **not** `getVideoDuration()`, which Phase 0.2 watched return 0.00 for 700 seconds.
 - [ ] **1.5** Stop parks the picture at the transport position; scrubbing the playhead
   scrubs the picture.
 - [ ] **1.6** The window remembers its size and position in `ui_settings`, per project.
@@ -203,8 +266,11 @@ the end is under one frame.
 
 ### Phase 2 — the reference track
 
-- [ ] **2.1** The film's audio as a block on a reserved lane, by whichever route Phase 0.1
-  decided.
+- [ ] **2.1** The film's audio as a block on a reserved lane: **try `createReaderFor` first**
+  (works for `.mp4`), **fall back to an `AVAssetReader` pass** that writes a wav beside the
+  project (needed for `.mov`), and **log which route ran**. Never a silent fallback — the
+  two have very different load times and a user who cannot tell them apart cannot explain
+  why one film took three minutes to open and another took none.
 - [ ] **2.2** **Locked to its clip**: moving or trimming either moves or trims both. Enforced
   in `mouseDrag`, so there is no gesture that can separate them.
 - [ ] **2.3** Excluded from `promptExport` in all three modes, and from "export every track".
@@ -251,15 +317,16 @@ Only after 1–4 are real. Listed so they are not forgotten, not to be started e
 
 ## 8. Risks, named up front
 
-- **AVPlayer drift may be worse than `setPlaySpeed` can hold.** Phase 0.2 exists to find
-  out. If it is, the fallback is a visible correction on a longer interval and an honest
-  note in the UI that the picture is a guide, not a lock.
+- ~~**AVPlayer drift may be worse than `setPlaySpeed` can hold.**~~ **Measured and closed:**
+  ±8 ms over 700 s, a fifth of a frame, with no accumulation. The risk that remains is the
+  *offset* being machine-dependent, which 1.4 handles by measuring rather than hardcoding.
 - **`VideoComponent` is a native view and cannot be drawn over.** Accepted, and the reason
   the window is separate. If an overlay is ever needed — a frame counter burned in, say —
   it needs a second native layer, not a JUCE component.
-- **Reading audio straight from an `.mp4` may be seek-expensive.** Fine for playback through
-  a `BufferingAudioSource`; possibly slow for the thumbnail pass. If 0.3 is bad, a one-time
-  wav beside the project is the answer and Phase 2.1 changes route.
+- **Thumbnailing off an external drive is slow** — 12× realtime, so 200 s for a 40-minute
+  film. Measured, not feared. The answer is a cache and visible progress; if it turns out to
+  be the AAC decode rather than the drive, the demux fallback doubles as the fix, since a
+  wav beside the project thumbnails at disk speed.
 - **Frame-accurate is not sample-accurate.** mira will get you to the frame. A hit that has
   to land on a specific sample is a DAW's job, and this document does not pretend otherwise.
 - **The reference track is one more thing that can clip the master.** It sums with

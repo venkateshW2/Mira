@@ -32,5 +32,9 @@ endif()
 if(MIRA_BUILD_SPIKES AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/spike/05_dclap_parity/CMakeLists.txt)
   add_subdirectory(spike/05_dclap_parity)
 endif()
+# MIRA-VIDEO.md Phase 0. Links juce_video, which mira_ui deliberately does not yet.
+if(MIRA_BUILD_SPIKES AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/spike/07_video_sync/CMakeLists.txt)
+  add_subdirectory(spike/07_video_sync)
+endif()
 
 add_subdirectory(src)
