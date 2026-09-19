@@ -95,6 +95,8 @@ private:
     void chooseInitAudio();
     void chooseOutputFolder();
     void generate();
+    // Puts the audio input back to nothing. See the definition for why this exists.
+    void clearAudioIn();
     void chooseEncodeFolder();
     // Writes one SA3 sidecar per analysed file under `folder`, in-process via
     // mira_core's CaptionFields + Sa3Renderer -- the same code `mira caption

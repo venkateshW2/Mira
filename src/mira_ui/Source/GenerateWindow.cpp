@@ -875,6 +875,11 @@ void GenerateContent::applySettings(const juce::var& settings)
     secondsSlider.setValue((double) settings.getProperty("seconds", secondsSlider.getValue()),
                             juce::dontSendNotification);
 
+    // The audio input is NOT part of a block's recipe -- it is the source an Extend or a
+    // Remix used once. Leaving it set is how one extend quietly guided every generation
+    // that followed it.
+    clearAudioIn();
+
     // Every slot is cleared FIRST. Restoring only the slots the block names would leave
     // whichever LoRA the previous block had loaded sitting in slot 2, quietly joining a
     // generation nobody asked it to.
@@ -965,6 +970,7 @@ bool GenerateContent::generateExtension(const juce::File& source, double rangeSt
         inpaintStrip->setRange(rangeStart, totalSeconds);
     }
     generate();
+    clearAudioIn();
     return true;
 }
 
@@ -990,7 +996,34 @@ bool GenerateContent::generateRemix(const juce::File& source, double totalSecond
     inpaintToggle.setToggleState(false, juce::sendNotificationSync);
     secondsSlider.setValue(totalSeconds, juce::sendNotificationSync);
     generate();
+    clearAudioIn();
     return true;
+}
+
+// THE WHOLE BUG, AND WHY IT WAS INVISIBLE.
+//
+// Extend and Remix set initAudio and NOTHING ever put it back. generate() reads it on
+// every run, so one Extend meant every later generation -- on that block, on another
+// block, on a brand-new empty block -- silently carried `init_audio` (or `inpaint_audio`
+// plus a range) pointing at the OLD block's take. The model was being guided by audio
+// nobody had asked it to use, which is precisely "the prompt is not taking, it is still
+// doing the old trigger" and "acr is throwing koan-ish drums".
+//
+// Invisible for three compounding reasons: on the canvas `panelOnly` hides the AUDIO IN
+// section entirely, so there was nothing on screen to show a file was loaded and no way
+// to clear it; applySettings restores a block's prompt and LoRAs but never touched this,
+// so it survived every block switch; and the sidecar did not record it, so the recipe
+// beside the audio looked like an ordinary generation.
+//
+// So the audio input is now scoped to the ACTION that wanted it -- generate() builds its
+// request synchronously, so clearing immediately after is safe -- and applySettings
+// clears it too, because a block switch must not inherit the previous block's source.
+void GenerateContent::clearAudioIn()
+{
+    initAudio = juce::File();
+    inpaintToggle.setToggleState(false, juce::dontSendNotification);
+    initLabel.setText("no audio in", juce::dontSendNotification);
+    if (inpaintStrip != nullptr) inpaintStrip->setRange(0.0, 0.0);
 }
 
 // ---- MIRA-GENERATE.md Phase 7: share -----------------------------------------------
@@ -1894,6 +1927,21 @@ void GenerateContent::generate() {
             used.add(juce::var(u));
         }
         if (!used.isEmpty()) r->setProperty("loras", juce::var(used));
+        // THE AUDIO INPUT BELONGS IN THE RECIPE. Without it an extend, a remix and a
+        // plain generation all wrote the same shape of sidecar, so a take that cannot be
+        // reproduced was indistinguishable from one that can -- and that is exactly how
+        // a stale init_audio hid: regenerating from the recipe gave different audio and
+        // the recipe could not say why. Measured on two takes with byte-identical
+        // recipes that correlate 0.50.
+        if (initAudio.existsAsFile()) {
+            if (inpaintToggle.getToggleState()) {
+                r->setProperty("inpaint_audio", initAudio.getFullPathName());
+                r->setProperty("inpaint_range", juce::var(juce::Array<juce::var>{
+                    inpaintStart.getValue(), inpaintEnd.getValue() }));
+            } else {
+                r->setProperty("init_audio", initAudio.getFullPathName());
+            }
+        }
         lastRecipe = juce::var(r);
     }
 
