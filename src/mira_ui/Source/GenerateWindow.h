@@ -404,6 +404,22 @@ public:
     juce::var captureSettings() const;
     void applySettings(const juce::var& settings);
 
+    // The block's LENGTH is the generation's duration on the canvas: you resize the frame
+    // to say how long the part should be, rather than typing a number somewhere else.
+    void setDuration(double seconds);
+    double maxDuration() const;
+
+    // EXTEND / REMIX. An inpaint whose range and source both come from the block's own
+    // geometry: the take is the source, the empty tail past the end of it is the range,
+    // and the block's length is the total. Nothing to drag in, nothing to line up --
+    // verified in sa3_mlx.py, init audio is zero-padded to the requested duration, so a
+    // range past the end of the audio generates a continuation and everything outside the
+    // range stays bit-exact.
+    //
+    // Returns false and says why when the length is past what the model will generate,
+    // rather than quietly truncating it (convention 6).
+    bool generateExtension(const juce::File& source, double rangeStart, double totalSeconds);
+
     void setNoTarget()
     {
         outputFolder = juce::File();

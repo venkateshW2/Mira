@@ -892,6 +892,61 @@ void GenerateContent::applySettings(const juce::var& settings)
     repaint();
 }
 
+double GenerateContent::maxDuration() const
+{
+    return secondsSlider.getMaximum();
+}
+
+void GenerateContent::setDuration(double seconds)
+{
+    if (seconds <= 0.0) return;
+    // Clamped, not refused: a block dragged to four seconds is still a block, and the
+    // slider's floor is what the model will accept.
+    secondsSlider.setValue(juce::jlimit(secondsSlider.getMinimum(), secondsSlider.getMaximum(),
+                                         seconds),
+                            juce::sendNotificationSync);
+}
+
+bool GenerateContent::generateExtension(const juce::File& source, double rangeStart,
+                                         double totalSeconds)
+{
+    if (!source.existsAsFile())
+    {
+        statusLabel.setText("the block has no take to extend", juce::dontSendNotification);
+        return false;
+    }
+    if (totalSeconds > secondsSlider.getMaximum() + 0.001)
+    {
+        // SAID OUT LOUD. Silently generating 380 seconds for a 400 second block would put
+        // audio on the canvas that does not reach the end of the frame, and nothing on
+        // screen would explain why.
+        const auto msg = "block is " + juce::String(totalSeconds, 1) + "s - the model tops out at "
+                       + juce::String(secondsSlider.getMaximum(), 0) + "s";
+        statusLabel.setText(msg, juce::dontSendNotification);
+        log(msg);
+        return false;
+    }
+    if (rangeStart >= totalSeconds - 0.05)
+    {
+        statusLabel.setText("nothing to extend - drag the block out past its audio",
+                             juce::dontSendNotification);
+        return false;
+    }
+
+    initAudio = source;
+    secondsSlider.setValue(totalSeconds, juce::sendNotificationSync);
+    inpaintToggle.setToggleState(true, juce::sendNotificationSync);
+    inpaintStart.setValue(rangeStart, juce::sendNotificationSync);
+    inpaintEnd.setValue(totalSeconds, juce::sendNotificationSync);
+    if (inpaintStrip != nullptr)
+    {
+        inpaintStrip->setTimeline(totalSeconds);
+        inpaintStrip->setRange(rangeStart, totalSeconds);
+    }
+    generate();
+    return true;
+}
+
 // ---- MIRA-GENERATE.md Phase 7: share -----------------------------------------------
 
 // Reads the child's stdout off the message thread, same shape as PrepareWindow's reader.

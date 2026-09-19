@@ -132,6 +132,18 @@ public:
     // Read the panel's current state back out, so the block you are leaving keeps what you
     // typed into it.
     std::function<juce::var()> onCaptureSettings;
+    // The block's geometry, which the generator reads as its duration: length is the
+    // duration to generate, tail is how much of it is empty and therefore what an extend
+    // would fill.
+    std::function<void(double lengthSeconds, double tailSeconds)> onBlockGeometry;
+    // Extend or remix the selected block. `settings` is the block's own recipe for an
+    // EXTEND -- continue what is already there, in the voice that made it -- and void for
+    // a REMIX, which keeps whatever you have just typed.
+    std::function<void(const juce::File& take, double rangeStart, double totalSeconds,
+                       const juce::var& settings)> onExtendRequested;
+    void extendSelection(bool remix);
+    // Length and tail of the single selection, or {0,0}. What enables the two buttons.
+    std::pair<double, double> selectionGeometry() const;
     // Fold the panel's current state into whichever block it belongs to. Called before a
     // save and whenever the panel changes block, because otherwise a prompt typed and
     // never switched away from would not be in the document.
@@ -152,6 +164,10 @@ private:
         // The generator that belongs to this block. Settings only -- takes live on disk,
         // in the block's folder, and are read back from there.
         juce::var settings;
+        // How long the FILE is, as opposed to how long the block is. They used to be
+        // forced equal; the difference between them is the empty tail you drag out past
+        // the end of the audio, which is the range an extend or a remix fills in.
+        double audioSeconds = 0.0;
     };
 
     enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan };
@@ -230,9 +246,16 @@ private:
     void commitRename();
     double laneDbAt(int lane) const { return lane < (int) laneDb.size() ? laneDb[(size_t) lane] : 0.0; }
     void setLaneDb(int lane, double db);
+    // Seconds of empty block past the end of its audio: what "extend" would fill. Zero
+    // when the audio reaches the end of the block, or when there is no audio at all.
+    double tailSecondsOf(const Visual& v) const;
     // Right-click on a block: mute it, change its fade shape, split or remove it. The
     // things a block IS, in one place, rather than five shortcuts to remember.
     void showBlockMenu(Visual& v);
+    // The M on the block's own header. Mute lives ON the block as well as on the track,
+    // because "not this bar" and "not this layer" are different questions and only one of
+    // them has ever had a button.
+    juce::Rectangle<int> blockMuteBox(const Visual& v) const;
     void setSelectionMuted(bool muted);
     static constexpr int kFadeGrab = 9;    // px either side of a fade handle
     static constexpr int kFadeBand = 14;   // px down from the block top that drags a fade

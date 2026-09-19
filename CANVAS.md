@@ -55,7 +55,7 @@ A block is not a rectangle that borrows everything from the track under it. It h
 |---|---|
 | **a generator** | the real one, pointed at this block's folder, **with this block's settings** |
 | **fades** | dragged on the block, with a shape — linear, equal power, exponential |
-| **a mute** | per block, not just per track |
+| **a mute** | per block, not just per track — an `M` on the block's own header |
 | **a colour** | **its own**, kept when it moves to another track |
 | **a name** | which is also its folder, and so its generation target |
 
@@ -82,6 +82,36 @@ Fades are drawn along the curve the mixer actually applies: `fadeGain()` in
 [CanvasEngine.h](src/mira_ui/Source/CanvasEngine.h) is the same function the audio thread
 calls per sample. A straight wedge over a sine fade is a picture of something the audio is
 not doing, and mira has been caught drawing exactly that kind of lie before.
+
+### The block's length is the duration to generate
+
+A new block is a **30 second frame** — the generator's default — and **resizing it is how
+you ask for a different length**. There is no duration to set somewhere else and keep in
+step with the picture; the picture *is* the number.
+
+### Extend and remix: inpainting by dragging the block out
+
+Drag a block's right edge **past the end of its audio** and the empty tail is drawn dashed,
+with how many seconds it holds. Two buttons fill it:
+
+| | |
+|---|---|
+| **Extend** | restores the block's own recipe first — the continuation continues in the voice that made what it continues |
+| **Remix** | keeps the prompt exactly as you have just typed it |
+
+Everything the inpainter needs is already on screen: **the take is the source, the empty
+tail is the range, the block's length is the total.** Nothing to drag in, nothing to line
+up, no second timeline to set up by hand — which is what the inpaint strip in the generate
+window asks for.
+
+This works because of something verified in `sa3_mlx.py` and recorded on 2026-09-17: **init
+audio is zero-padded to the requested duration**, so a range past the end of the audio
+generates a continuation, and everything *outside* the range stays bit-exact. Extending is
+not a second pass over the whole piece — the audio you already have is untouched.
+
+A block longer than the model will generate is **refused with the number**, not quietly
+truncated: audio that stopped short of the frame with nothing on screen explaining why is
+exactly the kind of silent failure convention 6 exists to prevent.
 
 ### Blocks that overlap on the same track crossfade
 
@@ -280,4 +310,6 @@ to hand.
 | double-click a track name | rename |
 | double-click a block | open its generator |
 | right-click a block | mute, fade shape, clear fades, duplicate, split, remove |
+| the `M` on a block | mute just that block |
+| drag a block's right edge past its audio | make a tail for Extend / Remix |
 | drag a block's top corner | its fade in / out |

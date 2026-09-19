@@ -209,6 +209,15 @@ void CanvasView::setLaneDb(int lane, double db)
                                  : juce::Decibels::decibelsToGain((float) laneDb[(size_t) lane]));
 }
 
+juce::Rectangle<int> CanvasView::blockMuteBox(const Visual& v) const
+{
+    auto r = boundsOf(v);
+    // Only where the header strip is actually drawn. A button you can hit but cannot see
+    // is worse than no button.
+    if (r.getHeight() < 46 || r.getWidth() < 52) return {};
+    return { r.getX() + 5, r.getY() + 3, 15, 13 };
+}
+
 juce::File CanvasView::blockFolderFor(const Visual& v) const
 {
     if (!projectFolder.isDirectory() || v.block.name.isEmpty()) return {};
@@ -231,13 +240,14 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
         std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor(f));
         if (reader != nullptr && reader->sampleRate > 0.0)
         {
-            // "block length will be defined by what is generated": a fresh take sets the
-            // frame's length. A block you have already trimmed keeps its trim -- redoing
-            // that every time you audition another take would be maddening.
-            const double len = reader->lengthInSamples / reader->sampleRate;
-            if (v.block.length <= 0.0 || !v.block.hasAudio() || v.block.sourceOffset <= 0.0)
-                v.block.length = len;
-            v.block.length = juce::jmin(v.block.length, len);
+            v.audioSeconds = reader->lengthInSamples / reader->sampleRate;
+            // THE BLOCK'S LENGTH IS WHAT YOU ASKED FOR, and a take fills it. Only a block
+            // that has never had a length takes it from the file.
+            //
+            // The old rule clamped the block to the file, which made an empty tail
+            // impossible -- and that tail is the whole extend gesture: drag the block out
+            // past the end of its audio and the gap is the range to fill in.
+            if (v.block.length <= 0.0) v.block.length = v.audioSeconds;
         }
         v.thumb = std::make_unique<juce::AudioThumbnail>(512, formats, cache);
         v.thumb->setSource(new juce::FileInputSource(f));
@@ -285,7 +295,10 @@ void CanvasView::addEmptyBlock()
     // Short. A new block is a placeholder you will resize, not a claim that the part is
     // thirty seconds long -- and a full-window frame on an empty canvas reads as an error
     // rather than as an invitation.
-    constexpr double kNewBlockSeconds = 8.0;
+    // 30 seconds, because that is the generator's default duration and the block's length
+    // IS the duration now: a new block is a 30 second frame you will resize, and resizing
+    // it is how you ask for a different length.
+    constexpr double kNewBlockSeconds = 30.0;
     // A NEW BLOCK ALWAYS OPENS ON A NEW TRACK. Hunting for a free gap on an existing
     // track put two unrelated blocks on one fader, and a track is the thing you mix with
     // -- so a block that arrives sharing one arrives already mixed into something else.
@@ -428,7 +441,10 @@ void CanvasView::showBlockMenu(Visual& v)
     m.addItem(5, "Remove");
 
     juce::Component::SafePointer<CanvasView> safe (this);
-    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+    // AT THE MOUSE. withTargetComponent(this) anchors the menu to the whole canvas, which
+    // is the size of the window -- so the menu opened at the canvas's top-left corner,
+    // nowhere near the block you right-clicked.
+    m.showMenuAsync(juce::PopupMenu::Options().withMousePosition(),
                      [safe, muted] (int result)
                      {
                          if (safe == nullptr || result == 0) return;
@@ -455,7 +471,47 @@ void CanvasView::showBlockMenu(Visual& v)
                      });
 }
 
-void CanvasView::announceSelection() {}
+double CanvasView::tailSecondsOf(const Visual& v) const
+{
+    if (!v.block.hasAudio() || v.audioSeconds <= 0.0) return 0.0;
+    const double sounding = juce::jmax(0.0, v.audioSeconds - v.block.sourceOffset);
+    return juce::jmax(0.0, v.block.length - sounding);
+}
+
+std::pair<double, double> CanvasView::selectionGeometry() const
+{
+    for (const auto& i : items)
+        if (selected.size() == 1 && selected.count(i->block.id))
+            return { i->block.length, tailSecondsOf(*i) };
+    return { 0.0, 0.0 };
+}
+
+void CanvasView::extendSelection(bool remix)
+{
+    auto* v = singleSelection();
+    if (v == nullptr || onExtendRequested == nullptr) return;
+    if (!v->block.hasAudio() || tailSecondsOf(*v) <= 0.05) return;
+
+    // Where the audio runs out INSIDE the block. Trimming the left edge moves the offset
+    // rather than the audio, so the sounding part is shorter than the file by exactly that
+    // offset -- and the range has to start where you can hear it stop, not where the file
+    // does.
+    const double sounding = juce::jmax(0.0, v->audioSeconds - v->block.sourceOffset);
+    // Whatever you typed for a remix; the block's own recipe for an extend, so a
+    // continuation continues in the voice that made the thing it continues.
+    onExtendRequested(v->block.file, sounding, v->block.length,
+                       remix ? juce::var() : v->settings);
+}
+
+void CanvasView::announceSelection()
+{
+    // Called at every selection change, which is what keeps Extend and Remix honest: they
+    // are about ONE block with an empty tail, so a marquee that picks up three blocks has
+    // to switch them off again.
+    if (onBlockGeometry == nullptr) return;
+    const auto g = selectionGeometry();
+    onBlockGeometry(g.first, g.second);
+}
 
 void CanvasView::syncPanelSettings()
 {
@@ -472,7 +528,13 @@ void CanvasView::pointPanelAt(const Visual* v)
     // replaced, or a prompt typed and then clicked away from is simply lost.
     syncPanelSettings();
 
-    if (v == nullptr) { panelBlockId = 0; onOpenGenerator({}, {}, {}); return; }
+    if (v == nullptr)
+    {
+        panelBlockId = 0;
+        onOpenGenerator({}, {}, {});
+        if (onBlockGeometry) onBlockGeometry(0.0, 0.0);
+        return;
+    }
     const auto folder = blockFolderFor(*v);
     if (folder == juce::File()) return;
 
@@ -505,6 +567,10 @@ void CanvasView::pointPanelAt(const Visual* v)
                                ? "  -  " + v->block.file.getFileNameWithoutExtension()
                                : juce::String("  -  empty")),
                     folder, v->settings);
+    // AFTER the settings. applySettings restores the `seconds` the block was last
+    // generated at, and the block's length is the newer answer -- you resized the frame
+    // since then, and the frame is what says how long the part should be.
+    if (onBlockGeometry) onBlockGeometry(v->block.length, tailSecondsOf(*v));
 }
 
 void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
@@ -518,6 +584,7 @@ void CanvasView::adoptTake(const juce::File& folder, const juce::File& take)
             setFileOn(*i, take);
             rebuildAudio();
             markDirty();
+            if (onBlockGeometry) onBlockGeometry(i->block.length, tailSecondsOf(*i));
             repaint();
             return;
         }
@@ -814,10 +881,40 @@ void CanvasView::paint(juce::Graphics& g)
             // the waveform gets all of it, which is the point of zooming in vertically.
             const int nameStrip = r.getHeight() >= 46 ? 16 : 0;
             auto wave = r.reduced(4, 3).withTrimmedTop(nameStrip);
+            // The waveform occupies only as much of the block as it actually fills. The
+            // rest is the TAIL, and drawing the thumbnail across it would show empty space
+            // as if it were silence someone recorded.
+            const double tail = tailSecondsOf(*item);
+            const double sounding = juce::jmax(0.0, item->block.length - tail);
+            if (tail > 0.0)
+                wave = wave.withWidth(juce::jmax(2, juce::roundToInt(sounding * pixelsPerSecond)));
             g.setColour(MiraLookAndFeel::text.withAlpha(laneMuted ? 0.18f
                                                                   : (isSelected ? 0.85f : 0.6f)));
             item->thumb->drawChannels(g, wave, item->block.sourceOffset,
-                                       item->block.sourceOffset + item->block.length, 1.0f);
+                                       item->block.sourceOffset + sounding, 1.0f);
+
+            // The empty tail: what Extend or Remix would fill in. Dashed, because it is a
+            // frame with nothing in it -- the same language an empty block speaks.
+            if (tail > 0.02)
+            {
+                auto gap = r.withTrimmedLeft(juce::roundToInt(sounding * pixelsPerSecond))
+                            .reduced(2, 3);
+                if (gap.getWidth() > 3)
+                {
+                    juce::Path dash;
+                    dash.addRoundedRectangle(gap.toFloat(), 3.0f);
+                    const float pattern[] = { 4.0f, 3.0f };
+                    juce::PathStrokeType(1.0f).createDashedStroke(dash, dash, pattern, 2);
+                    g.setColour(MiraLookAndFeel::accent.withAlpha(0.7f));
+                    g.fillPath(dash);
+                    if (gap.getWidth() > 54 && gap.getHeight() > 16)
+                    {
+                        g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.5f)));
+                        g.drawText(juce::String(tail, 1) + "s to fill", gap,
+                                    juce::Justification::centred, false);
+                    }
+                }
+            }
         }
 
         // The fades, drawn along the CURVE the mixer actually applies -- fadeGain() is the
@@ -884,17 +981,32 @@ void CanvasView::paint(juce::Graphics& g)
 
         if (r.getHeight() >= 46)
         {
+            // The block's own header: an M you can hit, then the name. A right-click menu
+            // is where you go to find something; a button on the thing itself is where you
+            // go to DO it, and mute is the second kind.
+            const auto mb = blockMuteBox(*item);
+            if (!mb.isEmpty())
+            {
+                g.setColour(item->block.muted ? MiraLookAndFeel::accent.withAlpha(0.85f)
+                                               : tint.withAlpha(0.35f));
+                g.fillRoundedRectangle(mb.toFloat(), 2.5f);
+                g.setColour(item->block.muted ? MiraLookAndFeel::surface
+                                               : MiraLookAndFeel::text.withAlpha(0.75f));
+                g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.0f)));
+                g.drawText("M", mb, juce::Justification::centred, false);
+            }
+
             g.setColour(isSelected ? MiraLookAndFeel::text : tint.brighter(0.4f));
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
             // "block1 _ name of the file": the block's own name AND what is in it. The
             // block name alone says nothing about which take you chose, and the filename
             // alone loses which part of the piece this is.
-            const auto label = juce::String(item->block.muted ? "M  " : "")
-                             + item->block.name
+            const auto label = item->block.name
                              + (item->block.hasAudio()
                                     ? "  -  " + item->block.file.getFileNameWithoutExtension()
                                     : juce::String());
-            g.drawText(label, r.reduced(6, 2).removeFromTop(14),
+            g.drawText(label, r.reduced(6, 2).removeFromTop(14)
+                                  .withTrimmedLeft(mb.isEmpty() ? 0 : mb.getWidth() + 4),
                         juce::Justification::centredLeft, true);
         }
     }
@@ -1162,6 +1274,17 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
         selected.insert(hit->block.id);
     }
 
+    if (auto mb = blockMuteBox(*hit); !mb.isEmpty() && mb.contains(e.getPosition())
+                                       && !e.mods.isPopupMenu())
+    {
+        drag = Drag::None;
+        hit->block.muted = !hit->block.muted;
+        rebuildAudio();
+        markDirty();
+        repaint();
+        return;
+    }
+
     if (e.mods.isPopupMenu())
     {
         drag = Drag::None;
@@ -1280,7 +1403,18 @@ void CanvasView::mouseUp(const juce::MouseEvent&)
                       || drag == Drag::FadeIn || drag == Drag::FadeOut;
     drag = Drag::None;
     marquee = {};
-    if (changed) { rebuildAudio(); markDirty(); }
+    if (changed)
+    {
+        rebuildAudio();
+        markDirty();
+        // Resizing the block IS setting the duration, so it has to reach the generator on
+        // mouse-up rather than the next time you happen to reselect the block.
+        if (onBlockGeometry)
+        {
+            const auto g = selectionGeometry();
+            if (g.first > 0.0) onBlockGeometry(g.first, g.second);
+        }
+    }
     repaint();
 }
 
@@ -1673,6 +1807,19 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         button(addBlockButton, "+ Block");
         button(duplicateButton, "Duplicate");
         duplicateButton.onClick = [this] { view.duplicateSelection(); };
+
+        // EXTEND and REMIX. Both fill the block's empty tail by inpainting; the only
+        // difference is whose prompt does it. Extend restores the block's own recipe, so
+        // the continuation continues in the voice that made what it continues. Remix keeps
+        // whatever you have just typed, which is the whole point of calling it a remix.
+        button(extendButton, "Extend");
+        extendButton.onClick = [this] { view.extendSelection(false); };
+        button(remixButton, "Remix");
+        remixButton.onClick = [this] { view.extendSelection(true); };
+        extendButton.setEnabled(false);
+        remixButton.setEnabled(false);
+        extendButton.setTooltip("fill the empty tail with more of the same");
+        remixButton.setTooltip("fill the empty tail using the prompt as it is now");
         button(addTrackButton, "+ Track");
         button(panelToggle, "Generate >");
         panelToggle.onClick = [this] {
@@ -1711,6 +1858,22 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             if (panel != nullptr) panel->setVisible(true);
             blockLabel.setVisible(true);
             resized();
+        };
+        view.onBlockGeometry = [this](double lengthSeconds, double tailSeconds) {
+            // The block's length IS the duration. Resizing the frame is how you ask for a
+            // different length, rather than typing a number somewhere else on screen.
+            if (panel != nullptr) panel->setDuration(lengthSeconds);
+            const bool canFill = tailSeconds > 0.05;
+            extendButton.setEnabled(canFill);
+            remixButton.setEnabled(canFill);
+        };
+        view.onExtendRequested = [this](const juce::File& take, double rangeStart,
+                                         double totalSeconds, const juce::var& settings) {
+            if (panel == nullptr) return;
+            // The block's own recipe FIRST when extending, so the prompt that generated
+            // what is already there is the prompt that continues it.
+            if (!settings.isVoid()) panel->applySettings(settings);
+            panel->generateExtension(take, rangeStart, totalSeconds);
         };
         view.onCaptureSettings = [this]() -> juce::var {
             return panel != nullptr ? panel->captureSettings() : juce::var();
@@ -1851,6 +2014,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         bar.removeFromLeft(6);
         duplicateButton.setBounds(bar.removeFromLeft(86));
         bar.removeFromLeft(6);
+        extendButton.setBounds(bar.removeFromLeft(68));
+        bar.removeFromLeft(4);
+        remixButton.setBounds(bar.removeFromLeft(64));
+        bar.removeFromLeft(6);
         panelToggle.setBounds(bar.removeFromRight(96));
         bar.removeFromRight(8);
         newProjectButton.setBounds(bar.removeFromLeft(56));
@@ -1974,6 +2141,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::Label blockLabel;
     juce::TextButton playButton, loopButton, fitButton, deleteButton,
                      addBlockButton, addTrackButton, duplicateButton,
+                     extendButton, remixButton,
                      newProjectButton, openProjectButton, saveProjectButton, panelToggle;
     juce::Rectangle<int> masterMeter;
     bool panelCollapsed = false;
