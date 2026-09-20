@@ -1557,7 +1557,15 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
         child->block.tempoSource = "block";   // "from block N", not measured and not typed
     }
 
-    adoptParentMusic(*child);   // writes the parent's tempo and key into the child's PROMPT
+    // ...and NOT through the panel, which is still showing the empty recipe this block was
+    // born with one call ago.
+    adoptParentMusic(*child, false);
+
+    // Detach the panel before re-pointing it, or `pointPanelAt`'s own sync-on-leave reads
+    // that same stale empty panel back over everything above. Clearing the id is what makes
+    // "the panel has nothing to say about this block" true rather than merely intended.
+    panelBlockId = 0;
+    pointPanelAt(child);
 
     rebuildAudio();
     markDirty();
@@ -1566,12 +1574,28 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
     if (onTakeNote)
     {
         const auto* p = parentOf(*child);
+        // SAY WHAT WAS COPIED, not just that something was. "opens a block but nothing
+        // copied" was a real bug and it was invisible: the block looked identical either
+        // way, and the only evidence was a prompt field you had to go and read. A count is
+        // the difference between a feature you can test in a second and one you cannot.
+        juce::String carried;
+        if (auto* o = child->settings.getDynamicObject())
+        {
+            const auto prompt = o->getProperty("prompt").toString();
+            const auto* loras = o->getProperty("loras").getArray();
+            carried = " Carried " + juce::String(prompt.length()) + " chars of prompt";
+            if (loras != nullptr && loras->size() > 0)
+                carried += " and " + juce::String(loras->size()) + " LoRA"
+                         + (loras->size() == 1 ? "" : "s");
+            carried += ".";
+        }
         onTakeNote(child->block.name + " follows " + (p != nullptr ? p->block.name : juce::String("?"))
                     + (parentTempo > 0.0
                         ? " - " + juce::String(child->block.length / ((60.0 / parentTempo) * parentMeter), 0)
                             + " bars at " + juce::String(parentTempo, 1) + " bpm, on the grid. "
                             + "Its prompt is ready; press Generate."
-                        : juce::String(" - it has no tempo to pass on yet")));
+                        : juce::String(" - it has no tempo to pass on yet"))
+                    + carried);
     }
 }
 
@@ -4592,13 +4616,20 @@ static juce::String withPromptField (juce::String prompt, const juce::String& ke
     return prompt.substring (0, valueAt) + " " + value + (end >= 0 ? rest.substring (end) : juce::String());
 }
 
-bool CanvasView::adoptParentMusic(Visual& child)
+bool CanvasView::adoptParentMusic(Visual& child, bool syncPanelFirst)
 {
     const auto* p = parentOf(child);
     if (p == nullptr || p->block.tempo <= 0.0) return false;
 
-    // The panel may be holding unsaved edits to this very block's prompt.
-    syncPanelSettings();
+    // The panel may be holding unsaved edits to this very block's prompt -- so normally the
+    // panel wins and is folded in before anything is written.
+    //
+    // NOT when the caller has just built the settings itself. `addBlockFollowing` copies the
+    // parent's whole generator into a block the panel is already pointed at (holding the
+    // EMPTY recipe it was born with), and syncing here read that empty panel straight back
+    // over the copy -- "opens a block but nothing copied". The panel is only the authority
+    // on settings it was actually shown.
+    if (syncPanelFirst) syncPanelSettings();
 
     auto* o = child.settings.isObject() ? child.settings.getDynamicObject() : nullptr;
     if (o == nullptr) { child.settings = emptyRecipe(); o = child.settings.getDynamicObject(); }

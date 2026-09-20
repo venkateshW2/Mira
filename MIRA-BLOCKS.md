@@ -883,6 +883,19 @@ exactly the takes it is most wanted for.
       (Follows on an existing block is not useless — Extend and Remix use the prompt again,
       and the stale badge still reports a parent that moved. But that is the secondary case,
       and the secondary case was the only one reachable.)
+**"opens a block but nothing copied" — the panel read its own emptiness back over it.**
+`addEmptyBlock` ends by pointing the generate panel at the new block, holding the **empty**
+recipe it was born with. `adoptParentMusic` then began with `syncPanelSettings()` — which
+folds the PANEL's state into the block — so it read that empty panel straight back over the
+parent's settings a line after they were copied. `pointPanelAt` would have done it a second
+time, since it syncs on leave.
+**The rule the fix encodes: the panel is only the authority on settings it was actually
+shown.** A caller that has just built the settings itself says so, and the id is cleared
+before re-pointing rather than the sync being merely expected not to matter.
+It was invisible, which is the other half of why it shipped: the block looked identical
+either way and the only evidence was a prompt field you had to go and read. The status line
+now **says what it carried** — *"Carried 214 chars of prompt and 2 LoRAs."*
+
 - [ ] **4.5** Verify on screen.
 
 **Done when** generating a second block against the first needs no retyping.

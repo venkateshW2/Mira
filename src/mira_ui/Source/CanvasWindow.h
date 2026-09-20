@@ -867,7 +867,9 @@ private:
     // Write the parent's tempo and key into the CHILD'S PROMPT, and remember the tempo it
     // was reconciled with. Does not touch the child's own grid: its tempo describes the
     // audio it HAS, the prompt describes the audio it is about to ask for.
-    bool adoptParentMusic(Visual& child);
+    // `syncPanelFirst` false when the caller has just built `child.settings` itself: the
+    // panel is only the authority on settings it was actually shown.
+    bool adoptParentMusic(Visual& child, bool syncPanelFirst = true);
     // Whether an onset lands on the grid: within 18% of a 16th, measured against the BEAT
     // IT FALLS IN rather than against a period extrapolated from bar 1. On a grid that
     // breathes even slightly those are different questions by the end of a take.
