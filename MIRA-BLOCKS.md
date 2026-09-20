@@ -628,8 +628,31 @@ The sidecar is the only thing that knows, which is convention 12 earning its pla
 `extend_from`/`extend_kept`/`extend_context` this measurement could not have been made at
 all, and with it, it took one grep.
 
-### Step 3 — stretch to
+### Step 3 — the octave first, then stretch to
 
+**Reshaped by step 2b's answer.** §6 was written assuming stretch-to is how you repair a
+drifting extension. Extensions do not drift (§7, n=2) — what they can do is come back
+*named* an octave out. So the cheap fix goes first and stretch-to becomes what it is
+actually for: conforming a **separate** take to a block's tempo.
+
+- [x] **3.0** **Halve / double the block's tempo** — `/` and `*`, literally the operations,
+      plus two block-menu items named with the RESULTING tempo (*"Count it at 71.4 bpm"*)
+      rather than with "halve", because the question you are answering is *is this 71 or
+      143* and seeing the other answer is most of deciding.
+      **It moves the LINES, not just the number.** On a measured block the grid IS the
+      detected beats, so halving a number nothing derives from would change the header and
+      leave the picture alone. `Block::tempoOctave` (−2…+2, serialised, written only when
+      non-zero) halves by taking every second beat and doubles by inserting the midpoints.
+      **Anchored on the first DOWNBEAT**, not the first beat: dropping alternate beats from
+      an arbitrary phase moves the bar, and the bar is what the grid exists to show. With an
+      even meter every later downbeat shares that parity, so **the bars stay exactly where
+      they were** and only the subdivision between them changes — which is what counting a
+      piece in half-time means.
+      **`tempoSource` is deliberately unchanged.** Choosing an octave is not un-measuring
+      anything: the beats are still the measured beats and the confidence is still the one
+      that was earned. Stamping "typed" here would throw away a measurement to record a
+      relabelling.
+      The click and the on-grid percentage follow for free, because both read `gridLinesOf`.
 - [ ] **3.1** `signalsmith-stretch` vendored — one line in `scripts/fetch-vendor.sh`, MIT,
       header-only.
 - [ ] **3.2** **Stretch to \<tempo\>** in the block menu. Target from a typed field or from

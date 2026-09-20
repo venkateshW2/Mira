@@ -216,6 +216,10 @@ public:
     // when it has been analysed -- so what you hear is the same answer `gridLinesOf` draws,
     // and the question "are those bar lines on the music" becomes one you can ask with your
     // ears instead of your eyes.
+    // Step 3.0 -- halve or double the selected blocks' tempo, moving both the number and
+    // the measured beats that are drawn. `tempoSource` is deliberately unchanged: choosing
+    // an octave is not un-measuring anything.
+    void shiftTempoOctave(int delta);
     void toggleMetronome();
     bool metronomeIsOn() const { return metronomeOn; }
     // Rebuilt whenever the selection, the grid or the geometry changes -- it is a list of

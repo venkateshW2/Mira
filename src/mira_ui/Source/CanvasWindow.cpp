@@ -1637,6 +1637,16 @@ void CanvasView::showBlockMenu(Visual& v)
     // by where it came from), but it is not always what you want, so the other answer is
     // one item rather than an argument: renumber from here.
     m.addItem(23, "Bar 1 starts here", v.block.tempo > 0.0);
+    // Step 3.0. Named with the resulting tempo rather than with "halve"/"double", because
+    // the question you are answering is "is this 71 or 143", and seeing the other answer is
+    // most of deciding.
+    if (v.block.tempo > 0.0)
+    {
+        m.addItem(26, "Count it at " + juce::String(v.block.tempo * 0.5, 1) + " bpm  (/)",
+                   v.block.tempo * 0.5 >= 20.0);
+        m.addItem(27, "Count it at " + juce::String(v.block.tempo * 2.0, 1) + " bpm  (*)",
+                   v.block.tempo * 2.0 <= 400.0);
+    }
     // The same verb as the header chip, with room for a sentence. The chip is where you
     // press it; this is where you read what it said -- a 15-pixel square cannot hold
     // "measured 88.1 bpm at confidence 0.71, below 0.90, so the grid is left as it was",
@@ -1743,6 +1753,8 @@ void CanvasView::showBlockMenu(Visual& v)
                          if (result >= 100 && result < 300) { self.chooseTake(id, result); return; }
                          if (result == 8) { self.beginRenameBlock(id); return; }
                          if (result == 24) { self.analyseSelection(); return; }
+                         if (result == 26) { self.shiftTempoOctave(-1); return; }
+                         if (result == 27) { self.shiftTempoOctave(1);  return; }
                          if (result == 23)
                          {
                              self.pushUndo();
@@ -2025,6 +2037,7 @@ juce::String CanvasView::toJson(const juce::File& base) const
             o->setProperty("barOne", i->block.barOnePos);
             o->setProperty("key", i->block.key);
             o->setProperty("tempoSource", i->block.tempoSource);
+            if (i->block.tempoOctave != 0) o->setProperty("tempoOctave", i->block.tempoOctave);
             o->setProperty("tempoConfidence", i->block.tempoConfidence);
             o->setProperty("barOneIsHuman", i->block.barOneIsHuman);
             // The parent is written as its INDEX in this array, not as its id. Ids are
@@ -2238,6 +2251,7 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
             v->block.barOnePos = juce::jmax(0.0, (double) b.getProperty("barOne", 0.0));
             v->block.key = b.getProperty("key", "").toString();
             v->block.tempoSource = b.getProperty("tempoSource", "").toString();
+            v->block.tempoOctave = juce::jlimit(-2, 2, (int) b.getProperty("tempoOctave", 0));
             v->block.tempoConfidence = juce::jlimit(0.0, 1.0,
                                                     (double) b.getProperty("tempoConfidence", 0.0));
             v->block.barOneIsHuman = (bool) b.getProperty("barOneIsHuman", false);
@@ -2559,8 +2573,50 @@ CanvasView::GridLines CanvasView::gridLinesOf(const Visual& v, double from, doub
         // Bar 1 is the first downbeat at or after `barOnePos`, so nudging bar 1 renumbers
         // rather than moving anything: the lines are where the audio says they are, and
         // the only thing a human gets to choose is where the count starts.
+        // THE OCTAVE (step 3.0), applied to the measured beats themselves rather than to a
+        // number. Halving takes every second beat and doubling inserts the midpoints, so
+        // "count this in half-time" changes the LINES -- which is the only way it could
+        // mean anything on a block whose grid IS the detected beats.
+        //
+        // Anchored on the first DOWNBEAT when halving, not on the first beat: dropping
+        // alternate beats from an arbitrary phase moves the bar, and the bar is the thing
+        // the whole grid exists to show.
+        std::vector<double> src;
+        {
+            const auto& b = v.beats;
+            int oct = juce::jlimit(-2, 2, v.block.tempoOctave);
+            src = b;
+            while (oct < 0 && src.size() > 2)
+            {
+                size_t anchor = 0;
+                for (size_t i = 0; i < src.size(); ++i)
+                    if (isDownbeat(src[i])) { anchor = i; break; }
+                // Keep the beats whose PARITY matches the downbeat's, so the downbeat
+                // survives every halving. With an even meter every later downbeat shares
+                // that parity too, so the bars stay exactly where they were and only the
+                // subdivision between them changes -- which is what counting a piece in
+                // half-time actually means.
+                std::vector<double> half;
+                for (size_t i = anchor % 2; i < src.size(); i += 2) half.push_back(src[i]);
+                src = std::move(half);
+                ++oct;
+            }
+            while (oct > 0 && src.size() > 1)
+            {
+                std::vector<double> twice;
+                for (size_t i = 0; i + 1 < src.size(); ++i)
+                {
+                    twice.push_back(src[i]);
+                    twice.push_back((src[i] + src[i + 1]) * 0.5);
+                }
+                twice.push_back(src.back());
+                src = std::move(twice);
+                --oct;
+            }
+        }
+
         int seen = 0;
-        for (const auto t : v.beats)
+        for (const auto t : src)
         {
             const bool bar = isDownbeat(t);
             if (bar && t >= v.block.barOnePos - 1.0e-6) ++seen;
@@ -4145,6 +4201,54 @@ void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWhee
     scrollVerticallyBy (juce::roundToInt (-step * 120.0));
 }
 
+// ---- MIRA-BLOCKS.md step 3.0: halve / double the block's tempo -----------------------
+//
+// The fix for the ONE real failure step 2b found. An SA3 extension holds tempo exactly
+// (n=2, §7) -- what it can do is come back reported an octave down, because the beat
+// tracker halves its grid on sparse material. That is a naming problem, and naming it costs
+// nothing and stretches nothing, which is why this went in before any stretcher.
+//
+// It moves BOTH: `tempo`, which is the number on the header and what step 4 will put into a
+// child's prompt, and `tempoOctave`, which decides which measured beats are drawn. Moving
+// only one of them would leave a block whose header and whose bar lines disagree.
+//
+// `tempoSource` is DELIBERATELY unchanged. Choosing an octave is not un-measuring anything:
+// the beats are still the measured beats and the confidence is still the confidence that
+// was earned. Stamping "typed" here would throw away a measurement to record a relabelling.
+void CanvasView::shiftTempoOctave(int delta)
+{
+    if (delta == 0) return;
+    int moved = 0;
+    for (auto& i : items)
+    {
+        if (selected.count(i->block.id) == 0 || i->block.tempo <= 0.0) continue;
+        const int next = juce::jlimit(-2, 2, i->block.tempoOctave + delta);
+        // A block whose grid came from a prompt has no measured beats to re-count, so the
+        // octave is only the number -- but it is still clamped, because a tempo of 1100 is
+        // not a thing anyone meant and the grid at 8.9 is a wall.
+        const double bpm = i->block.tempo * (delta > 0 ? 2.0 : 0.5);
+        if (bpm < 20.0 || bpm > 400.0) continue;
+        if (i->block.tempoSource == "measured" && next == i->block.tempoOctave) continue;
+        if (moved == 0) pushUndo();
+        i->block.tempo = bpm;
+        if (i->block.tempoSource == "measured") i->block.tempoOctave = next;
+        ++moved;
+    }
+    if (moved == 0)
+    {
+        // Convention 6: a key that does nothing is indistinguishable from a key that is
+        // not bound.
+        if (onTakeNote)
+            onTakeNote(selected.empty() ? "select a block to change its octave"
+                                        : "no octave left that way - 20 to 400 bpm");
+        return;
+    }
+    rebuildAudio();     // the click follows the grid, so it has to be rebuilt with it
+    markDirty();
+    announceSelection();
+    repaint();
+}
+
 void CanvasView::toggleMetronome()
 {
     metronomeOn = !metronomeOn;
@@ -4540,6 +4644,11 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
     if (key.getModifiers().isCommandDown() && key.getKeyCode() == 'D')
         { duplicateSelection(); return true; }
     if (key.getTextCharacter() == 'f')         { fit(); return true; }
+    // `/` HALVES and `*` DOUBLES the selected block's tempo -- literally the operations,
+    // which is the only mnemonic worth having for a thing you reach for rarely and want to
+    // get right first time. Step 3.0; see shiftTempoOctave.
+    if (key.getTextCharacter() == '/')         { shiftTempoOctave(-1); return true; }
+    if (key.getTextCharacter() == '*')         { shiftTempoOctave(1);  return true; }
     // WAVEFORM height, which is not block height. A quiet take is a flat line you cannot
     // edit against and a loud one fills the block and shows nothing; the peaks you are
     // looking for are in neither. Drawn taller or shorter without moving anything.

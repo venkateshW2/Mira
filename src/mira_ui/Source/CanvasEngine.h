@@ -128,6 +128,15 @@ struct Block
     // $.rhythm.beat_grid_stability -- 0 when nothing has been measured. Convention 6:
     // an unmeasured grid says so rather than borrowing a number it did not earn.
     double tempoConfidence = 0.0;
+    // WHICH OCTAVE OF THE MEASURED GRID THIS BLOCK COUNTS IN. 0 = as measured, -1 = half
+    // the beats, +1 = twice. MIRA-BLOCKS.md step 3.0, and it exists because step 2b's only
+    // real failure was an octave rather than a drift: an SA3 extension holds tempo exactly,
+    // but the beat tracker can report it half-time on sparse material.
+    //
+    // It is NOT the same as editing `tempo`. `tempo` is a number; this decides which lines
+    // are DRAWN, because once a block is measured the grid is the detected beats themselves
+    // and halving a number nothing derives from would change the header and not the picture.
+    int tempoOctave = 0;
     juce::int64 followsBlockId = 0;   // 0 = independent
     // Whether a bar 1 set by hand survives the next analysis. Convention 5: `human`
     // outranks machine, so a nudge you made by ear is not overwritten by a model.

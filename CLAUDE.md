@@ -828,7 +828,15 @@ separate faults, each fixed and each re-measured against the same six.
 
 ## ⛔ Start here next session
 
-### Next — [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 3, smaller than it was written
+### Next — [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 3.1 onward (3.0 built, unverified)
+
+**3.0 is built and not yet seen on screen:** `/` halves and `*` doubles the selected block's
+tempo, with two block-menu items named by the RESULTING tempo. On a measured block it moves
+the drawn BEATS (`Block::tempoOctave`, anchored on the first downbeat so the bars do not
+move), not only the number — and leaves `tempoSource` alone, because choosing an octave is
+not un-measuring anything.
+
+### Then — step 3, smaller than it was written
 
 **Steps 1, 2, 2a and 2b are done and verified (2026-09-20).**
 
