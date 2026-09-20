@@ -204,45 +204,59 @@ you want it to and does not when you do not.
 **The extension may not come back in tempo.** SA3 has 30 s of context so it *tends* to
 continue in tempo, but nothing guaranteed it and there had never been an instrument to ask.
 
-### Measured 2026-09-20 — n=1, and the answer is an OCTAVE question
+### Measured 2026-09-20 — YES, AND EXACTLY. n=2.
 
-One usable pair so far (`block 36`: a 30 s take extended to 46 s, kept audio to 28.3 s, new
-material 28.3–45.9 s), split at the boundary the sidecar records:
+Two extension pairs, each split at the join the sidecar records (`extend_kept`), the kept
+and new regions measured separately. This is the question this whole plan was written to be
+able to ask, and it has an answer.
 
-| | bpm | beats |
-|---|---|---|
-| parent, whole | **142.86** | 70 |
-| extension, **kept** region | **142.86** | 66 |
-| extension, **new** region | **69.77** | 23 |
-| extension, whole | 136.36 (stability **0.795**) | 89 |
+| pair | parent | ext. KEPT | ext. NEW | new/kept | stability |
+|---|---|---|---|---|---|
+| **block 27** (30 s → 59 s, 29 s of new material) | 107.14 | **107.14** | **107.14** | 1.000 | 1.000 |
+| **block 36** (30 s → 46 s, 18 s of new material) | 142.86 | **142.86** | 69.77 | 0.488 | 0.795 |
 
-**The kept region is exact** — 142.86 against the parent's 142.86, which is the crossfade
-join doing its job and is worth having confirmed.
+**The kept region is bit-for-bit in tempo in both.** 107.14 against 107.14 and 142.86
+against 142.86 — the crossfade join doing its job, now confirmed rather than assumed.
 
-**The new region reads half-time, and that is an ambiguity rather than a result.**
-142.86 / 2 = 71.43, and 69.77 is **one 50 fps frame away from it** — exactly the
-quantisation the tempo fit was built to see through. So this is either SA3 genuinely writing
-a half-time continuation (a musical choice, and a reasonable one) or the beat tracker
-slipping an octave on sparser material. **The beat list alone cannot tell those apart**,
-which is the project's open "BPM octave convention" thread (CLAUDE.md 2026-09-15 evening)
-turning up *inside a single file* for the first time.
+**Block 27's new material is EXACT.** 107.14 bpm over 45 new beats across a 29-second
+extension, zero drift, stability 1.000. SA3 continued in tempo to the resolution of the
+measurement.
 
-**The confidence gate caught it**: 0.795, refused, grid left alone. That is the gate's first
-real case and it behaved exactly as designed — which is the strongest argument yet for
-having built 2.4 before 2.3.
+**Block 36's new material is the SAME TEMPO, reported an octave down.** And that is
+arithmetic, not a guess:
 
-**It also caught a flaw in this instrument.** The first version would have reported
-"tempo moves 142.9 → 69.8", reading as a 51% collapse. The summary now folds to the octave
-and names a halved or doubled window as **"an octave, not a drift"**, reporting the residual
-drift *within* the octave honestly beside it. Calling an octave a 51% tempo change would
-have made this instrument's first answer its first wrong answer.
+```
+142.86 bpm   -> beat period          0.4200 s
+                half-time period     0.8400 s
+measured                             0.8600 s
+difference                           0.0200 s   <- the beat network runs at 50 fps:
+                                                   0.0200 s is EXACTLY one frame
+```
 
-**Still owed: n>1.** One pair, one prompt, one LoRA, one 18-second extension. The second
-extension in the project (`block 27`, 30 s → 62 s) has not been analysed yet.
+So the −2.33% residual inside the octave is the network's own quantisation and nothing else.
+**Both pairs are consistent with the tempo being held exactly.** The only difference between
+them is that one was *reported* at half-time — which is the project's open "BPM octave
+convention" thread (CLAUDE.md 2026-09-15 evening) turning up inside a single file for the
+first time, and is a labelling problem rather than a music problem.
 
-When it has drifted, the block **says so** and offers the button that already exists —
-*stretch to 87.3* — applied to the extension rather than the whole take. That is one small
-generalisation: **stretch-to operates on a range**, and an extension is exactly a range.
+**The confidence gate caught the octave case** (0.795, refused, grid left alone) without
+being told anything about octaves. Its first two real cases: one adopted, one refused, both
+correctly. That is the strongest argument yet for having built 2.4 before 2.3.
+
+**It also caught a flaw in this instrument before the instrument reported anything.** The
+first version of `tempoDriftSummary` would have said "tempo moves 142.9 → 69.8" — a 51%
+collapse, and its first answer would have been its first wrong answer. It folds to the
+octave now and names a halved or doubled window as **"an octave, not a drift"**, reporting
+the residual within the octave beside it.
+
+### What this means for step 3
+
+**Stretch-to is a smaller feature than this plan assumed**, which is exactly the question
+§12 said to settle before starting it. An extension that returns in tempo does not need
+stretching; what it can need is its OCTAVE naming fixed, which costs nothing and stretches
+nothing. So step 3 should be preceded by a one-item step: **halve/double the block's tempo**,
+a menu item and a keystroke. n=2 is still n=2 — but nothing so far suggests a stretcher is
+the first thing an extension needs.
 
 **Slices conflict, and extend bounces first.** Once a block has been sliced and rearranged,
 "extend the audio" has no obvious referent. The answer is to render the block's current
@@ -599,7 +613,12 @@ missing. None of this was in the plan.
       an extension is joined to the END of a take and one tempo for the whole file hides it:
       140 for thirty seconds and 146 for the last ten reports something in between and looks
       fine.
-- [ ] **2b.2** Repeat on more extensions. **n=1 is one pair, one prompt, one LoRA** — see §7.
+- [x] **2b.2 n=2, and the answer is YES — see §7.** Both pairs hold tempo exactly; one was
+      reported an octave down, and that octave is exactly one 50 fps frame of quantisation,
+      not drift.
+- [ ] **2b.3** Keep adding pairs opportunistically. n=2 is two prompts and two LoRAs; the
+      cost of another point is one Analyse on an extension you were making anyway, and the
+      drift sentence now appears on every analysis without being asked for.
 
 **Found on the way, and worth more than the result:** only **2 of 65** sidecars in a real
 project record `extend_from`. The provenance IS written when an extend runs — so the other
@@ -694,17 +713,20 @@ The big one, and the reason the rest exists. Only after 1–4 are real.
 
 ## 12. Where to start next
 
-**Step 2 is done and verified (2026-09-20).** A block can now be asked what it actually is,
-and it answers or says why it will not.
+**Steps 1, 2, 2a and 2b are done (2026-09-20).** A block knows what it is, can be asked what
+it actually is, and the project now knows that **an SA3 extension holds tempo exactly** —
+n=2, §7.
 
-**Next: step 2b — does an SA3 extension hold tempo?** Extend a block, analyse both halves,
-compare. Nobody knows, and until step 2 there was no instrument to ask. Write the answer
-into §7 with a date.
+**Next: step 3, but smaller than it was written.** 2b's answer changes it. An extension that
+comes back in tempo does not need stretching; what it can need is its **octave** named
+correctly. So:
 
-**Do 2b before step 3.** What a stretch is FOR depends on how far an extension actually
-drifts, and 3.5 refuses a stretch on the strength of the very confidence number step 2 has
-only just started producing. If extensions turn out to hold tempo well, step 3 is a smaller
-feature than this plan assumes.
+- **3.0 (new, and first): halve / double the block's tempo.** A menu item and a keystroke,
+  `tempoSource` unchanged. It costs nothing, stretches nothing, and it is the fix for the
+  one real failure 2b found.
+- Then 3.1–3.7 as written, with the expectation that stretch-to is for conforming a
+  SEPARATE take to a block's tempo (step 4's child case) rather than for repairing an
+  extension — which is not what §6 assumed when it was written.
 
 ### The four faults the first build of step 2 shipped with
 

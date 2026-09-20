@@ -177,7 +177,50 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
-### 2026-09-20 (latest) — the block can be analysed, and four takes in ten are refused
+### 2026-09-20 (latest) — an SA3 extension holds tempo EXACTLY, n=2
+
+[MIRA-BLOCKS.md](MIRA-BLOCKS.md) **step 2b — the measurement this whole plan was written to
+be able to make.** Nobody knew, and there had never been an instrument to ask.
+
+Two extension pairs, each split at the join the sidecar records, kept and new regions
+measured separately:
+
+| pair | parent | ext. KEPT | ext. NEW | stability |
+|---|---|---|---|---|
+| block 27, 30 s → 59 s (29 s new) | 107.14 | **107.14** | **107.14** | 1.000 |
+| block 36, 30 s → 46 s (18 s new) | 142.86 | **142.86** | 69.77 | 0.795 |
+
+- **The kept region is exactly in tempo in both** — the crossfade join confirmed rather than
+  assumed.
+- **Block 27's new material is exact**: 107.14 over 45 new beats, zero drift.
+- **Block 36's new material is the SAME TEMPO reported an octave down**, and that is
+  arithmetic: 142.86 bpm is a 0.4200 s beat, so half-time is 0.8400 s; the measurement says
+  0.8600 s. The difference is **0.0200 s — exactly one frame of the beat network's 50 fps**.
+  The −2.33% "drift" inside the octave is the network's own quantisation and nothing else.
+  **Both pairs are consistent with the tempo being held exactly.**
+- **The confidence gate caught the octave case** (0.795, refused, grid left alone) knowing
+  nothing about octaves. Its first two real cases: one adopted, one refused, both correctly.
+  The best argument yet for having built the gate before the snap.
+- **It caught a flaw in the instrument before the instrument reported anything.** The drift
+  summary would have said "tempo moves 142.9 → 69.8" — a 51% collapse, and its first answer
+  would have been its first wrong answer. It folds to the octave now and says **"an octave,
+  not a drift"**.
+- **Needed no new analysis code.** The measured beats were already fetched, so drift across
+  a take is arithmetic over what step 2 holds — the same dividend as the groove fix in
+  September: store everything, derive at read time.
+- Found on the way: **only 2 of 65 sidecars in a real project record `extend_from`** — and
+  the provenance IS written when an extend runs, so the rest simply are not extensions. Four
+  takes of growing length in one block look like a chain and are not one. Convention 12
+  earning its place: without the sidecar this measurement was impossible, and with it it
+  took one grep.
+
+**This makes step 3 smaller than it was planned.** An extension that returns in tempo does
+not need stretching; what it can need is its OCTAVE named correctly. So step 3 now opens
+with a new item 3.0 — halve/double the block's tempo, a menu item and a keystroke, which
+stretches nothing — and stretch-to becomes what it is actually for: conforming a *separate*
+take to a block's tempo.
+
+### 2026-09-20 — the block can be analysed, and four takes in ten are refused
 
 [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 2, **complete and verified on screen by the user** —
 *"yes now look correct and works"*.
@@ -785,20 +828,19 @@ separate faults, each fixed and each re-measured against the same six.
 
 ## ⛔ Start here next session
 
-### Next — [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 2b, the measurement step 2 made possible
+### Next — [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 3, smaller than it was written
 
-**Steps 1 and 2 are done and verified on screen (2026-09-20).** A block can now be asked
-what it actually is, and it answers or says why it will not.
+**Steps 1, 2, 2a and 2b are done and verified (2026-09-20).**
 
-**Step 2b: does an SA3 extension hold tempo?** Extend a block, analyse both halves, compare.
-Nobody knows — SA3 gets 30 s of context so it *tends* to continue in tempo, but nothing
-guarantees it and there has never been an instrument to ask. Write the answer into
-MIRA-BLOCKS.md §7 with a date.
+2b's answer changes step 3. An SA3 extension holds tempo exactly, so it does not need
+stretching — what it can need is its **octave** named right. So step 3 now opens with:
 
-**Do 2b before step 3.** What a stretch is FOR depends on how far an extension actually
-drifts, and 3.5 refuses a stretch on the strength of the very confidence number step 2 has
-only just started producing. If extensions hold tempo well, step 3 is a smaller feature than
-the plan assumes.
+- **3.0 (new, first): halve / double the block's tempo.** A menu item and a keystroke,
+  `tempoSource` unchanged. Costs nothing, stretches nothing, and it is the fix for the one
+  real failure 2b found.
+- Then 3.1–3.7 as written — with stretch-to understood as conforming a *separate* take to a
+  block's tempo (step 4's child case), not as repairing an extension, which is not what
+  MIRA-BLOCKS §6 assumed when it was written.
 
 ---
 
