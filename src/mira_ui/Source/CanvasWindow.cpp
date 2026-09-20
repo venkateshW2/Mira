@@ -1702,7 +1702,7 @@ namespace BlockMenu {
         kStretchFirst = 400, kStretchLast = 459,
         kStretchUnavailable = 399,
         kFollowsNone = 460, kFollowsFirst = 461, kFollowsLast = 498, kFollowsRefresh = 499,
-        kNewFollowing = 520,
+        kNewFollowing = 600,   // clear of kLegendFirst+20.., which the tempo windows use
         kLegendFirst = 500                     // all disabled: readouts, never clicked
     };
 }
@@ -4307,7 +4307,7 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
     }
     if (drag == Drag::None) return;
 
-    const double deltaSeconds = xToSeconds(e.x) - dragGrabSeconds;
+    double deltaSeconds = xToSeconds(e.x) - dragGrabSeconds;
 
     // BAR 1 moves on the DRAGGED block only, never across the selection: where the
     // downbeat falls is a fact about one piece of audio, and dragging a grid is a claim
@@ -4354,6 +4354,33 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
         markDirty();
         repaint();
         return;
+    }
+
+    // MOVING SNAPS BY QUANTISING THE DELTA, NOT THE POSITION -- so a block KEEPS ITS PHASE.
+    //
+    // This is the bug behind "I conformed it and the bars stopped lining up, is it hit or
+    // miss": conform put the child exactly in phase, and then the first drag afterwards
+    // moved it by an arbitrary number of seconds and silently undid that. Trims snapped;
+    // moves did not.
+    //
+    // Quantising the DELTA rather than the absolute start is the whole idea. Snapping the
+    // start to a grid would need a grid to snap to, and there is no project grid here and
+    // never will be -- whereas moving by whole bars preserves whatever relationship the
+    // block already had. Aligned stays aligned; deliberately-offset stays offset by the
+    // same amount, which is just as important and much harder to get back by hand.
+    if (drag == Drag::Move && snapUnit != Snap::Off && !e.mods.isAltDown())
+    {
+        const Visual* dragged = nullptr;
+        for (const auto& i : items) if (i->block.id == dragTarget) { dragged = i.get(); break; }
+        if (dragged != nullptr && dragged->block.tempo > 0.0)
+        {
+            const double beat = 60.0 / dragged->block.tempo;
+            const double unit = snapUnit == Snap::Bar  ? beat * juce::jmax(1, dragged->block.meter)
+                              : snapUnit == Snap::Beat ? beat
+                              : snapUnit == Snap::Half ? beat * 0.5
+                                                       : beat * 0.25;
+            if (unit > 0.001) deltaSeconds = std::round(deltaSeconds / unit) * unit;
+        }
     }
 
     for (auto& i : items)
