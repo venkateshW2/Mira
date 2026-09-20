@@ -1,8 +1,8 @@
 # MIRA-BLOCKS.md — the block as a musical object
 
-**Opened 2026-09-20.** A plan, not a record: nothing here is built yet. When something
-lands, tick its task and move the reasoning into the past tense — the same discipline
-[MIRA-VIDEO.md](MIRA-VIDEO.md) follows.
+**Opened 2026-09-20. Step 1 built and verified the same day; steps 2–5 are still plan.**
+When something lands, tick its task and move the reasoning into the past tense — the same
+discipline [MIRA-VIDEO.md](MIRA-VIDEO.md) follows.
 
 Read first, in this order:
 
@@ -271,23 +271,75 @@ rewrite.
 
 ## 9. Tasks
 
-### Step 1 — the grid, free
+### Step 1 — the grid, free — **DONE 2026-09-20, verified on screen**
 
-- [ ] **1.1** `Block` gains `tempo`, `meter`, `barOnePos`, `key`, `tempoSource`,
+- [x] **1.1** `Block` gained `tempo`, `meter`, `barOnePos`, `key`, `tempoSource`,
       `tempoConfidence`, `followsBlockId`, `barOneIsHuman`, and the empty `slices` list.
       Serialised into the `.mira`; a document without them opens unchanged.
-- [ ] **1.2** When a take lands in a block, fill `tempo` and `key` from the prompt —
-      `keyAndTempoOf()` already parses `Keyscale` and `BPM`, so this is reading a value that
-      is on screen and doing something with it. `tempoSource = "prompt"`.
-- [ ] **1.3** A **footer** on the block drawing the grid: beat lines, heavier bar lines,
-      bar numbers. Only when the block is tall enough to hold one — below that, a one-line
-      summary. The same rule the padlock follows ([CANVAS.md](CANVAS.md)).
-- [ ] **1.4** **Drag the grid** to move bar 1. Sets `barOneIsHuman = true`.
-- [ ] **1.5** Type over the tempo in the block header. `tempoSource = "typed"`.
-- [ ] **1.6** Verify on screen (convention 8).
+      **The musical group is written only when a block has any of it**, so a project whose
+      blocks never learned a tempo grows no new keys — additive the way `video` was.
+      **`followsBlockId` is written as the parent's INDEX, not its id**: ids are handed out
+      fresh on every load, so a saved id points at whatever block takes that number next
+      time. That is the trap `audioBlockId` is left unwritten to avoid; here the index is
+      stable because `toJson` writes the blocks in the order `fromJson` reads them, and it
+      is remapped after the load loop. A self-link or a missing parent is dropped.
+- [x] **1.2** `musicFromTake()`, called from the end of `setFileOn` — the one place every
+      route a take can arrive by already goes through (generation adopted, take chosen,
+      file dropped, block split, duplicated, document loaded). It reads the take's **own
+      `.json` sidecar**, not the block's `settings`: `settings` is the recipe you are about
+      to generate *with*, so reading it here would let a tempo you just typed describe
+      audio made before you typed it. A BPM outside 20–400 is not a tempo and is dropped;
+      a take that says nothing **clears** the old numbers rather than leaving a grid drawn
+      over audio it was never about (convention 12).
+      Measured before it was built: of 45 sidecars in one real project, **33 carry `BPM:`
+      and 23 carry `Keyscale:`** — so roughly a quarter of takes legitimately draw no grid.
+- [x] **1.3** A **footer** along the bottom of the block: beat ticks, heavier bar lines,
+      bar numbers once a bar is 26 px wide. A footer and **not an overlay across the
+      waveform** — the waveform is what you read to find a transient by eye, and beat lines
+      through it are what makes a drawn grid start to feel like one you must obey.
+      `gridFooterHeight()` is ONE decision asked by both the painter and the waveform,
+      because a waveform that makes room for a footer the density guard then refuses to
+      draw leaves a mystery empty band. Density degrades in steps: below ~5 px per beat the
+      beats go, then the bars, then the footer. Below 62 px of block height there is no
+      footer and the header line is the whole summary — the padlock's rule: a control that
+      does not fit is replaced by words, not shrunk. Bars before bar 1 are drawn but not
+      numbered, as the waveform's bars ruler already does.
+- [x] **1.4** **Drag the footer** to move bar 1, `barOneIsHuman = true`. Its own verb
+      (`Drag::BarOne`) rather than a modifier on Move, because the two are opposite
+      intentions: moving a block says "this audio belongs later", moving its grid says
+      "this audio was always in phase, I had the downbeat wrong". Trim keeps the 7 px at
+      each end — trim has only those, the grid has the whole strip. The delta goes straight
+      into `barOnePos` because it is source time, which is exactly why trimming the left
+      edge afterwards cannot break the phase. It moves the dragged block ONLY, never the
+      selection: where the downbeat falls is a fact about one piece of audio.
+- [x] **1.5** The tempo is a **drag box in the header, not a typed field.** The first
+      version opened a `TextEditor` over the block and the user rejected it on sight — a
+      field that pops up is a modal moment in the middle of arranging. It now behaves like
+      the gain box three pixels to its left, and is drawn like it: up is faster, 0.25 bpm
+      per pixel, landing on whole bpm, **shift for 0.1** — which is the 87.3 case this
+      whole feature exists for. `tempoSource = "typed"`, and `tempoConfidence` back to 0,
+      because a stale confidence would let step 3 allow or refuse a stretch on the strength
+      of a number that no longer describes anything.
+      **Double-click puts the recipe's answer back**, bar 1 included — the counterpart of
+      double-clicking gain for unity, and the only way back from a dragged number worth
+      having an exact route to. A block whose recipe had no BPM still shows the box, faint,
+      with a dash in it: drawing nothing would be honest about the tempo and silent about
+      the gesture, and those are precisely the blocks someone needs to set one on.
+- [x] **1.6** Verified on screen by the user: the grid draws, the bar numbers slide as the
+      footer is dragged, and a typed tempo and a moved bar 1 both survive save and reopen.
+
+**Also built, answering a question the user asked while looking at it:** a split **keeps the
+parent's bar numbers**. Bar 1 is in source time, so the right-hand half of a cut at bar 9
+goes on saying bar 9 wherever it is then dragged — the right default, because you split it
+to move that section and you talk about it by where it came from. The other answer is one
+item rather than an argument: **Bar 1 starts here** in the block menu. Nothing had to be
+written to make the split correct; the source-time decision made it correct for free.
+
+**Still owed at the end of step 1:** there is no way to *type* a meter — the grid is 4/4
+until step 2 measures one.
 
 **Done when** a generated block draws a usable grid with no analysis at all, and you can put
-bar 1 where your ear says it goes.
+bar 1 where your ear says it goes. ✔
 
 ### Step 2 — Analyse
 
@@ -397,12 +449,17 @@ The big one, and the reason the rest exists. Only after 1–4 are real.
 
 ---
 
-## 12. Where to start tomorrow
+## 12. Where to start next
 
-**Step 1.1 and 1.2.** The fields on `Block`, serialised, and the prompt's tempo and key
-landing in them when a take arrives. Then 1.3, the footer, which is the first thing you can
-look at.
+**Step 2 — Analyse.** Step 1 is built and verified on screen (2026-09-20), so a block now
+draws the grid it was ASKED for. Step 2 is the grid it actually GOT.
 
-`keyAndTempoOf()` in [CanvasWindow.cpp](src/mira_ui/Source/CanvasWindow.cpp) is the place the
-numbers already exist. The block header already prints them. Nothing draws a grid yet — that
-is the gap this document closes.
+`enqueueAnalyze` in `Main.cpp` already shells out to the `mira` CLI and re-analyses
+regardless of `analyzed_at`; §5 tabulates the exact `files.machine` keys to read back.
+Everything the block needs to hold it already has a field for — `tempoSource = "measured"`
+and `tempoConfidence` were written in step 1 for exactly this, and `barOneIsHuman` is the
+flag that decides whether a measurement is allowed to move bar 1 (convention 5).
+
+Start at **2.1**, the button and its running state, then **2.4**, the confidence gate —
+before 2.3 makes anything snap. A measurement that can overwrite a grid before there is
+anything stopping it is the failure §10 names first.

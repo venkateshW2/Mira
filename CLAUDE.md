@@ -4,7 +4,7 @@ The index to every document in this repo: what each one is, whether it is curren
 when to read it. **Start here.** If you are picking the project up after a break, or you
 are an agent with no memory of the last session, this file is the entry point.
 
-**Last updated: 2026-09-19.** Keep the *Recent work* log at the bottom current — that is
+**Last updated: 2026-09-20.** Keep the *Recent work* log at the bottom current — that is
 this file's second job.
 
 ---
@@ -57,7 +57,7 @@ changes — check `pgrep -f "MacOS/MIRA"` before assuming a change did not work.
 | [MIRA-GENERATE.md](MIRA-GENERATE.md) | **the generation-and-delivery workflow**: projects as folders, cues, keep-to-cue, cut/fade, export. Its own 7-phase task list | live — **phases 1–5 built**, 6–7 open (2026-09-17) |
 | [MIRA-VIDEO.md](MIRA-VIDEO.md) | **scoring to picture** — a video window slaved to the transport, a locked reference track, timecode, markers, a cue sheet | live — **Phases 0–5 built and verified on screen** (2026-09-19) |
 | [CANVAS.md](CANVAS.md) | **the block canvas** — the Blockhead-shaped experiment: blocks that own their generator, tracks that sum, and the `.mira` document | live — experimental, 2026-09-19 |
-| [MIRA-BLOCKS.md](MIRA-BLOCKS.md) | **the block as a musical object** — tempo and key on the BLOCK not the track, blocks that follow other blocks, stretch as a take, and the block-as-sampler. Its own 5-step task list | **plan only, nothing built** (2026-09-20) |
+| [MIRA-BLOCKS.md](MIRA-BLOCKS.md) | **the block as a musical object** — tempo and key on the BLOCK not the track, blocks that follow other blocks, stretch as a take, and the block-as-sampler. Its own 5-step task list | live — **step 1 built and verified**, 2–5 open (2026-09-20) |
 
 ### Captioning and training
 
@@ -177,7 +177,47 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
-### 2026-09-19 (latest) — timecode, several reels, and the spotting notes
+### 2026-09-20 (latest) — the block has a tempo, and the grid is drawn
+
+[MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 1, all six tasks. **Verified on screen by the user**,
+including the round trip: a typed tempo and a dragged bar 1 both survive save and reopen.
+
+**Musical time now lives on the BLOCK.** `Block` gained `tempo`, `meter`, `barOnePos`,
+`key`, `tempoSource`, `tempoConfidence`, `followsBlockId`, `barOneIsHuman` and an empty
+`slices` list. A block moves between tracks freely, so anything musical on a track is
+positional — and a per-track tempo is the global grid reintroduced one level down, which is
+what the canvas exists to avoid.
+
+- **`followsBlockId` is serialised as the parent's INDEX, not its id.** Ids are handed out
+  fresh on every load, so a saved id points at whatever block takes that number next time —
+  the same trap `audioBlockId` is deliberately left unwritten to avoid. The index is stable
+  because `toJson` writes blocks in the order `fromJson` reads them.
+- **`musicFromTake()` reads the take's own sidecar, never the block's `settings`.**
+  `settings` is the recipe you are about to generate WITH, so reading it would let a tempo
+  you just typed describe audio made before you typed it. A take that says nothing CLEARS
+  the old numbers rather than leaving a grid drawn over audio it was never about.
+- **The slice list went in now, empty.** It is the one part of MIRA-BLOCKS that is
+  expensive to retrofit, because it changes the document.
+- **The grid is a footer, not an overlay.** Beat lines through the waveform are what makes a
+  drawn grid start to feel like one you have to obey. Density degrades in steps — beats,
+  then bars, then the footer itself — because a grid you cannot count is not a smaller grid,
+  it is noise. `gridFooterHeight()` is ONE decision asked by both the painter and the
+  waveform; two would leave a mystery empty band whenever they disagreed.
+- **The tempo field was built as a typed box and rejected on sight.** A `TextEditor` popping
+  up over a block is a modal moment in the middle of arranging. It is a DRAG box now, drawn
+  and behaving like the gain box three pixels to its left: whole bpm, shift for 0.1,
+  double-click for the recipe's answer back. The lesson is the cheap half of convention 8 —
+  it compiled, it worked, and it was still the wrong control.
+- **A split keeps the parent's bar numbers, for free.** Bar 1 is stored in SOURCE time, so
+  the right half of a cut at bar 9 goes on saying bar 9 wherever it is dragged. The user
+  asked which it should be; the answer was already built, because the source-time decision
+  made it correct without code. **Bar 1 starts here** in the block menu is the other answer.
+- **Measured before building, not after:** of 45 sidecars in a real project, 33 carry `BPM:`
+  and 23 carry `Keyscale:`. So a quarter of takes legitimately draw no grid — which is why
+  a block with no tempo still shows a faint dash in its tempo box rather than nothing at
+  all. Those are exactly the blocks someone needs to be able to set a tempo on.
+
+### 2026-09-19 — timecode, several reels, and the spotting notes
 
 [MIRA-VIDEO.md](MIRA-VIDEO.md) Phases 3, 4 and 5. **Built and confirmed working by the
 user** — they drive the UI checks now, which is how three real faults surfaced in this
@@ -222,7 +262,7 @@ permutation applied to every per-lane list, and **per-track height with a padloc
 reference locked by default — one concept, since a lane with a height of its own is exactly
 a lane the zoom leaves alone.
 
-### 2026-09-19 (latest) — the reference track, and two bugs the UI found
+### 2026-09-19 — the reference track, and two bugs the UI found
 
 [MIRA-VIDEO.md](MIRA-VIDEO.md) Phase 2. The film's audio arrives as a block on a reserved
 REFERENCE lane: locked to its picture, excluded from every export, and still carrying a
@@ -656,23 +696,23 @@ separate faults, each fixed and each re-measured against the same six.
 
 ## ⛔ Start here next session
 
-### 2026-09-20 — start with [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 1
+### Next — [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 2, Analyse
 
-**The plan is written and the first task is small.** `Block` gains a musical half — tempo,
-meter, bar-1 position, key, where the tempo came from, and an empty slice list — and the
-prompt's `Keyscale` and `BPM` land in it when a take arrives. Then the footer that draws the
-grid, which is the first thing you can look at.
+**Step 1 is built and verified (2026-09-20)**, so a block draws the grid it was ASKED for.
+Step 2 is the grid it actually GOT: an Analyse button in the block header, the row read back
+for tempo, beats, downbeats, onsets, meter, key and `beat_grid_stability`, and the grid
+snapping to the measurement.
 
-The idea in one line: **musical time belongs to the BLOCK, not the track** — because a block
-moves between tracks, so anything musical on a track is positional. Blocks can then *follow*
-other blocks, which makes the grid a property of a relationship between two pieces of audio
-rather than of the session. Read MIRA-BLOCKS.md §2 and §3 before touching anything; the
-decisions are made and several of them are load-bearing (stretch is a FILE not an effect;
-bar 1 is stored in SOURCE time; a block has ONE tempo).
+**Do 2.1 and then 2.4 — the confidence gate — before 2.3 makes anything snap.** A wrong grid
+imposed confidently is the failure this project has already had twice (the 100 BPM loop that
+read 149.4, the groove histogram flat on all 94 files), and the gate is the whole defence.
+`tempoSource = "measured"`, `tempoConfidence` and `barOneIsHuman` were all written in step 1
+for exactly this.
 
 **Nothing needs new analysis code.** `enqueueAnalyze` already shells to the `mira` CLI, and
 every number needed is already written into `files.machine` — the exact JSON keys are
-tabulated in MIRA-BLOCKS.md §5.
+tabulated in MIRA-BLOCKS.md §5. Step 2b is then the measurement nobody has ever been able to
+make: does an SA3 extension hold tempo?
 
 ---
 

@@ -47,6 +47,21 @@ static juce::String keyAndTempoOf (const juce::var& settings)
     return key + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + bpm;
 }
 
+// The same line, from the BLOCK rather than from the prompt: "A minor  .  95". This is
+// what the header shows once a block has a tempo of its own, and below the height a grid
+// footer needs it is the whole of the summary.
+static juce::String musicLabelOf (const mira::canvas::Block& b)
+{
+    juce::String tempo;
+    if (b.tempo > 0.0)
+        tempo = (std::abs(b.tempo - std::round(b.tempo)) < 0.05
+                     ? juce::String((int) std::round(b.tempo))
+                     : juce::String(b.tempo, 1)) + " bpm";
+    if (b.key.isEmpty()) return tempo;
+    if (tempo.isEmpty()) return b.key;
+    return b.key + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + tempo;
+}
+
 static juce::var emptyRecipe()
 {
     auto* o = new juce::DynamicObject();
@@ -745,6 +760,20 @@ void CanvasView::mouseDoubleClick(const juce::MouseEvent& e)
             rebuildAudio(); markDirty(); repaint();
             return;
         }
+        // Double-click the TEMPO box puts back what the RECIPE said -- the exact
+        // counterpart of double-clicking the gain box for unity, and the only way back
+        // from a dragged number that is worth having an exact route to. If the recipe said
+        // nothing, that is the answer too: the tempo goes away and the grid with it.
+        // Tested before the name, because the tag box is inside the same header row.
+        if (auto tb = blockTagBox(*hit); !tb.isEmpty() && tb.contains(e.getPosition()))
+        {
+            selected.clear();
+            selected.insert(hit->block.id);
+            pushUndo();
+            musicFromTake(*hit, true);
+            markDirty(); repaint();
+            return;
+        }
         // Double-click the NAME to rename the block, the same gesture a lane already had.
         const auto r = boundsOf(*hit);
         if (r.getHeight() >= 46 && e.y - r.getY() <= 18
@@ -808,6 +837,25 @@ juce::Rectangle<int> CanvasView::blockGainBox(const Visual& v) const
     return { mb.getRight() + 3, mb.getY(), 30, mb.getHeight() };
 }
 
+// Tempo and key, on the RIGHT of the header row. Drawn there, double-clicked there, and
+// the tempo editor opens there -- one definition, because three copies of this arithmetic
+// is how a control ends up drawn in one place and clickable in another.
+juce::Rectangle<int> CanvasView::blockTagBox(const Visual& v) const
+{
+    auto r = boundsOf(v);
+    // Not on the REFERENCE lane. Its block is locked -- hitTest refuses to hand it to any
+    // gesture -- so drawing a tempo box on it would be an affordance that does nothing,
+    // and the film's dialogue has no tempo worth claiming anyway.
+    if (r.getHeight() < 46 || !v.block.hasAudio() || isReferenceLane(v.block.lane)) return {};
+    auto row = r.reduced(6, 2).removeFromTop(14);
+    if (const auto gb = blockGainBox(v); !gb.isEmpty())
+        row = row.withTrimmedLeft(gb.getRight() - r.getX() - 2);
+    else if (const auto mb = blockMuteBox(v); !mb.isEmpty())
+        row = row.withTrimmedLeft(mb.getWidth() + 4);
+    if (row.getWidth() <= 150) return {};
+    return row.removeFromRight(juce::jmin(130, row.getWidth() / 2));
+}
+
 juce::File CanvasView::blockFolderFor(const Visual& v) const
 {
     if (!projectFolder.isDirectory() || v.block.name.isEmpty()) return {};
@@ -856,6 +904,67 @@ double audibleEndOf(juce::AudioFormatManager& formats, const juce::File& f)
     return 0.0;
 }
 
+// The take's OWN recipe sets the block's tempo and key (MIRA-BLOCKS.md 1.2), and it comes
+// from the `.json` sidecar beside the wav rather than from whatever recipe is on screen.
+// That distinction is not pedantry: a block's `settings` is the recipe you are ABOUT to
+// generate with, and reading it here would let a tempo you have just typed into the prompt
+// describe audio made before you typed it -- the same confusion that once had two blocks
+// with different audio showing one identical prompt (see pointPanelAt).
+//
+// The grid is drawn, never enforced, so being close is enough: SA3 returns near what was
+// asked for and not equal to it, and the measured answer is step 2's job.
+// The prompt that MADE this take, off the `.json` sidecar beside it. Empty for a dropped
+// file, for the film's reference audio, and for a take whose sidecar has been deleted --
+// all of which are "no tempo", not "some other tempo".
+static juce::String takePromptOf (const mira::canvas::Block& b)
+{
+    if (!b.hasAudio()) return {};
+    auto sidecar = b.file.withFileExtension("json");
+    if (!sidecar.existsAsFile()) return {};
+    auto parsed = juce::JSON::parse(sidecar.loadFileAsString());
+    return parsed.isObject() ? parsed.getProperty("prompt", "").toString() : juce::String();
+}
+
+// What the recipe asked for, or 0. The gesture that starts a tempo from nothing borrows
+// this before it falls back to a round number.
+static double promptTempoOf (const mira::canvas::Block& b)
+{
+    const double bpm = promptField(takePromptOf(b), "BPM").getDoubleValue();
+    return (bpm >= 20.0 && bpm <= 400.0) ? bpm : 0.0;
+}
+
+void CanvasView::musicFromTake(Visual& v, bool force)
+{
+    // Convention 5, applied to time: a tempo you typed or measured is NOT overwritten by a
+    // take landing. Only a grid that came from a prompt -- or from nothing at all -- is the
+    // prompt's to set. `force` is the one deliberate exception: double-clicking the tempo
+    // box asks for the recipe's answer back, and a request is not an overwrite.
+    if (!force && v.block.tempoSource.isNotEmpty() && v.block.tempoSource != "prompt") return;
+
+    const auto prompt = takePromptOf(v.block);
+    const auto keyText = promptField(prompt, "Keyscale");
+    const double bpm = promptField(prompt, "BPM").getDoubleValue();
+    // A number outside this is not a tempo, it is a field that held something else. Omit
+    // rather than guess (convention 1) -- a block with no tempo draws no grid, which is a
+    // readable answer, where a grid at 4 BPM is not.
+    const bool usable = bpm >= 20.0 && bpm <= 400.0;
+
+    // Cleared when the new take says nothing, rather than left holding the old take's
+    // numbers. State that outlives the thing it described is convention 12's bug: a grid
+    // drawn over audio it was never about is worse than no grid.
+    v.block.tempo = usable ? bpm : 0.0;
+    v.block.key = keyText;
+    v.block.tempoSource = (usable || keyText.isNotEmpty()) ? juce::String("prompt")
+                                                           : juce::String();
+    v.block.tempoConfidence = 0.0;   // nothing has been measured; step 2 is what earns this
+    // Bar 1 stays where it is when a human put it there (convention 5). Otherwise it goes
+    // back to the start of the audio, because the take it was aligned against is gone.
+    // Asked for explicitly, it goes back too -- "put the recipe's answer back" means all
+    // of it, or it is a button whose effect you have to remember the limits of.
+    if (force) { v.block.barOnePos = 0.0; v.block.barOneIsHuman = false; }
+    else if (!v.block.barOneIsHuman) v.block.barOnePos = 0.0;
+}
+
 void CanvasView::setFileOn(Visual& v, const juce::File& f)
 {
     v.block.file = f;
@@ -880,6 +989,10 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
         v.thumb = std::make_unique<juce::AudioThumbnail>(512, formats, cache);
         v.thumb->setSource(new juce::FileInputSource(f));
     }
+    // Every route a take can arrive by goes through here -- a generation adopted, a take
+    // chosen, a file dropped, a block split or duplicated, a document loaded -- so this is
+    // the one place that has to know the audio changed.
+    musicFromTake(v);
 }
 
 // One place that names a block, so a dropped file and a "+ Block" cannot end up in
@@ -1246,6 +1359,12 @@ void CanvasView::showBlockMenu(Visual& v)
         m.addSubMenu("Takes (" + juce::String(takes.size()) + ")", takeMenu);
     }
 
+    // A SPLIT KEEPS THE PARENT'S BAR NUMBERS -- bar 1 is stored in source time, so the
+    // right-hand half of a cut at bar 9 goes on saying bar 9, wherever you then drag it.
+    // That is the right default (you split it to move that section, and you talk about it
+    // by where it came from), but it is not always what you want, so the other answer is
+    // one item rather than an argument: renumber from here.
+    m.addItem(23, "Bar 1 starts here", v.block.tempo > 0.0);
     m.addSeparator();
     m.addItem(8, "Rename block...");
     // EXPORT WHAT YOU HEAR. The take on disk is the raw generation -- it knows nothing
@@ -1292,6 +1411,21 @@ void CanvasView::showBlockMenu(Visual& v)
                          }
                          if (result >= 100 && result < 300) { self.chooseTake(id, result); return; }
                          if (result == 8) { self.beginRenameBlock(id); return; }
+                         if (result == 23)
+                         {
+                             self.pushUndo();
+                             for (auto& i : self.items)
+                                 if (self.selected.count(i->block.id) && i->block.tempo > 0.0)
+                                 {
+                                     // The block's own left edge, in SOURCE time -- which
+                                     // is what `sourceOffset` already is. Marked human so
+                                     // the next analysis does not quietly undo it.
+                                     i->block.barOnePos = i->block.sourceOffset;
+                                     i->block.barOneIsHuman = true;
+                                 }
+                             self.markDirty(); self.repaint();
+                             return;
+                         }
                          if (result >= 20 && result <= 22) { self.promptExport(result - 20, id); return; }
                          if (result == 3) { self.duplicateSelection(); return; }
                          if (result == 4) { self.splitAtPlayhead();   return; }
@@ -1546,6 +1680,55 @@ juce::String CanvasView::toJson(const juce::File& base) const
         o->setProperty("colour", i->block.colour);
         o->setProperty("muted", i->block.muted);
         o->setProperty("fadeShape", (int) i->block.fadeShape);
+        // Musical time (MIRA-BLOCKS.md §8), written only when a block HAS any. A document
+        // whose blocks never learned a tempo grows no new keys, and one written before
+        // this existed reads back exactly as it does today -- additive, the way `video`
+        // was, not a migration.
+        if (i->block.tempo > 0.0 || i->block.key.isNotEmpty() || i->block.barOneIsHuman
+            || i->block.followsBlockId != 0 || !i->block.slices.empty())
+        {
+            o->setProperty("tempo", i->block.tempo);
+            o->setProperty("meter", i->block.meter);
+            o->setProperty("barOne", i->block.barOnePos);
+            o->setProperty("key", i->block.key);
+            o->setProperty("tempoSource", i->block.tempoSource);
+            o->setProperty("tempoConfidence", i->block.tempoConfidence);
+            o->setProperty("barOneIsHuman", i->block.barOneIsHuman);
+            // The parent is written as its INDEX in this array, not as its id. Ids are
+            // handed out fresh on every load (`nextId++` in fromJson), so a saved id
+            // would point at whatever block happened to take that number next time --
+            // the same trap `audioBlockId` is left unwritten to avoid. The index is
+            // stable because this loop writes the blocks in the order fromJson reads
+            // them, and it is remapped back to an id there.
+            if (i->block.followsBlockId != 0)
+            {
+                int parent = -1, n = 0;
+                for (const auto& j : items)
+                {
+                    if (j->block.id == i->block.followsBlockId) { parent = n; break; }
+                    ++n;
+                }
+                // A link whose parent is gone is not written at all, rather than written
+                // as -1 and resolved to "independent" on load: the two are the same
+                // answer, and only one of them can be read as a real relationship.
+                if (parent >= 0) o->setProperty("follows", parent);
+            }
+            if (!i->block.slices.empty())
+            {
+                juce::Array<juce::var> sl;
+                for (const auto& s : i->block.slices)
+                {
+                    auto* so = new juce::DynamicObject();
+                    so->setProperty("src", s.sourceStart);
+                    so->setProperty("len", s.sourceLength);
+                    so->setProperty("at", s.placeAt);
+                    so->setProperty("gainDb", s.gainDb);
+                    so->setProperty("muted", s.muted);
+                    sl.add(juce::var(so));
+                }
+                o->setProperty("slices", juce::var(sl));
+            }
+        }
         if (i->block.hasAudio())
         {
             // Relative when it lives under the document, absolute when it does not. A
@@ -1693,6 +1876,10 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
     std::sort(markers.begin(), markers.end(),
                [](const Marker& a, const Marker& b) { return a.seconds < b.seconds; });
 
+    // One entry per loaded block, in the same order, holding the index of the block it
+    // follows (-1 for none). Resolved to real ids after the loop, when they all exist.
+    std::vector<int> followsIndex;
+
     if (auto* blocks = root.getProperty("blocks", {}).getArray())
         for (const auto& b : *blocks)
         {
@@ -1711,6 +1898,32 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
             v->block.colour = (int) b.getProperty("colour", v->block.lane);
             v->block.muted = (bool) b.getProperty("muted", false);
             v->block.fadeShape = (FadeShape) juce::jlimit(0, 2, (int) b.getProperty("fadeShape", 0));
+            // Musical time. Every default here is what a document written before
+            // MIRA-BLOCKS existed means: no tempo, no measurement, no parent, no slices.
+            v->block.tempo = juce::jmax(0.0, (double) b.getProperty("tempo", 0.0));
+            v->block.meter = juce::jlimit(1, 32, (int) b.getProperty("meter", 4));
+            v->block.barOnePos = juce::jmax(0.0, (double) b.getProperty("barOne", 0.0));
+            v->block.key = b.getProperty("key", "").toString();
+            v->block.tempoSource = b.getProperty("tempoSource", "").toString();
+            v->block.tempoConfidence = juce::jlimit(0.0, 1.0,
+                                                    (double) b.getProperty("tempoConfidence", 0.0));
+            v->block.barOneIsHuman = (bool) b.getProperty("barOneIsHuman", false);
+            if (auto* sl = b.getProperty("slices", {}).getArray())
+                for (const auto& sv : *sl)
+                {
+                    Slice s;
+                    s.sourceStart = juce::jmax(0.0, (double) sv.getProperty("src", 0.0));
+                    s.sourceLength = juce::jmax(0.0, (double) sv.getProperty("len", 0.0));
+                    s.placeAt = (double) sv.getProperty("at", 0.0);
+                    s.gainDb = (double) sv.getProperty("gainDb", 0.0);
+                    s.muted = (bool) sv.getProperty("muted", false);
+                    if (s.sourceLength > 0.0) v->block.slices.push_back(s);
+                }
+            // Held as the written INDEX and turned into an id once every block has one --
+            // see the note in toJson. Stored in the block's own field meanwhile because
+            // the ids handed out below are all >= 1, so a small index can never be
+            // mistaken for one once the remap has run.
+            followsIndex.push_back((int) b.getProperty("follows", -1));
             v->block.id = nextId++;
             v->settings = b.getProperty("settings", {});
             laneCount = juce::jmax(laneCount, v->block.lane + 1);
@@ -1723,6 +1936,16 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
                                                                : base.getChildFile(path));
             items.push_back(std::move(v));
         }
+
+    for (size_t n = 0; n < followsIndex.size() && n < items.size(); ++n)
+    {
+        const int parent = followsIndex[n];
+        // A parent that points at itself or outside the array is dropped rather than
+        // stored: a self-link is the shortest possible cycle, and step 4.2 refuses cycles
+        // at the point they are made. Nothing should be able to get in through the door.
+        if (parent >= 0 && parent < (int) items.size() && (size_t) parent != n)
+            items[n]->block.followsBlockId = items[(size_t) parent]->block.id;
+    }
 
     if (auto* clips = root.getProperty("video", {}).getArray())
         for (const auto& c : *clips)
@@ -1934,6 +2157,91 @@ void CanvasView::clearAll()
     repaint();
 }
 
+// Whether this block draws a grid at all, and how much room it takes.
+//
+// Below ~5 px the lines sit closer together than they are wide and the footer becomes a
+// grey band that says nothing -- so beats drop out first, then bars, then the footer
+// itself. A grid you cannot count is not a smaller grid, it is noise.
+int CanvasView::gridFooterHeight(const Visual& v, int blockHeight) const
+{
+    if (v.block.tempo <= 0.0 || blockHeight < kGridFooterMin) return 0;
+    const double pxPerBeat = (60.0 / v.block.tempo) * pixelsPerSecond;
+    if (pxPerBeat < 5.0 && pxPerBeat * juce::jmax(1, v.block.meter) < 5.0) return 0;
+    return kGridFooterHeight;
+}
+
+// The grid, drawn as a FOOTER along the bottom of the block (MIRA-BLOCKS.md 1.3).
+//
+// A footer and not an overlay across the waveform: the waveform is what you read to find
+// a transient by eye, and beat lines through it are the thing that makes a drawn grid
+// start to feel like a grid you have to obey. Along the bottom it is scaffolding you can
+// glance at and ignore, which is the whole rule -- THE GRID IS DRAWN, NEVER ENFORCED.
+//
+// Bar 1 is held in SOURCE time, so the timeline position of a source second is
+// `block.start + (s - block.sourceOffset)`. That indirection is the point: trimming the
+// left edge moves `sourceOffset` and the grid stays on the music rather than sliding with
+// the edge.
+void CanvasView::paintBlockGrid(juce::Graphics& g, const Visual& v, juce::Rectangle<int> r,
+                                juce::Colour tint, bool isSelected)
+{
+    if (gridFooterHeight(v, r.getHeight()) <= 0) return;
+
+    const double spb = 60.0 / v.block.tempo;
+    const double pxPerBeat = spb * pixelsPerSecond;
+    const bool beats = pxPerBeat >= 5.0;
+    const int meter = juce::jmax(1, v.block.meter);
+
+    auto foot = r.removeFromBottom(kGridFooterHeight).reduced(1, 0);
+    juce::Graphics::ScopedSaveState clip (g);
+    g.reduceClipRegion(foot);
+
+    g.setColour(tint.withAlpha(0.18f));
+    g.fillRect(foot);
+
+    // Bar 1 on the TIMELINE, and the first beat at or left of the block's left edge. The
+    // floor is done in beats rather than by walking from bar 1, so a block whose bar 1
+    // sits far off screen costs the same as one whose does not.
+    const double barOneOnTimeline = v.block.start + (v.block.barOnePos - v.block.sourceOffset);
+    const double blockEnd = v.block.end();
+    const long long firstBeat = (long long) std::floor((v.block.start - barOneOnTimeline) / spb);
+    const long long lastBeat  = (long long) std::ceil((blockEnd - barOneOnTimeline) / spb);
+    // A tempo typed as 0.01 would ask for millions of lines. The cap is a refusal to draw
+    // rather than a clamp on the tempo: the number you typed is still the number shown.
+    if (lastBeat - firstBeat > 20000) return;
+
+    const float top = (float) foot.getY(), bottom = (float) foot.getBottom();
+    const bool numbers = pxPerBeat * meter >= 26.0 && foot.getHeight() >= 11;
+
+    for (long long n = firstBeat; n <= lastBeat; ++n)
+    {
+        // Floored division, so bars keep counting the right way to the LEFT of bar 1 --
+        // a pickup before the downbeat is negative, not bar 1 twice.
+        const long long bar = (n >= 0 ? n / meter : -(((-n) + meter - 1) / meter));
+        const bool isBar = (n - bar * meter) == 0;
+        if (!isBar && !beats) continue;
+
+        const float x = (float) secondsToX(barOneOnTimeline + (double) n * spb);
+        if (x < (float) foot.getX() - 1.0f || x > (float) foot.getRight()) continue;
+
+        g.setColour(isBar ? tint.brighter(0.5f).withAlpha(isSelected ? 0.95f : 0.7f)
+                          : tint.brighter(0.2f).withAlpha(isSelected ? 0.5f : 0.35f));
+        g.drawLine(x, isBar ? top : top + foot.getHeight() * 0.45f, x, bottom, isBar ? 1.2f : 0.8f);
+
+        // Bars BEFORE bar 1 are drawn but not numbered, the same way the waveform's bars
+        // ruler leaves a pickup unnumbered: "bar 0" and "bar -1" are arithmetic, not
+        // things anyone says out loud about music.
+        if (isBar && numbers && bar >= 0)
+        {
+            g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.7f : 0.45f));
+            g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(8.5f)));
+            g.drawText(juce::String((long long) (bar + 1)),
+                        juce::Rectangle<float>(x + 2.0f, top, 22.0f, (float) foot.getHeight())
+                            .toNearestInt(),
+                        juce::Justification::centredLeft, false);
+        }
+    }
+}
+
 juce::Rectangle<int> CanvasView::boundsOf(const Visual& v) const
 {
     const int x = secondsToX(v.block.start);
@@ -2064,7 +2372,8 @@ void CanvasView::paint(juce::Graphics& g)
             // The name strip only costs height while there is height to spare; below that
             // the waveform gets all of it, which is the point of zooming in vertically.
             const int nameStrip = r.getHeight() >= 46 ? 16 : 0;
-            auto wave = r.reduced(4, 3).withTrimmedTop(nameStrip);
+            auto wave = r.reduced(4, 3).withTrimmedTop(nameStrip)
+                         .withTrimmedBottom(gridFooterHeight(*item, r.getHeight()));
             // The waveform occupies only as much of the block as it actually fills. The
             // rest is the TAIL, and drawing the thumbnail across it would show empty space
             // as if it were silence someone recorded.
@@ -2144,6 +2453,10 @@ void CanvasView::paint(juce::Graphics& g)
             }
         }
 
+        // Under the muted hatch and under the selection outline: the grid is the least
+        // important thing in the block, and it has to look it.
+        paintBlockGrid(g, *item, r, tint, isSelected);
+
         // A MUTED BLOCK has to read as muted at a glance, not on inspection: hatched, so
         // it is distinguishable from a quiet one even in a screenshot.
         if (item->block.muted)
@@ -2216,12 +2529,35 @@ void CanvasView::paint(juce::Graphics& g)
 
             // Key and tempo on the RIGHT of the same row, so the name can be as long as it
             // likes without pushing them off.
-            if (const auto tags = keyAndTempoOf(item->settings); tags.isNotEmpty()
-                                                                 && headerRow.getWidth() > 150)
+            // The BLOCK's tempo and key, falling back to the prompt's only when the block
+            // has none. Reading `settings` here would show the recipe you are about to
+            // generate with over audio that was made with a different one -- and now that
+            // 1.5 lets you type a tempo, the number on screen has to be the one the grid
+            // below it is drawn from.
+            if (auto tagBox = blockTagBox(*item); !tagBox.isEmpty())
             {
-                auto tagBox = headerRow.removeFromRight(juce::jmin(130, headerRow.getWidth() / 2));
-                g.setColour(isSelected ? MiraLookAndFeel::text.withAlpha(0.75f)
-                                       : tint.brighter(0.15f).withAlpha(0.8f));
+                auto tags = musicLabelOf(item->block);
+                // A block whose prompt said nothing about tempo still shows the BOX, faint
+                // and with a dash in it. Drawing nothing would be honest about the tempo
+                // and silent about the gesture: roughly a quarter of takes arrive with no
+                // BPM in their recipe, and those are exactly the blocks someone needs to
+                // be able to double-click and type one into.
+                const bool placeholder = tags.isEmpty();
+                if (placeholder)
+                    tags = keyAndTempoOf(item->settings).isNotEmpty()
+                               ? keyAndTempoOf(item->settings)
+                               : juce::String(juce::CharPointer_UTF8("\xe2\x80\x93 bpm"));
+                headerRow = headerRow.withTrimmedRight(tagBox.getWidth());
+                // It LOOKS like the gain box next to it, because it behaves like it: a
+                // number you drag. A readout and a control that are dragged the same way
+                // and drawn differently is how you get a control nobody finds.
+                if (item->block.tempo > 0.0 || placeholder)
+                {
+                    g.setColour(tint.withAlpha(placeholder ? 0.12f : 0.3f));
+                    g.fillRoundedRectangle(tagBox.toFloat(), 2.5f);
+                }
+                g.setColour(isSelected ? MiraLookAndFeel::text.withAlpha(placeholder ? 0.35f : 0.9f)
+                                       : MiraLookAndFeel::text.withAlpha(placeholder ? 0.3f : 0.75f));
                 g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.5f)));
                 g.drawText(tags, tagBox, juce::Justification::centredRight, true);
                 g.setColour(isSelected ? MiraLookAndFeel::text : tint.brighter(0.4f));
@@ -2526,6 +2862,18 @@ CanvasView::Visual* CanvasView::hitTest(juce::Point<int> p, Drag& what)
         // block, and a three-pixel miss that drags the whole block instead of nudging its
         // level is the kind of thing that makes a control not worth having.
         if (blockGainBox(**it).contains(p))     { what = Drag::Gain; return it->get(); }
+        // The TEMPO box is dragged, not typed into (1.5). A text field that pops up over
+        // the block is a modal moment in the middle of arranging; a number you push with
+        // the mouse is the same gesture as the gain box three pixels to its left.
+        if (auto tb = blockTagBox(**it); !tb.isEmpty() && tb.contains(p))
+        { what = Drag::Tempo; return it->get(); }
+        // THE GRID FOOTER drags bar 1 (1.4). Trimming keeps the edges: trim has only the
+        // seven pixels at each end, and the footer has all the rest of its band, so the
+        // cheaper gesture to lose is the one with a whole strip to spare.
+        if (const int foot = gridFooterHeight(**it, r.getHeight());
+            foot > 0 && p.y >= r.getBottom() - foot
+            && p.x - r.getX() > kEdgeGrab && r.getRight() - p.x > kEdgeGrab)
+        { what = Drag::BarOne; return it->get(); }
         if (p.x - r.getX() <= kEdgeGrab)        what = Drag::TrimLeft;
         else if (r.getRight() - p.x <= kEdgeGrab) what = Drag::TrimRight;
         else                                     what = Drag::Move;
@@ -2556,6 +2904,10 @@ void CanvasView::mouseMove(const juce::MouseEvent& e)
     hitTest(e.getPosition(), what);
     setMouseCursor(what == Drag::TrimLeft || what == Drag::TrimRight
                        ? juce::MouseCursor::LeftRightResizeCursor
+                   : what == Drag::BarOne
+                       ? juce::MouseCursor::DraggingHandCursor
+                   : what == Drag::Tempo
+                       ? juce::MouseCursor::UpDownResizeCursor
                    : (what == Drag::FadeIn || what == Drag::FadeOut)
                        ? juce::MouseCursor::PointingHandCursor
                        : juce::MouseCursor::NormalCursor);
@@ -2734,7 +3086,7 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     // ONE snapshot per gesture, taken as the drag begins -- not per mouse event, or
     // undoing a slow drag would take fifty presses to get back where you started.
     if (what == Drag::Move || what == Drag::TrimLeft || what == Drag::TrimRight
-        || what == Drag::Gain
+        || what == Drag::Gain || what == Drag::BarOne || what == Drag::Tempo
         || what == Drag::FadeIn || what == Drag::FadeOut) pushUndo();
 
     drag = what;
@@ -2752,6 +3104,13 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
     dragOriginLength = hit->block.length;
     dragOriginOffset = hit->block.sourceOffset;
     dragOriginGain = hit->block.gainDb;
+    dragOriginBarOne = hit->block.barOnePos;
+    // Where a tempo drag starts from when the block has none: what the recipe asked for,
+    // and only then a round number. 120 is a stated default, not a measurement -- which is
+    // why the drag also stamps `tempoSource = "typed"`: the number came from your hand.
+    dragOriginTempo = hit->block.tempo > 0.0 ? hit->block.tempo
+                    : promptTempoOf(hit->block) > 0.0 ? promptTempoOf(hit->block)
+                                                      : 120.0;
     dragStart = e.getPosition();
     dragOriginLane = hit->block.lane;
     repaint();
@@ -2809,6 +3168,53 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
     if (drag == Drag::None) return;
 
     const double deltaSeconds = xToSeconds(e.x) - dragGrabSeconds;
+
+    // BAR 1 moves on the DRAGGED block only, never across the selection: where the
+    // downbeat falls is a fact about one piece of audio, and dragging a grid is a claim
+    // about that audio and nothing else.
+    if (drag == Drag::Tempo)
+    {
+        Visual* v = nullptr;
+        for (auto& i : items) if (i->block.id == dragTarget) { v = i.get(); break; }
+        if (v == nullptr) return;
+        // Up is faster, the way up is louder on the gain box beside it. A quarter of a bpm
+        // per pixel puts 20-400 inside one screen of travel while still landing on the
+        // number you meant; shift divides that by five for the 87.3 case, which is the one
+        // this whole feature exists for.
+        const double perPixel = e.mods.isShiftDown() ? 0.05 : 0.25;
+        const double raw = dragOriginTempo - (double) (e.y - dragStart.y) * perPixel;
+        // Whole bpm unless you ask for finer, because a grid at 94.9983 is a grid nobody
+        // typed and nobody wanted. The precision is available, it is just not the default.
+        v->block.tempo = juce::jlimit(20.0, 400.0,
+                                       e.mods.isShiftDown() ? std::round(raw * 10.0) / 10.0
+                                                            : std::round(raw));
+        v->block.tempoSource = "typed";
+        // A dragged tempo is not a measured one -- see commitTempoEdit's reasoning, which
+        // this gesture replaced: a stale confidence would let step 3 allow or refuse a
+        // stretch on the strength of a number that no longer describes anything.
+        v->block.tempoConfidence = 0.0;
+        markDirty();
+        repaint();
+        return;
+    }
+
+    if (drag == Drag::BarOne)
+    {
+        Visual* v = nullptr;
+        for (auto& i : items) if (i->block.id == dragTarget) { v = i.get(); break; }
+        if (v == nullptr) return;
+        // Stored in SOURCE time, so the delta goes straight in: a second of timeline is a
+        // second of file, and that is exactly why trimming the left edge afterwards
+        // cannot break the phase.
+        v->block.barOnePos = juce::jmax(0.0, dragOriginBarOne + deltaSeconds);
+        // You moved it by eye, so it is yours: an analysis will not put it back (1.4, and
+        // convention 5). Set on the drag rather than on mouse-up so a drag abandoned
+        // mid-gesture still counts -- the grid has already moved on screen.
+        v->block.barOneIsHuman = true;
+        markDirty();
+        repaint();
+        return;
+    }
 
     for (auto& i : items)
     {

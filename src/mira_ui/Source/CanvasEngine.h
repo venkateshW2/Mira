@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <vector>
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_devices/juce_audio_devices.h>
@@ -50,6 +51,23 @@ inline float fadeGain (float t, FadeShape shape) noexcept
     }
 }
 
+// One region of a block's file, placed inside the block. MIRA-BLOCKS.md §8.
+//
+// The shape goes in NOW, before anything writes more than one entry, because it is the
+// one part of that plan which is expensive to retrofit: it changes the document, and a
+// document change made later has to cope with every file written before it.
+//
+// An EMPTY list means "the whole of the file from sourceOffset", which is every block
+// that exists today -- so a block with no slices behaves exactly as it always has.
+struct Slice
+{
+    double sourceStart = 0.0;    // seconds into the file
+    double sourceLength = 0.0;
+    double placeAt = 0.0;        // seconds from the block's start
+    double gainDb = 0.0;
+    bool   muted = false;
+};
+
 // One block on the canvas. Times are in SECONDS on the canvas timeline; `sourceOffset` is
 // where in the file the block starts, so trimming the left edge moves the offset rather
 // than the audio.
@@ -88,6 +106,33 @@ struct Block
     // An empty block has no file yet: a frame you placed before you generated into it.
     // That is the point of it -- lay out the shape of the piece first, fill it after.
     bool hasAudio() const { return file != juce::File(); }
+
+    // ---- musical time (MIRA-BLOCKS.md) --------------------------------------------
+    // It lives on the BLOCK and not on the track, because a block moves between tracks
+    // freely: anything musical held by a track is positional, and dragging a block one
+    // row down would change what it means. A per-track tempo is also just the global
+    // grid reintroduced one level down, which is the thing the canvas exists to avoid.
+    //
+    // The rule the whole feature follows: THE GRID IS DRAWN, NEVER ENFORCED. Nothing
+    // here gates placing, trimming or generating; it is scaffolding for the eye.
+    double tempo = 0.0;          // BPM. 0 = unknown -- from the prompt, typed, or measured
+    int    meter = 4;            // beats per bar
+    // Bar 1, in SOURCE time (seconds into the file), NOT timeline time. That is what
+    // makes moving the block, dropping it on another track, trimming its left edge and
+    // appending an extension all leave the phase where it was.
+    double barOnePos = 0.0;
+    juce::String key;            // "C minor", from the prompt or measured
+    // Where `tempo` came from, because a grid that cannot say that is a grid you cannot
+    // argue with: "prompt" | "typed" | "measured" | "block 1"
+    juce::String tempoSource;
+    // $.rhythm.beat_grid_stability -- 0 when nothing has been measured. Convention 6:
+    // an unmeasured grid says so rather than borrowing a number it did not earn.
+    double tempoConfidence = 0.0;
+    juce::int64 followsBlockId = 0;   // 0 = independent
+    // Whether a bar 1 set by hand survives the next analysis. Convention 5: `human`
+    // outranks machine, so a nudge you made by ear is not overwritten by a model.
+    bool barOneIsHuman = false;
+    std::vector<Slice> slices;
 
     double end() const { return start + length; }
 };

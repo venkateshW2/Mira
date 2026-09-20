@@ -355,7 +355,11 @@ private:
         double audioSeconds = 0.0;
     };
 
-    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain, LaneMove, LaneResize, MarkerMove };
+    // BarOne drags the grid footer, which moves where bar 1 sits WITHIN THE FILE -- see
+    // MIRA-BLOCKS.md 1.4. It is its own verb rather than a modifier on Move because moving
+    // a block and moving its grid are opposite intentions: one says "this audio belongs
+    // later", the other says "this audio was always in phase, I had the downbeat wrong".
+    enum class Drag { None, Move, TrimLeft, TrimRight, FadeIn, FadeOut, Playhead, Marquee, Pan, Gain, LaneMove, LaneResize, MarkerMove, BarOne, Tempo };
 
     const MiraLookAndFeel& laf;
     juce::AudioFormatManager& formats;
@@ -513,6 +517,9 @@ private:
     // them has ever had a button.
     juce::Rectangle<int> blockMuteBox(const Visual& v) const;
     juce::Rectangle<int> blockGainBox(const Visual& v) const;
+    // Where the tempo and key sit in the block header -- ONE definition, so the painter,
+    // the double-click and the editor cannot disagree about a 130-pixel box.
+    juce::Rectangle<int> blockTagBox(const Visual& v) const;
     void paintGenerationStrip(juce::Graphics&, const Visual&, juce::Rectangle<int>) const;
     // Every wav in a block's folder, newest first -- the folder IS the take list, so
     // there is no index to keep in step with it.
@@ -556,6 +563,9 @@ private:
     juce::File blockFolderFor(const Visual&) const;
     Visual* singleSelection();
     void setFileOn(Visual&, const juce::File&);
+    // Tempo and key from the take's own sidecar recipe (MIRA-BLOCKS.md 1.2). `force`
+    // overrules a typed or measured grid, which only the double-click asks for.
+    void musicFromTake(Visual&, bool force = false);
     void announceSelection();
     // One place that points the side panel at a block, because there were three and they
     // drifted: Cmd-D left the panel aimed at the ORIGINAL, so the next Generate landed on
@@ -583,6 +593,23 @@ private:
         ~UndoGuard() { v.undoSuppressed = false; }
     };
     juce::Rectangle<int> boundsOf(const Visual&) const;
+    double dragOriginBarOne = 0.0;
+    double dragOriginTempo = 0.0;
+
+    // ---- the grid footer (MIRA-BLOCKS.md 1.3) --------------------------------------
+    // How tall the strip along the bottom of a block is, and the shortest block that can
+    // hold one. Below `kGridFooterMin` the block shows its tempo and key as a one-line
+    // summary in its header instead, which is the same rule the per-track padlock and the
+    // block's own name strip already follow: a control that does not fit is not drawn
+    // smaller, it is replaced by words.
+    static constexpr int kGridFooterHeight = 14;
+    static constexpr int kGridFooterMin = 62;
+    // ONE decision, asked by both the painter and the waveform -- otherwise the waveform
+    // makes room for a footer that the density guard then refuses to draw, and the block
+    // grows a mystery empty band.
+    int gridFooterHeight(const Visual&, int blockHeight) const;
+    void paintBlockGrid(juce::Graphics&, const Visual&, juce::Rectangle<int>,
+                        juce::Colour tint, bool isSelected);
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();
     void timerCallback() override;
