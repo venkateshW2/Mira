@@ -867,6 +867,22 @@ exactly the takes it is most wanted for.
       and worse than usual here because it is silent: `parentOf` returns null, the badge
       vanishes, and the block *looks* independent while still carrying a dead id the next
       save writes out.
+- [x] **4.7** **New block following this** — and this is the gesture step 4 was actually
+      for. The first build shipped without it, and the user's question was the whole review:
+      *"the follow option should come when I open a NEW block right — an already generated
+      block, what's the use of it?"* Correct. **A link fills the prompt BEFORE you generate,
+      so offering it only on blocks that already have audio is offering it exactly one
+      generation too late.**
+      The new block arrives with the parent's **whole generator** — LoRA, cfg, steps, prompt,
+      because those are the expensive things to retype — then the parent's tempo and key
+      written into that prompt. It is **a whole number of bars long** (8, halved until it
+      fits the generator's default duration, rather than asking for a length the worker will
+      refuse) and it **starts on one of the parent's bar lines**: a child generated off the
+      grid has to be conformed before it is worth hearing, and it costs nothing to start it
+      right.
+      (Follows on an existing block is not useless — Extend and Remix use the prompt again,
+      and the stale badge still reports a parent that moved. But that is the secondary case,
+      and the secondary case was the only one reachable.)
 - [ ] **4.5** Verify on screen.
 
 **Done when** generating a second block against the first needs no retyping.

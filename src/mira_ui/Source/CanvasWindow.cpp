@@ -1493,6 +1493,88 @@ void CanvasView::addEmptyBlock()
     repaint();
 }
 
+// THE GESTURE STEP 4 WAS ACTUALLY FOR, and the one it shipped without.
+//
+// "the follow option should come when i open a NEW block right -- an already generated
+// block, what's the use of it?" Correct, and it was the wrong way round: a link fills the
+// prompt BEFORE you generate, so offering it only on blocks that already have audio is
+// offering it exactly one generation too late.
+//
+// (It is not useless on an existing block -- the prompt is used again by Extend and Remix,
+// and the stale badge still tells you the parent moved -- but that is the secondary case,
+// and the secondary case was the only one you could reach.)
+//
+// This is MIRA-BLOCKS.md §4's whole loop in one menu item: a new block that already knows
+// the tempo, the key, the LoRA and the prompt of the block it is going to sit with.
+void CanvasView::addBlockFollowing(juce::int64 parentId)
+{
+    const Visual* parent = nullptr;
+    for (const auto& i : items) if (i->block.id == parentId) { parent = i.get(); break; }
+    if (parent == nullptr) return;
+
+    // Read before the new block is added -- `items` reallocates, and a pointer into it does
+    // not survive the push_back below.
+    const auto parentSettings = parent->settings;
+    const double parentTempo = parent->block.tempo;
+    const int parentMeter = juce::jmax(1, parent->block.meter);
+    const auto bars = parentBarGrid(*parent, 0.0, contentEnd() + 600.0);
+
+    addEmptyBlock();
+    auto* child = singleSelection();
+    if (child == nullptr) return;
+
+    // The parent's whole generator, not just its numbers. The LoRA, the cfg, the steps and
+    // the prompt are the expensive things to retype, and "generating a second block against
+    // the first needs no retyping" is step 4's own done-when.
+    child->settings = parentSettings.clone();
+    child->block.followsBlockId = parentId;
+
+    if (parentTempo > 0.0)
+    {
+        // A WHOLE NUMBER OF BARS, because that is the only length worth asking a model for
+        // when you already know the tempo -- and 8 unless 8 does not fit in the generator's
+        // default duration, in which case halve until it does rather than asking for a
+        // length the worker will refuse.
+        const double barSeconds = (60.0 / parentTempo) * parentMeter;
+        int wanted = 8;
+        while (wanted > 1 && barSeconds * wanted > 30.0) wanted /= 2;
+        child->block.length = barSeconds * wanted;
+
+        // IN PHASE FROM BIRTH. Starting on a bar line of the parent is the whole point:
+        // a child generated off the grid has to be conformed before it is worth hearing,
+        // and it costs nothing to start it right.
+        if (!bars.empty())
+        {
+            double best = bars.front();
+            for (const auto t : bars)
+                if (std::abs(t - child->block.start) < std::abs(best - child->block.start)) best = t;
+            if (best >= 0.0) child->block.start = best;
+        }
+        // Its own grid starts as the parent's, so the footer draws something true before a
+        // single note exists. `tempoSource` says where it came from, as ever.
+        child->block.tempo = parentTempo;
+        child->block.meter = parentMeter;
+        child->block.tempoSource = "block";   // "from block N", not measured and not typed
+    }
+
+    adoptParentMusic(*child);   // writes the parent's tempo and key into the child's PROMPT
+
+    rebuildAudio();
+    markDirty();
+    announceSelection();
+    repaint();
+    if (onTakeNote)
+    {
+        const auto* p = parentOf(*child);
+        onTakeNote(child->block.name + " follows " + (p != nullptr ? p->block.name : juce::String("?"))
+                    + (parentTempo > 0.0
+                        ? " - " + juce::String(child->block.length / ((60.0 / parentTempo) * parentMeter), 0)
+                            + " bars at " + juce::String(parentTempo, 1) + " bpm, on the grid. "
+                            + "Its prompt is ready; press Generate."
+                        : juce::String(" - it has no tempo to pass on yet")));
+    }
+}
+
 void CanvasView::duplicateSelection()
 {
     if (selected.empty()) return;
@@ -1596,6 +1678,7 @@ namespace BlockMenu {
         kStretchFirst = 400, kStretchLast = 459,
         kStretchUnavailable = 399,
         kFollowsNone = 460, kFollowsFirst = 461, kFollowsLast = 498, kFollowsRefresh = 499,
+        kNewFollowing = 520,
         kLegendFirst = 500                     // all disabled: readouts, never clicked
     };
 }
@@ -1769,6 +1852,8 @@ void CanvasView::showBlockMenu(Visual& v)
                              !loops, v.block.followsBlockId == other->block.id);
         }
         m.addSubMenu("Follows", follows);
+        // Where the link is actually WORTH setting: on a block that does not exist yet.
+        m.addItem(BlockMenu::kNewFollowing, "New block following this", v.block.tempo > 0.0);
         if (isStale(v))
             m.addItem(BlockMenu::kFollowsRefresh,
                        "Its parent moved to " + juce::String(parentOf(v)->block.tempo, 1)
@@ -1887,6 +1972,7 @@ void CanvasView::showBlockMenu(Visual& v)
                                  self.conformSelectionTo((juce::int64) self.stretchTargets[i]);
                              return;
                          }
+                         if (result == BlockMenu::kNewFollowing) { self.addBlockFollowing(id); return; }
                          if (result == BlockMenu::kFollowsNone) { self.setFollows(id, 0); return; }
                          if (result >= BlockMenu::kFollowsFirst && result <= BlockMenu::kFollowsLast)
                          {

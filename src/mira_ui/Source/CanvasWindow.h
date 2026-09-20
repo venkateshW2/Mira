@@ -247,6 +247,12 @@ public:
     // before you generate, it tells you when the parent has moved underneath it, and it
     // does nothing else. It never re-stretches audio on its own.
     void setFollows(juce::int64 childId, juce::int64 parentId);   // 0 = independent
+    // A NEW block that follows an existing one: the parent's generator settings, its tempo
+    // and key in the prompt, a whole number of bars long, starting on one of its bar lines.
+    // This is the gesture step 4 was actually for -- a link fills the prompt BEFORE you
+    // generate, so offering it only on blocks that already have audio is one generation
+    // too late.
+    void addBlockFollowing(juce::int64 parentId);
     // Walks the whole chain: A -> B -> C -> A is the same mistake with more rope.
     bool wouldCycle(juce::int64 childId, juce::int64 parentId) const;
 
