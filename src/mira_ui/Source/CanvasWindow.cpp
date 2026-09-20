@@ -1573,6 +1573,23 @@ void CanvasView::setSelectionMuted(bool muted)
     repaint();
 }
 
+// THE BLOCK MENU'S ID RANGES, named, because the alternative has already cost a feature.
+//
+// The take list quietly claimed 100-299 (100+i shows take i, 200+i trashes it) and the
+// handler tests that range FIRST. "Stretch this take to" was then given ids 140-179 and was
+// swallowed whole: every click was handled as "show take 40", which does not exist, so the
+// menu item did nothing at all and said nothing about it -- "nothing happens".
+//
+// Nothing in the code said 100-299 was taken. It does now.
+namespace BlockMenu {
+    enum : int {
+        kTakesFirst = 100, kTakesLast = 299,   // 100+i show, 200+i trash
+        kStretchFirst = 400, kStretchLast = 459,
+        kStretchUnavailable = 399,
+        kLegendFirst = 500                     // all disabled: readouts, never clicked
+    };
+}
+
 void CanvasView::showBlockMenu(Visual& v)
 {
     // Right-clicking something you have not selected selects it first. Otherwise the menu
@@ -1665,8 +1682,8 @@ void CanvasView::showBlockMenu(Visual& v)
             const double ratio = v.block.tempo / bpm;
             if (std::abs(ratio - 1.0) < 0.0005) return;
             stretchTargets.push_back(bpm);
-            const int id = 140 + (int) stretchTargets.size() - 1;
-            if (id > 179) return;
+            const int id = BlockMenu::kStretchFirst + (int) stretchTargets.size() - 1;
+            if (id > BlockMenu::kStretchLast) return;
             targets.addItem(id, label + "   " + juce::String(bpm, 1) + " bpm  ("
                                  + juce::String((ratio - 1.0) * 100.0, 1) + "% longer)",
                              canStretch);
@@ -1677,10 +1694,12 @@ void CanvasView::showBlockMenu(Visual& v)
         addTarget(std::round(v.block.tempo), "nearest whole bpm");
 
         if (stretchTargets.empty())
-            m.addItem(139, "Stretch to... (no other block has a tempo)", false);
+            m.addItem(BlockMenu::kStretchUnavailable,
+                       "Stretch to... (no other block has a tempo)", false);
         else if (!canStretch)
-            m.addItem(139, "Stretch to... (analyse this block first - its tempo is the "
-                            "prompt's, not the audio's)", false);
+            m.addItem(BlockMenu::kStretchUnavailable,
+                       "Stretch to... (analyse this block first - its tempo is the "
+                       "prompt's, not the audio's)", false);
         else
             m.addSubMenu("Stretch this take to", targets);
     }
@@ -1706,7 +1725,7 @@ void CanvasView::showBlockMenu(Visual& v)
         if (v.block.tempo > 0.0)
         {
             const bool measured = v.block.tempoSource == "measured";
-            key.addItem(90, "full-height lines = the " + juce::String(v.block.meter)
+            key.addItem(BlockMenu::kLegendFirst + 0, "full-height lines = the " + juce::String(v.block.meter)
                              + "/4 grid"
                              + (measured ? " (SOLID: the beats mira measured in this audio)"
                                          : " (DASHED: not measured -- this is the tempo you "
@@ -1714,21 +1733,21 @@ void CanvasView::showBlockMenu(Visual& v)
         }
         if (!v.onsets.empty())
         {
-            key.addItem(91, "ticks from the floor = detected onsets", false);
-            key.addItem(92, "   tall + amber = lands on the grid", false);
-            key.addItem(93, "   short + dim  = lands between grid lines", false);
+            key.addItem(BlockMenu::kLegendFirst + 1, "ticks from the floor = detected onsets", false);
+            key.addItem(BlockMenu::kLegendFirst + 2, "   tall + amber = lands on the grid", false);
+            key.addItem(BlockMenu::kLegendFirst + 3, "   short + dim  = lands between grid lines", false);
             if (const double share = onGridShareOf(v); share >= 0.0)
-                key.addItem(94, juce::String(juce::roundToInt(share * 100.0))
+                key.addItem(BlockMenu::kLegendFirst + 4, juce::String(juce::roundToInt(share * 100.0))
                                  + "% of the onsets land on this grid", false);
         }
         else
-            key.addItem(95, "no onsets yet -- press ANALYSE", false);
+            key.addItem(BlockMenu::kLegendFirst + 5, "no onsets yet -- press ANALYSE", false);
         // Step 2b in full: every window, so "it drifts" can be read as WHERE it drifts.
         if (const auto spans = tempoAcross(v); spans.size() >= 2)
         {
             juce::PopupMenu across;
             for (size_t i = 0; i < spans.size(); ++i)
-                across.addItem(120 + (int) i,
+                across.addItem(BlockMenu::kLegendFirst + 20 + (int) i,
                                 juce::String(spans[i].from, 1) + "-" + juce::String(spans[i].to, 1)
                                     + " s   " + juce::String(spans[i].bpm, 1) + " bpm  ("
                                     + juce::String(spans[i].beats) + " beats)", false);
@@ -1738,9 +1757,9 @@ void CanvasView::showBlockMenu(Visual& v)
         // own and never will: it is drawn, never enforced. Analyse is what MEASURES a grid
         // off the audio and moves bar 1 onto a real downbeat.
         if (v.block.tempoSource != "measured")
-            key.addItem(96, "the grid does not follow the onsets until you Analyse", false);
+            key.addItem(BlockMenu::kLegendFirst + 6, "the grid does not follow the onsets until you Analyse", false);
         else
-            key.addItem(96, "drag a bar line, or the footer, to move bar 1", false);
+            key.addItem(BlockMenu::kLegendFirst + 6, "drag a bar line, or the footer, to move bar 1", false);
         m.addSubMenu("What the marks mean", key);
     }
     m.addSeparator();
@@ -1787,18 +1806,22 @@ void CanvasView::showBlockMenu(Visual& v)
                              self.announceSelection(); self.repaint();
                              return;
                          }
-                         if (result >= 100 && result < 300) { self.chooseTake(id, result); return; }
-                         if (result == 8) { self.beginRenameBlock(id); return; }
-                         if (result == 24) { self.analyseSelection(); return; }
-                         if (result == 26) { self.shiftTempoOctave(-1); return; }
-                         if (result == 27) { self.shiftTempoOctave(1);  return; }
-                         if (result >= 140 && result < 180)
+                         // STRETCH BEFORE TAKES. Both are ranges and the take range is the
+                         // wide one, so the specific test has to come first -- and now they
+                         // cannot overlap anyway, which is the actual fix.
+                         if (result >= BlockMenu::kStretchFirst && result <= BlockMenu::kStretchLast)
                          {
-                             const size_t i = (size_t) (result - 140);
+                             const size_t i = (size_t) (result - BlockMenu::kStretchFirst);
                              if (i < self.stretchTargets.size())
                                  self.stretchSelectionTo(self.stretchTargets[i]);
                              return;
                          }
+                         if (result >= BlockMenu::kTakesFirst && result <= BlockMenu::kTakesLast)
+                         { self.chooseTake(id, result); return; }
+                         if (result == 8) { self.beginRenameBlock(id); return; }
+                         if (result == 24) { self.analyseSelection(); return; }
+                         if (result == 26) { self.shiftTempoOctave(-1); return; }
+                         if (result == 27) { self.shiftTempoOctave(1);  return; }
                          if (result == 23)
                          {
                              self.pushUndo();

@@ -720,6 +720,15 @@ spike asks it the only question that matters — one click at exactly one second
 it come out. Seven ratios from 0.80 to 1.25, worst error **0.5 ms**, and **exactly 0.0 ms at
 ratio 1.0**. Without the compensation every one of those would have been 120 ms late.
 
+**"nothing happens" — a menu id collision, found the day it shipped.** The take list quietly
+owned **100-299** (`100+i` shows take i, `200+i` trashes it) and the handler tests that range
+FIRST. "Stretch this take to" was given 140-179 and was swallowed whole: every click was
+handled as *show take 40*, which does not exist, so the item did nothing **and said nothing
+about it**. Nothing in the code had ever written down that 100-299 was taken; there is a
+named `BlockMenu` enum now, the ranges cannot overlap, and the specific test runs before the
+wide one. The audio half was never wrong — verified separately on a real 99 s stereo take,
+99.00 s → 132.01 s at ratio 1.3334, level within 0.35 dB.
+
 **One thing worth keeping about the implementation:** the padding goes on the INPUT, not the
 output. The library's ratio for a call *is* outputSamples/inputSamples, so asking for the
 extra latency frames out of the same input would quietly change the stretch amount — the
