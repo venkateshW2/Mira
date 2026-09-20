@@ -1236,6 +1236,15 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
     v.beats.clear();
     v.downbeats.clear();
 
+    // A fact about the FILE, so it comes from the file's own sidecar and needs nothing in
+    // the document. A take that was never stretched simply has no such key.
+    v.stretchedFrom.clear();
+    if (f.existsAsFile())
+        if (auto recipe = juce::JSON::parse(f.withFileExtension("json").loadFileAsString());
+            auto* o = recipe.getDynamicObject())
+            if (o->hasProperty("stretch_from"))
+                v.stretchedFrom = juce::File(o->getProperty("stretch_from").toString()).getFileName();
+
     // Every route a take can arrive by goes through here -- a generation adopted, a take
     // chosen, a file dropped, a block split or duplicated, a document loaded -- so this is
     // the one place that has to know the audio changed.
@@ -1665,43 +1674,72 @@ void CanvasView::showBlockMenu(Visual& v)
         m.addItem(27, "Count it at " + juce::String(v.block.tempo * 2.0, 1) + " bpm  (*)",
                    v.block.tempo * 2.0 <= 400.0);
 
-        // ---- STRETCH TO (3.2) -------------------------------------------------------
-        // The targets are THE OTHER BLOCKS' tempos, by name, plus the nearest whole bpm.
-        // Nothing is typed: a field popping up over a block is the modal moment this canvas
-        // keeps refusing, and more to the point the real question is never "what number" --
-        // it is "make this one sit with THAT one", which is a thing you point at.
+        // ---- CONFORM TO (3.2, reshaped) ---------------------------------------------
+        // Not "stretch to a number". The targets are OTHER BLOCKS, and conforming does rate
+        // AND phase -- because a tempo without a phase is half an answer: two blocks at the
+        // same bpm whose downbeats sit 0.2 s apart flam, which is worse than two blocks at
+        // different tempos.
         //
-        // Every entry shows the RATIO it would apply, before it runs. A stretch is lossy and
-        // the size of it is the whole of whether you should (MIRA-BLOCKS.md §3: your ears
-        // decide, and the ratio is shown rather than gated).
+        // ORDERED BY HOW MUCH GETTING IT WRONG HURTS. A block that OVERLAPS this one sounds
+        // at the same time as it, so a phase error there is audible immediately; one that is
+        // merely adjacent wants the bar count to continue across the join, which matters but
+        // is not a flam. Everything else with a tempo is still offered, because sometimes
+        // you do mean the distant one -- just not first.
+        //
+        // The TRACK is deliberately not part of this. A block moves between tracks freely,
+        // which is the whole reason tempo lives on the block, so ordering by lane would put
+        // musical meaning back onto the track.
         const bool canStretch = v.block.tempoSource == "measured" || v.block.tempoSource == "typed";
         juce::PopupMenu targets;
         stretchTargets.clear();
-        auto addTarget = [&](double bpm, const juce::String& label) {
-            if (bpm < 20.0 || bpm > 400.0) return;
-            const double ratio = v.block.tempo / bpm;
-            if (std::abs(ratio - 1.0) < 0.0005) return;
-            stretchTargets.push_back(bpm);
-            const int id = BlockMenu::kStretchFirst + (int) stretchTargets.size() - 1;
-            if (id > BlockMenu::kStretchLast) return;
-            targets.addItem(id, label + "   " + juce::String(bpm, 1) + " bpm  ("
-                                 + juce::String((ratio - 1.0) * 100.0, 1) + "% longer)",
-                             canStretch);
-        };
+        struct Candidate { const Visual* v; int rank; juce::String why; };
+        std::vector<Candidate> cands;
         for (const auto& other : items)
-            if (other->block.id != v.block.id && other->block.tempo > 0.0)
-                addTarget(other->block.tempo, other->block.name);
-        addTarget(std::round(v.block.tempo), "nearest whole bpm");
+        {
+            if (other->block.id == v.block.id || other->block.tempo <= 0.0) continue;
+            if (isReferenceLane(other->block.lane)) continue;
+            const bool overlaps = other->block.start < v.block.end()
+                               && v.block.start < other->block.end();
+            // "Adjacent" is generous on purpose: within two bars of this block at ITS tempo.
+            // A gap you left deliberately is still a join you want counted through.
+            const double nearby = (60.0 / juce::jmax(20.0, v.block.tempo))
+                                * juce::jmax(1, v.block.meter) * 2.0;
+            const bool adjacent = !overlaps
+                && (std::abs(other->block.end() - v.block.start) <= nearby
+                    || std::abs(v.block.end() - other->block.start) <= nearby);
+            cands.push_back({ other.get(), overlaps ? 0 : adjacent ? 1 : 2,
+                               overlaps ? "plays with this" : adjacent ? "next to this" : "elsewhere" });
+        }
+        std::stable_sort(cands.begin(), cands.end(),
+                          [](const Candidate& a, const Candidate& b) { return a.rank < b.rank; });
+
+        int lastRank = -1;
+        for (const auto& c : cands)
+        {
+            const int id = BlockMenu::kStretchFirst + (int) stretchTargets.size();
+            if (id > BlockMenu::kStretchLast) break;
+            stretchTargets.push_back((double) c.v->block.id);
+            if (c.rank != lastRank) { targets.addSectionHeader(c.why); lastRank = c.rank; }
+            const double ratio = v.block.tempo / c.v->block.tempo;
+            // The RATIO, before it runs. A stretch is lossy and the size of it is the whole
+            // of whether you should -- shown, never gated (MIRA-BLOCKS.md §3: your ears
+            // decide). "in phase only" when there is no stretching to do at all.
+            const auto cost = std::abs(ratio - 1.0) < 0.0005
+                ? juce::String("in phase only")
+                : juce::String(c.v->block.tempo, 1) + " bpm  ("
+                    + juce::String((ratio - 1.0) * 100.0, 1) + "% longer)";
+            targets.addItem(id, c.v->block.name + "   " + cost, canStretch);
+        }
 
         if (stretchTargets.empty())
             m.addItem(BlockMenu::kStretchUnavailable,
-                       "Stretch to... (no other block has a tempo)", false);
+                       "Conform to... (no other block has a tempo)", false);
         else if (!canStretch)
             m.addItem(BlockMenu::kStretchUnavailable,
-                       "Stretch to... (analyse this block first - its tempo is the "
+                       "Conform to... (analyse this block first - its tempo is the "
                        "prompt's, not the audio's)", false);
         else
-            m.addSubMenu("Stretch this take to", targets);
+            m.addSubMenu("Conform this block to", targets);
     }
     // The same verb as the header chip, with room for a sentence. The chip is where you
     // press it; this is where you read what it said -- a 15-pixel square cannot hold
@@ -1813,7 +1851,7 @@ void CanvasView::showBlockMenu(Visual& v)
                          {
                              const size_t i = (size_t) (result - BlockMenu::kStretchFirst);
                              if (i < self.stretchTargets.size())
-                                 self.stretchSelectionTo(self.stretchTargets[i]);
+                                 self.conformSelectionTo((juce::int64) self.stretchTargets[i]);
                              return;
                          }
                          if (result >= BlockMenu::kTakesFirst && result <= BlockMenu::kTakesLast)
@@ -2105,6 +2143,7 @@ juce::String CanvasView::toJson(const juce::File& base) const
             o->setProperty("key", i->block.key);
             o->setProperty("tempoSource", i->block.tempoSource);
             if (i->block.tempoOctave != 0) o->setProperty("tempoOctave", i->block.tempoOctave);
+            if (i->block.conformedTo.isNotEmpty()) o->setProperty("conformedTo", i->block.conformedTo);
             o->setProperty("tempoConfidence", i->block.tempoConfidence);
             o->setProperty("barOneIsHuman", i->block.barOneIsHuman);
             // The parent is written as its INDEX in this array, not as its id. Ids are
@@ -2319,6 +2358,7 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
             v->block.key = b.getProperty("key", "").toString();
             v->block.tempoSource = b.getProperty("tempoSource", "").toString();
             v->block.tempoOctave = juce::jlimit(-2, 2, (int) b.getProperty("tempoOctave", 0));
+            v->block.conformedTo = b.getProperty("conformedTo", "").toString();
             v->block.tempoConfidence = juce::jlimit(0.0, 1.0,
                                                     (double) b.getProperty("tempoConfidence", 0.0));
             v->block.barOneIsHuman = (bool) b.getProperty("barOneIsHuman", false);
@@ -3402,6 +3442,36 @@ void CanvasView::paint(juce::Graphics& g)
                 g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
             }
 
+            // TWO BADGES, and they are two different claims (see Visual::stretchedFrom):
+            //   ~  this TAKE is a stretch of another take   -- a fact about the file
+            //   ->name  this BLOCK was conformed to that one -- a fact about the block
+            // Drawn after the name and before the tempo box, in the block's own colour so
+            // they read as chrome rather than as part of the title.
+            {
+                juce::String badge;
+                if (item->stretchedFrom.isNotEmpty())
+                    badge << juce::String(juce::CharPointer_UTF8("\xe2\x86\x94")) << " stretched";
+                if (item->block.conformedTo.isNotEmpty())
+                {
+                    if (badge.isNotEmpty()) badge << "  ";
+                    badge << juce::String(juce::CharPointer_UTF8("\xe2\x86\x92"))
+                          << " " << item->block.conformedTo;
+                }
+                if (badge.isNotEmpty() && headerRow.getWidth() > 150)
+                {
+                    g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.0f)));
+                    const int w = juce::jmin(headerRow.getWidth() / 2,
+                                              juce::roundToInt(juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), badge)) + 10);
+                    auto box = headerRow.removeFromRight(w);
+                    g.setColour(tint.withAlpha(isSelected ? 0.40f : 0.28f));
+                    g.fillRoundedRectangle(box.toFloat(), 2.5f);
+                    g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.85f : 0.6f));
+                    g.drawText(badge, box, juce::Justification::centred, false);
+                    g.setColour(isSelected ? MiraLookAndFeel::text : tint.brighter(0.4f));
+                    g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
+                }
+            }
+
             g.drawText(label, headerRow, juce::Justification::centredLeft, true);
         }
 
@@ -4266,6 +4336,122 @@ void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWhee
                                  { panBy (-step * 520.0 / pixelsPerSecond); return; }
 
     scrollVerticallyBy (juce::roundToInt (-step * 120.0));
+}
+
+// ---- conform: the other half of a stretch -------------------------------------------
+//
+// "if we take a tempo from a different block then we should match their POSITION also, or
+// else what's the point" -- and that is right. Two blocks at 107.14 whose downbeats sit
+// 0.2 s apart sound WORSE than two blocks at different tempos, because near-alignment is
+// what you hear as flam. Matching the rate without the phase fixes the number, not the
+// problem.
+//
+// THE RULE, and it is one rule: snap the child's bar 1 to the nearest line of the parent's
+// bar grid, EXTENDED beyond the parent in both directions. A grid is a tempo and a bar 1;
+// those define bar lines that do not stop where the block does. Which dissolves the case
+// that looked hard:
+//
+//   overlapping (any track)  -> snapping locks the phase, so they do not flam
+//   sequential  (any track)  -> snapping makes the bar count continue across the join
+//
+// Same arithmetic, and THE TRACK NEVER ENTERS INTO IT. That matters: a block moves between
+// tracks freely, which is the whole reason tempo lives on the block, so a rule that
+// depended on the lane would put musical meaning back on the track.
+//
+// Real downbeats inside the parent, nominal spacing outside it. Measured bars are not
+// perfectly even, so using the parent's actual downbeats where they exist is strictly
+// better than laying a period over them -- and outside its range there is nothing to use
+// but the period.
+std::vector<double> CanvasView::parentBarGrid(const Visual& parent, double coverFrom,
+                                               double coverTo) const
+{
+    std::vector<double> bars;
+    if (parent.block.tempo <= 0.0) return bars;
+    const double barSeconds = (60.0 / parent.block.tempo) * juce::jmax(1, parent.block.meter);
+    if (barSeconds <= 0.001) return bars;
+
+    const double from = parent.block.sourceOffset;
+    const auto grid = gridLinesOf(parent, from, from + juce::jmax(0.0, parent.block.length));
+    for (size_t i = 0; i < grid.beats.size(); ++i)
+        if (grid.isBar[i]) bars.push_back(parent.block.start + (grid.beats[i] - from));
+
+    if (bars.empty())
+        bars.push_back(parent.block.start + (parent.block.barOnePos - from));
+
+    // Extend outward until the range we were asked about is covered, with a bar of margin
+    // so "nearest" always has a line on both sides of the child.
+    for (double t = bars.front() - barSeconds; t >= coverFrom - barSeconds; t -= barSeconds)
+        bars.insert(bars.begin(), t);
+    for (double t = bars.back() + barSeconds; t <= coverTo + barSeconds; t += barSeconds)
+        bars.push_back(t);
+    return bars;
+}
+
+// Rate first, then phase. In that order because they are not independent: two blocks moved
+// into phase at different tempos drift apart again over the block's length, so aligning
+// before conforming the rate buys nothing that survives the first bar.
+bool CanvasView::conformSelectionTo(juce::int64 parentId)
+{
+    auto* child = singleSelection();
+    const Visual* parent = nullptr;
+    for (const auto& i : items) if (i->block.id == parentId) { parent = i.get(); break; }
+    if (child == nullptr || parent == nullptr || parent == child) return false;
+    if (parent->block.tempo <= 0.0)
+    { if (onTakeNote) onTakeNote(parent->block.name + " has no tempo to conform to"); return false; }
+
+    const double target = parent->block.tempo;
+    const double before = child->block.tempo;
+    juce::StringArray did;
+
+    // The stretch is skipped when there is nothing to stretch. A block already at the
+    // parent's tempo still wants its phase fixed, and rendering an identical file to
+    // achieve nothing would be a take in the folder that says something happened.
+    if (before > 0.0 && std::abs(before / target - 1.0) >= 0.0005)
+    {
+        if (!stretchSelectionTo(target)) return false;   // it has already said why
+        did.add("stretched " + juce::String(before, 1) + " -> " + juce::String(target, 1) + " bpm");
+    }
+    else if (before <= 0.0)
+    {
+        if (onTakeNote) onTakeNote("that block has no tempo of its own - analyse it first");
+        return false;
+    }
+
+    // ---- phase ----
+    const double childBarOne = child->block.start
+                             + (child->block.barOnePos - child->block.sourceOffset);
+    const auto bars = parentBarGrid(*parent, childBarOne - 1.0, childBarOne + 1.0);
+    if (!bars.empty())
+    {
+        double best = bars.front();
+        for (const auto t : bars) if (std::abs(t - childBarOne) < std::abs(best - childBarOne)) best = t;
+        double delta = best - childBarOne;
+        // Never off the front of the timeline: if the nearest line would push the block
+        // before zero, take the next one up instead. A block at a negative start is audio
+        // nobody can hear.
+        if (child->block.start + delta < 0.0)
+        {
+            const double barSeconds = (60.0 / target) * juce::jmax(1, parent->block.meter);
+            while (child->block.start + delta < 0.0) delta += barSeconds;
+        }
+        if (std::abs(delta) > 0.0005)
+        {
+            if (did.isEmpty()) pushUndo();   // the stretch already pushed one if it ran
+            child->block.start += delta;
+            did.add(juce::String(delta * 1000.0, 0) + " ms into phase");
+        }
+        else did.add("already in phase");
+    }
+
+    child->block.conformedTo = parent->block.name;
+    rebuildAudio();
+    markDirty();
+    announceSelection();
+    repaint();
+    if (onTakeNote)
+        onTakeNote(child->block.name + " conformed to " + parent->block.name
+                    + ": " + did.joinIntoString(", "));
+    return true;
 }
 
 // ---- MIRA-BLOCKS.md step 3.2-3.5: stretch a take to a tempo --------------------------

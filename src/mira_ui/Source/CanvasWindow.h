@@ -223,6 +223,12 @@ public:
     // Steps 3.2-3.5 -- conform the selected block's take to `targetBpm`, as a NEW take in
     // its folder. The original is untouched and Choose Take switches between them.
     bool stretchSelectionTo(double targetBpm);
+    // Rate AND phase: stretch the selected block to `parentId`'s tempo, then move it so its
+    // bar 1 lands on the nearest line of that block's bar grid, EXTENDED past its own ends.
+    // One rule covers layering (phase lock) and sequence (the bar count continues), and the
+    // TRACK never enters into it -- a block moves between tracks freely.
+    bool conformSelectionTo(juce::int64 parentId);
+
     // The tempos the block menu last offered, so the callback can answer by index rather
     // than by encoding a bpm in a menu id.
     std::vector<double> stretchTargets;
@@ -493,6 +499,13 @@ private:
         // The sentence that goes with it, kept so it can be re-read from the block menu
         // rather than living only in a status line one repaint can overwrite.
         juce::String analysisNote;
+        // Where this TAKE was stretched from, or empty. Read from the take's own sidecar, so
+        // it survives a reopen with no document change -- it is a fact about the FILE.
+        //
+        // Deliberately separate from `block.conformedTo`, which is a fact about the BLOCK.
+        // "this audio was stretched once" and "this block is tied to block 3" are different
+        // claims, and one icon for both would make them look like the same thing.
+        juce::String stretchedFrom;
         // The measured beats and downbeats in SOURCE seconds, when this block has been
         // analysed. Session state for the same reason the onsets are.
         std::vector<double> beats, downbeats;
@@ -809,6 +822,10 @@ private:
         bool measured = false;
     };
     GridLines gridLinesOf(const Visual&, double from, double to) const;
+    // A block's bar lines on the TIMELINE, real downbeats inside it and nominal spacing
+    // outside, covering at least [coverFrom, coverTo]. Declared here and not beside
+    // conformSelectionTo because it takes a Visual, which is private and declared below.
+    std::vector<double> parentBarGrid(const Visual& parent, double coverFrom, double coverTo) const;
     // Whether an onset lands on the grid: within 18% of a 16th, measured against the BEAT
     // IT FALLS IN rather than against a period extrapolated from bar 1. On a grid that
     // breathes even slightly those are different questions by the end of a take.

@@ -137,6 +137,11 @@ struct Block
     // are DRAWN, because once a block is measured the grid is the detected beats themselves
     // and halving a number nothing derives from would change the header and not the picture.
     int tempoOctave = 0;
+    // What this block was last CONFORMED to, by NAME. A record of an action, not a live
+    // link -- which is exactly why it is a name and not an id: ids are handed out fresh on
+    // every load (the trap `audioBlockId` is left unwritten to avoid), and a name is both
+    // stable across a reload and the thing a badge has to say out loud anyway.
+    juce::String conformedTo;
     juce::int64 followsBlockId = 0;   // 0 = independent
     // Whether a bar 1 set by hand survives the next analysis. Convention 5: `human`
     // outranks machine, so a nudge you made by ear is not overwritten by a model.

@@ -736,6 +736,56 @@ take would come back at the wrong tempo while the ratio printed on screen said o
 
 **Done when** a block that came back at 88.1 can sit at 87.3 without anyone typing a ratio.
 
+### Step 3b — conform, because a tempo without a phase is half an answer
+
+Added 2026-09-20 after using 3.2, from the user's own objection: *"if we take a tempo from a
+different block then we should match their POSITION also, or else what's the point — we can
+just have a stretch-to-tempo option."* Correct. Two blocks at 107.14 whose downbeats sit
+0.2 s apart sound **worse** than two blocks at different tempos, because near-alignment is
+what you hear as flam.
+
+- [x] **3b.1** **Conform this block to \<block\>** replaces "stretch to a number" in the
+      block menu. It does **rate and then phase**, in that order and not the other, because
+      they are not independent: two blocks moved into phase at different tempos drift apart
+      again over the block's length, so aligning first buys nothing that survives the bar.
+- [x] **3b.2** **The rule, and it is one rule: snap the child's bar 1 to the nearest line of
+      the parent's bar grid, EXTENDED past the parent in both directions.** A grid is a
+      tempo and a bar 1, and those define bar lines that do not stop where the block does.
+      The case that looked hard dissolves:
+      **overlapping** → snapping locks the phase, so they do not flam;
+      **sequential** → snapping makes the bar count continue across the join.
+      Same arithmetic, and **the TRACK never enters into it** — which matters, because a
+      block moves between tracks freely and that is the whole reason tempo lives on the
+      block. A rule that depended on the lane would put musical meaning back on the track.
+      Real downbeats inside the parent, nominal spacing outside: measured bars are not
+      perfectly even, so the parent's actual downbeats beat a period laid over them, and
+      beyond its range there is nothing to use but the period.
+- [x] **3b.3** **The candidates are ordered by how much getting it wrong hurts** —
+      *plays with this* (overlaps in time), then *next to this* (within two bars), then
+      *elsewhere*. Each shows the ratio it would apply, or **"in phase only"** when the
+      tempos already agree and there is nothing to stretch. A block already at the parent's
+      tempo still wants its phase fixed, and rendering an identical file to achieve nothing
+      would be a take in the folder claiming something happened.
+- [x] **3b.4** **Two badges on the header, because they are two different claims.**
+      `↔ stretched` is a fact about the **take** — read from the file's own sidecar, so it
+      survives a reopen with no document change. `→ block 1` is a fact about the **block** —
+      what it was last conformed to, stored **by NAME and not by id**, because ids are handed
+      out fresh on every load and a name is both stable and the thing a badge has to say
+      anyway. One icon for both would make *"this audio was stretched once"* and *"this block
+      is tied to block 3"* look like the same thing.
+- [ ] **3b.5** Verify on screen and by ear.
+
+**Deliberately NOT a live link.** `conformedTo` records an action; it does not re-run.
+§3's position stands — *"follows block N means a source for a number, not a second system"* —
+and a dependency that re-rendered audio when a parent changed would be the global grid back
+in a different hat, colliding with the rule that every change to a block's audio writes a
+new take.
+
+**Known and accepted:** on the same track a conform can move a block into its neighbour, and
+this canvas crossfades same-lane overlaps. It is allowed to happen and said out loud rather
+than refused — the move is always less than half a bar, it is one Cmd-Z, and refusing would
+be the tool overruling a placement that may well have been meant.
+
 ### Step 4 — the child
 
 - [ ] **4.1** **Follows block N** in the block menu, stored as `followsBlockId`. Drawn on the
