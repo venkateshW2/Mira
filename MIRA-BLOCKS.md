@@ -875,11 +875,25 @@ exactly the takes it is most wanted for.
       generation too late.**
       The new block arrives with the parent's **whole generator** — LoRA, cfg, steps, prompt,
       because those are the expensive things to retype — then the parent's tempo and key
-      written into that prompt. It is **a whole number of bars long** (8, halved until it
-      fits the generator's default duration, rather than asking for a length the worker will
-      refuse) and it **starts on one of the parent's bar lines**: a child generated off the
-      grid has to be conformed before it is worth hearing, and it costs nothing to start it
-      right.
+      written into that prompt. It is **the parent's length rounded to whole bars**, and it
+      **starts on one of the parent's bar lines**: a child generated off the grid has to be
+      conformed before it is worth hearing, and it costs nothing to start it right.
+      **The first version asked for 8 bars capped at 30 s, and both numbers were wrong.**
+      8 is arbitrary — if the block you are following is 16 bars, a child of 8 is a number
+      nobody chose; *"another one like this"* is what the gesture means. And **30 is the
+      generator's DEFAULT, not its maximum** (the slider runs 10–380), so following a 30 s
+      block at 128 bpm gave 8 bars = **15.00 s, exactly half**. The limit is now *asked* of
+      the panel (`maxDuration()`) rather than copied as a literal — which is precisely how a
+      default came to stand in for a maximum.
+      Rounding to whole bars is the one thing about the parent's length worth improving: a
+      29.7 s parent asks for 16 bars at 30.0 s, and what comes back loops.
+
+| parent | tempo | bar | child now | child before |
+|---|---|---|---|---|
+| 30.0 s | 128.0 | 1.875 s | **16 bars, 30.00 s** | 8 bars, 15.00 s |
+| 30.6 s | 107.1 | 2.240 s | 14 bars, 31.36 s | 8 bars, 17.92 s |
+| 29.2 s | 176.5 | 1.360 s | 21 bars, 28.56 s | 8 bars, 10.88 s |
+
       (Follows on an existing block is not useless — Extend and Remix use the prompt again,
       and the stale badge still reports a parent that moved. But that is the secondary case,
       and the secondary case was the only one reachable.)
