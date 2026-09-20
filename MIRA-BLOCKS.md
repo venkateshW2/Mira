@@ -679,16 +679,51 @@ actually for: conforming a **separate** take to a block's tempo.
       `SIGNALSMITH_USE_ACCELERATE` is on: measured to change **nothing** about the output
       (identical to the sample at all five ratios), so it is purely a speed flag and mira is
       Apple-only.
-- [ ] **3.2** **Stretch to \<tempo\>** in the block menu. Target from a typed field or from
-      the parent. Shows the ratio before it runs (`+9.7%`).
-- [ ] **3.3** Renders to a **new take** in the block's folder, named with its tempo, with a
-      sidecar recording the source take and the ratio. The original is untouched and Choose
-      Take switches between them.
-- [ ] **3.4** Aligns **bar 1**, not just the rate. Right tempo with the wrong phase is the
-      failure nobody predicts.
-- [ ] **3.5** Refuses when `tempoConfidence` is below the gate and says why.
+- [x] **3.2** **Stretch this take to** in the block menu — and the targets are **the other
+      blocks' tempos, by name**, plus the nearest whole bpm. Nothing is typed. A field
+      popping up over a block is the modal moment this canvas keeps refusing, and more to
+      the point the real question is never "what number", it is *make this one sit with THAT
+      one*, which is a thing you point at. Every entry shows the **ratio before it runs**
+      (`+2.4% longer`), because a stretch is lossy and the size of it is the whole of
+      whether you should — §3's rule: your ears decide, the ratio is shown, nothing is gated
+      on it.
+- [x] **3.3** Renders to a **new take** beside the original, named with the tempo it IS
+      (`…@107-1bpm.wav`). The sidecar **inherits the original recipe** and adds
+      `stretch_from`, `stretch_from_bpm`, `stretch_to_bpm`, `stretch_ratio` — convention 12,
+      and the direct lesson of step 2b: without provenance a conformed take is
+      indistinguishable from a generated one, which is exactly the hole 2b fell into when it
+      had to tell extensions from fresh takes. Written at the take's **own** sample rate, not
+      the timeline's: SA3 generates at 44.1 and resampling here would be a second silent
+      conversion on top of the stretch.
+- [x] **3.4** **Bar 1 moves with it**, and it is free: the whole file is stretched from
+      sample 0, so every time in it scales by exactly the ratio. The measured **beats,
+      downbeats and onsets scale too**, which means the block keeps a real grid — and its
+      `measured` status, and its confidence — without being re-analysed. Right tempo with
+      the wrong phase is the failure nobody predicts, and spike/08 is what makes this a
+      subtraction rather than a search.
+- [x] **3.5** **Refuses a stretch whose SOURCE tempo is a guess**, which is the only honest
+      form of this gate. A ratio is sourceBpm/targetBpm, so a wrong source does not give a
+      slightly wrong result — it gives a confidently wrong one, at a tempo nobody asked for,
+      with a sidecar saying it worked. `measured` has already cleared the confidence gate
+      (that is what earns the word) and `typed` is a human assertion, which outranks a
+      machine by convention 5. A tempo from the **prompt** is neither: it is what you ASKED
+      SA3 for, and step 2b's whole finding is that what you ask for and what you get are
+      different numbers. The menu item says so rather than greying out silently.
 - [ ] **3.6** Takes a **range**, so §7's "stretch just the extension" is the same code.
-- [ ] **3.7** Verify by ear, and A/B against the original take.
+      **Deprioritised by 2b:** extensions hold tempo exactly, so "stretch just the
+      extension" is not a thing anyone has needed yet. It goes in when something asks for it.
+- [ ] **3.7** Verify by ear, and A/B against the original take. **Not yet done.**
+
+**Verified in `spike/08_stretch_latency` rather than by reading it** (convention 11):
+`Stretch.h` is deliberately JUCE-free so the spike tests the SHIPPING function, and the
+spike asks it the only question that matters — one click at exactly one second, where does
+it come out. Seven ratios from 0.80 to 1.25, worst error **0.5 ms**, and **exactly 0.0 ms at
+ratio 1.0**. Without the compensation every one of those would have been 120 ms late.
+
+**One thing worth keeping about the implementation:** the padding goes on the INPUT, not the
+output. The library's ratio for a call *is* outputSamples/inputSamples, so asking for the
+extra latency frames out of the same input would quietly change the stretch amount — the
+take would come back at the wrong tempo while the ratio printed on screen said otherwise.
 
 **Done when** a block that came back at 88.1 can sit at 87.3 without anyone typing a ratio.
 

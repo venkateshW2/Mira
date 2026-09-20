@@ -1,4 +1,5 @@
 #include "CanvasWindow.h"
+#include "Stretch.h"
 #include <numeric>
 #include <algorithm>
 #include "VideoWindow.h"
@@ -1646,6 +1647,42 @@ void CanvasView::showBlockMenu(Visual& v)
                    v.block.tempo * 0.5 >= 20.0);
         m.addItem(27, "Count it at " + juce::String(v.block.tempo * 2.0, 1) + " bpm  (*)",
                    v.block.tempo * 2.0 <= 400.0);
+
+        // ---- STRETCH TO (3.2) -------------------------------------------------------
+        // The targets are THE OTHER BLOCKS' tempos, by name, plus the nearest whole bpm.
+        // Nothing is typed: a field popping up over a block is the modal moment this canvas
+        // keeps refusing, and more to the point the real question is never "what number" --
+        // it is "make this one sit with THAT one", which is a thing you point at.
+        //
+        // Every entry shows the RATIO it would apply, before it runs. A stretch is lossy and
+        // the size of it is the whole of whether you should (MIRA-BLOCKS.md §3: your ears
+        // decide, and the ratio is shown rather than gated).
+        const bool canStretch = v.block.tempoSource == "measured" || v.block.tempoSource == "typed";
+        juce::PopupMenu targets;
+        stretchTargets.clear();
+        auto addTarget = [&](double bpm, const juce::String& label) {
+            if (bpm < 20.0 || bpm > 400.0) return;
+            const double ratio = v.block.tempo / bpm;
+            if (std::abs(ratio - 1.0) < 0.0005) return;
+            stretchTargets.push_back(bpm);
+            const int id = 140 + (int) stretchTargets.size() - 1;
+            if (id > 179) return;
+            targets.addItem(id, label + "   " + juce::String(bpm, 1) + " bpm  ("
+                                 + juce::String((ratio - 1.0) * 100.0, 1) + "% longer)",
+                             canStretch);
+        };
+        for (const auto& other : items)
+            if (other->block.id != v.block.id && other->block.tempo > 0.0)
+                addTarget(other->block.tempo, other->block.name);
+        addTarget(std::round(v.block.tempo), "nearest whole bpm");
+
+        if (stretchTargets.empty())
+            m.addItem(139, "Stretch to... (no other block has a tempo)", false);
+        else if (!canStretch)
+            m.addItem(139, "Stretch to... (analyse this block first - its tempo is the "
+                            "prompt's, not the audio's)", false);
+        else
+            m.addSubMenu("Stretch this take to", targets);
     }
     // The same verb as the header chip, with room for a sentence. The chip is where you
     // press it; this is where you read what it said -- a 15-pixel square cannot hold
@@ -1755,6 +1792,13 @@ void CanvasView::showBlockMenu(Visual& v)
                          if (result == 24) { self.analyseSelection(); return; }
                          if (result == 26) { self.shiftTempoOctave(-1); return; }
                          if (result == 27) { self.shiftTempoOctave(1);  return; }
+                         if (result >= 140 && result < 180)
+                         {
+                             const size_t i = (size_t) (result - 140);
+                             if (i < self.stretchTargets.size())
+                                 self.stretchSelectionTo(self.stretchTargets[i]);
+                             return;
+                         }
                          if (result == 23)
                          {
                              self.pushUndo();
@@ -4199,6 +4243,148 @@ void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWhee
                                  { panBy (-step * 520.0 / pixelsPerSecond); return; }
 
     scrollVerticallyBy (juce::roundToInt (-step * 120.0));
+}
+
+// ---- MIRA-BLOCKS.md step 3.2-3.5: stretch a take to a tempo --------------------------
+//
+// A FILE, NOT AN EFFECT. The mixer renders through `renderRange(from, n)`, which is
+// random-access -- the transport seeks, the loop rewinds, export walks arbitrary ranges --
+// and a stretcher is sequential with internal state that cannot be jumped into. Stretching
+// inside the voice would break looping, scrubbing and export at once, and would put a phase
+// vocoder in the audio callback. So it renders to disk and becomes another take in the
+// block's folder, where Choose Take is the undo and Cleanup is the bin.
+bool CanvasView::stretchSelectionTo(double targetBpm)
+{
+    auto* v = singleSelection();
+    if (v == nullptr) { if (onTakeNote) onTakeNote("select one block to stretch"); return false; }
+    if (!v->block.hasAudio() || !v->block.file.existsAsFile())
+    { if (onTakeNote) onTakeNote("that block has no take to stretch"); return false; }
+    if (v->block.tempo <= 0.0)
+    { if (onTakeNote) onTakeNote("that block has no tempo to stretch FROM - analyse it first"); return false; }
+
+    // 3.5 -- THE GATE, in the only form it can honestly take here. A stretch ratio is
+    // sourceBpm/targetBpm, so a wrong SOURCE tempo does not produce a slightly wrong result,
+    // it produces a confidently wrong one: the take arrives at a tempo nobody asked for and
+    // the sidecar says it succeeded.
+    //
+    // "measured" has already cleared the confidence gate (that is what earns the word) and
+    // "typed" is a human assertion, which outranks a machine by convention 5. A tempo that
+    // came from the PROMPT is neither -- it is what you ASKED SA3 for, and step 2b's whole
+    // finding is that what you ask for and what you get are different numbers.
+    if (v->block.tempoSource != "measured" && v->block.tempoSource != "typed")
+    {
+        if (onTakeNote)
+            onTakeNote("that tempo came from the prompt, not from the audio - analyse the "
+                        "block (or set its tempo by hand) before stretching from it");
+        return false;
+    }
+    if (targetBpm < 20.0 || targetBpm > 400.0)
+    { if (onTakeNote) onTakeNote("that is not a tempo"); return false; }
+
+    const double sourceBpm = v->block.tempo;
+    // LENGTH ratio, out over in. A FASTER target means a SHORTER file.
+    const double ratio = sourceBpm / targetBpm;
+    if (std::abs(ratio - 1.0) < 0.0005)
+    { if (onTakeNote) onTakeNote("already at " + juce::String(targetBpm, 1) + " bpm"); return false; }
+
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor(v->block.file));
+    if (reader == nullptr || reader->lengthInSamples <= 0 || reader->sampleRate <= 0.0)
+    { if (onTakeNote) onTakeNote("could not read " + v->block.file.getFileName()); return false; }
+
+    const int channels = (int) juce::jmax(1u, reader->numChannels);
+    const int inFrames = (int) juce::jmin<juce::int64>(reader->lengthInSamples, 1 << 26);
+    const int outFrames = mira::stretch::outputFramesFor(inFrames, ratio);
+    juce::AudioBuffer<float> in (channels, inFrames), out (channels, outFrames);
+    in.clear(); out.clear();
+    if (!reader->read(&in, 0, inFrames, 0, true, channels > 1))
+    { if (onTakeNote) onTakeNote("could not decode " + v->block.file.getFileName()); return false; }
+    const double rate = reader->sampleRate;
+    reader.reset();
+
+    std::string err;
+    if (!mira::stretch::render(in.getArrayOfReadPointers(), inFrames, channels, rate,
+                                ratio, out.getArrayOfWritePointers(), outFrames, err))
+    { if (onTakeNote) onTakeNote("stretch failed: " + juce::String(err)); return false; }
+
+    // Named with the tempo it IS, beside the take it came from, so the folder reads as a
+    // history rather than as a pile (MIRA-BLOCKS.md §6).
+    const auto stem = v->block.file.getFileNameWithoutExtension()
+                    + "@" + juce::String(targetBpm, 1).replace(".", "-") + "bpm";
+    auto dest = v->block.file.getSiblingFile(stem + ".wav");
+    for (int n = 2; dest.existsAsFile(); ++n)
+        dest = v->block.file.getSiblingFile(stem + "-" + juce::String(n) + ".wav");
+
+    {
+        // The take's OWN rate, not the timeline's. SA3 generates at 44.1 and nothing else;
+        // resampling here would be a second, silent conversion on top of the stretch.
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::FileOutputStream> stream (dest.createOutputStream());
+        if (stream == nullptr)
+        { if (onTakeNote) onTakeNote("could not write " + dest.getFileName()); return false; }
+        std::unique_ptr<juce::AudioFormatWriter> writer (
+            wav.createWriterFor(stream.get(), rate, (unsigned) channels, 24, {}, 0));
+        if (writer == nullptr)
+        { if (onTakeNote) onTakeNote("could not create a writer for " + dest.getFileName()); return false; }
+        stream.release();
+        if (!writer->writeFromAudioSampleBuffer(out, 0, outFrames))
+        { if (onTakeNote) onTakeNote("writing " + dest.getFileName() + " failed"); return false; }
+    }
+
+    // 3.3 -- the sidecar records the operation the way a recipe records a generation.
+    // Convention 12: everything the request carried. Without `stretch_from` a conformed take
+    // is indistinguishable from a generated one, which is exactly the hole step 2b fell into
+    // when it had to tell extensions from fresh takes.
+    {
+        auto* o = new juce::DynamicObject();
+        if (auto original = juce::JSON::parse(v->block.file.withFileExtension("json")
+                                                   .loadFileAsString());
+            auto* src = original.getDynamicObject())
+            for (const auto& prop : src->getProperties())
+                o->setProperty(prop.name, prop.value);
+        o->setProperty("file", dest.getFileName());
+        o->setProperty("created", juce::Time::getCurrentTime().toISO8601(true));
+        o->setProperty("stretch_from", v->block.file.getFullPathName());
+        o->setProperty("stretch_from_bpm", sourceBpm);
+        o->setProperty("stretch_to_bpm", targetBpm);
+        o->setProperty("stretch_ratio", ratio);
+        o->setProperty("seconds", outFrames / rate);
+        dest.withFileExtension("json").replaceWithText(juce::JSON::toString(juce::var(o), false));
+    }
+
+    pushUndo();
+    const double oldBarOne = v->block.barOnePos;
+    const auto oldBeats = v->beats, oldDownbeats = v->downbeats, oldOnsets = v->onsets;
+    const auto oldSource = v->block.tempoSource;
+    const double oldConfidence = v->block.tempoConfidence;
+    const int oldOctave = v->block.tempoOctave;
+
+    setFileOn(*v, dest);
+
+    // 3.4 -- BAR 1, NOT JUST THE RATE. Right tempo with the wrong phase is the failure
+    // nobody predicts, and it is free here: the whole file was stretched from sample 0, so
+    // every time in it scales by exactly the ratio. The measured beats scale with it, which
+    // means the block keeps a real grid without being re-analysed.
+    v->block.tempo = targetBpm;
+    v->block.tempoSource = oldSource;
+    v->block.tempoConfidence = oldConfidence;
+    v->block.tempoOctave = oldOctave;
+    v->block.barOnePos = oldBarOne * ratio;
+    v->beats = oldBeats;         for (auto& t : v->beats)     t *= ratio;
+    v->downbeats = oldDownbeats; for (auto& t : v->downbeats) t *= ratio;
+    v->onsets = oldOnsets;       for (auto& t : v->onsets)    t *= ratio;
+    v->analysis = oldSource == "measured" ? Visual::Analysis::Measured : Visual::Analysis::None;
+    v->analysisNote = "stretched from " + juce::String(sourceBpm, 1) + " to "
+                    + juce::String(targetBpm, 1) + " bpm ("
+                    + juce::String((ratio - 1.0) * 100.0, 1) + "% longer)";
+
+    rebuildAudio();
+    markDirty();
+    announceSelection();
+    repaint();
+    if (onTakeNote)
+        onTakeNote(dest.getFileName() + " - " + v->analysisNote
+                    + ". The original is still in the block's takes.");
+    return true;
 }
 
 // ---- MIRA-BLOCKS.md step 3.0: halve / double the block's tempo -----------------------

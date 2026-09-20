@@ -12,7 +12,10 @@ target_include_directories(stretch_latency PRIVATE
     ${VENDOR}/signalsmith-stretch
     ${VENDOR}/signalsmith-stretch/include
     ${VENDOR}/signalsmith-linear
-    ${VENDOR}/signalsmith-linear/include)
+    ${VENDOR}/signalsmith-linear/include
+    # mira's own wrapper. It is JUCE-free precisely so this spike can test the shipping
+    # code rather than a re-implementation of it.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/mira_ui/Source)
 # Optional per upstream, and measured to change nothing about the OUTPUT (identical to the
 # sample) -- it is a speed flag, and mira is Apple-only, so it is on.
 target_compile_definitions(stretch_latency PRIVATE SIGNALSMITH_USE_ACCELERATE)

@@ -828,7 +828,15 @@ separate faults, each fixed and each re-measured against the same six.
 
 ## ⛔ Start here next session
 
-### Next — [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 3.1 onward (3.0 built, unverified)
+### Next — verify MIRA-BLOCKS step 3 by ear (3.7)
+
+**3.0–3.5 are built and not yet heard.** Stretch a take to another block's tempo from the
+block menu, A/B it against the original with Choose Take, and check bar 1 still lands where
+it should. The arithmetic is verified (spike/08: worst error 0.5 ms over seven ratios, 0.0 ms
+at ratio 1.0) — what is NOT verified is whether it sounds acceptable on real generated
+material, which is the only question left and the only one a measurement cannot answer.
+
+### Then — the rest of step 3, and step 4
 
 **3.0 is built and not yet seen on screen:** `/` halves and `*` doubles the selected block's
 tempo, with two block-menu items named by the RESULTING tempo. On a measured block it moves

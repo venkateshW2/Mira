@@ -220,6 +220,12 @@ public:
     // the measured beats that are drawn. `tempoSource` is deliberately unchanged: choosing
     // an octave is not un-measuring anything.
     void shiftTempoOctave(int delta);
+    // Steps 3.2-3.5 -- conform the selected block's take to `targetBpm`, as a NEW take in
+    // its folder. The original is untouched and Choose Take switches between them.
+    bool stretchSelectionTo(double targetBpm);
+    // The tempos the block menu last offered, so the callback can answer by index rather
+    // than by encoding a bpm in a menu id.
+    std::vector<double> stretchTargets;
     void toggleMetronome();
     bool metronomeIsOn() const { return metronomeOn; }
     // Rebuilt whenever the selection, the grid or the geometry changes -- it is a list of
