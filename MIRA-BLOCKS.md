@@ -202,9 +202,43 @@ bit-exact. Three things change once a block has a grid.
 you want it to and does not when you do not.
 
 **The extension may not come back in tempo.** SA3 has 30 s of context so it *tends* to
-continue in tempo, but nothing guarantees it — and **nobody currently knows how well it
-holds**, because there has never been an instrument to ask. Step 2 is that instrument:
-extend, analyse both halves, compare. Worth measuring early.
+continue in tempo, but nothing guaranteed it and there had never been an instrument to ask.
+
+### Measured 2026-09-20 — n=1, and the answer is an OCTAVE question
+
+One usable pair so far (`block 36`: a 30 s take extended to 46 s, kept audio to 28.3 s, new
+material 28.3–45.9 s), split at the boundary the sidecar records:
+
+| | bpm | beats |
+|---|---|---|
+| parent, whole | **142.86** | 70 |
+| extension, **kept** region | **142.86** | 66 |
+| extension, **new** region | **69.77** | 23 |
+| extension, whole | 136.36 (stability **0.795**) | 89 |
+
+**The kept region is exact** — 142.86 against the parent's 142.86, which is the crossfade
+join doing its job and is worth having confirmed.
+
+**The new region reads half-time, and that is an ambiguity rather than a result.**
+142.86 / 2 = 71.43, and 69.77 is **one 50 fps frame away from it** — exactly the
+quantisation the tempo fit was built to see through. So this is either SA3 genuinely writing
+a half-time continuation (a musical choice, and a reasonable one) or the beat tracker
+slipping an octave on sparser material. **The beat list alone cannot tell those apart**,
+which is the project's open "BPM octave convention" thread (CLAUDE.md 2026-09-15 evening)
+turning up *inside a single file* for the first time.
+
+**The confidence gate caught it**: 0.795, refused, grid left alone. That is the gate's first
+real case and it behaved exactly as designed — which is the strongest argument yet for
+having built 2.4 before 2.3.
+
+**It also caught a flaw in this instrument.** The first version would have reported
+"tempo moves 142.9 → 69.8", reading as a 51% collapse. The summary now folds to the octave
+and names a halved or doubled window as **"an octave, not a drift"**, reporting the residual
+drift *within* the octave honestly beside it. Calling an octave a 51% tempo change would
+have made this instrument's first answer its first wrong answer.
+
+**Still owed: n>1.** One pair, one prompt, one LoRA, one 18-second extension. The second
+extension in the project (`block 27`, 30 s → 62 s) has not been analysed yet.
 
 When it has drifted, the block **says so** and offers the button that already exists —
 *stretch to 87.3* — applied to the extension rather than the whole take. That is one small
@@ -554,9 +588,26 @@ missing. None of this was in the plan.
 
 ### Step 2b — the measurement step 2 makes possible
 
-- [ ] **2b.1** **Does an SA3 extension hold tempo?** Extend a block, analyse both halves,
-      compare. Nobody knows, and this is the first time the project can ask. Write the answer
-      into §7 with a date.
+- [x] **2b.1 The instrument is built, and the first measurement is in — n=1.**
+      No new analysis code: the measured beats are already fetched, so drift across a take
+      is arithmetic over what step 2 holds. `tempoAcross()` splits a take into windows of
+      equal BEAT COUNT (not equal seconds — a window with three beats in it is not a tempo
+      measurement) and takes the **median** interval in each. Median and not mean, and not
+      as a style choice: a mean of beat intervals across two octaves is what reported Smurf
+      as 127 bpm, a tempo occurring nowhere in the song (CLAUDE.md 2026-09-17).
+      Reported on **every** analysis rather than behind a command nobody would run, because
+      an extension is joined to the END of a take and one tempo for the whole file hides it:
+      140 for thirty seconds and 146 for the last ten reports something in between and looks
+      fine.
+- [ ] **2b.2** Repeat on more extensions. **n=1 is one pair, one prompt, one LoRA** — see §7.
+
+**Found on the way, and worth more than the result:** only **2 of 65** sidecars in a real
+project record `extend_from`. The provenance IS written when an extend runs — so the other
+63 takes are simply not extensions, and the first read of "four takes of growing length in
+one block" as an extension chain was wrong. **Durations look like a chain and are not one.**
+The sidecar is the only thing that knows, which is convention 12 earning its place: without
+`extend_from`/`extend_kept`/`extend_context` this measurement could not have been made at
+all, and with it, it took one grep.
 
 ### Step 3 — stretch to
 

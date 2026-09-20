@@ -806,6 +806,21 @@ private:
     // The two-tier picture as ONE number: what share of this block's onsets land on its
     // grid, or -1 when there is no grid or no onsets to ask about.
     double onGridShareOf(const Visual&) const;
+
+    // ---- MIRA-BLOCKS.md step 2b: does the tempo hold ACROSS a take? -------------------
+    //
+    // The question this whole feature was built to be able to ask. An extension is joined
+    // to the end of a take, so if SA3 drifts, the drift is at the END -- and one tempo for
+    // a whole file cannot show that: a take that runs 140 for thirty seconds and 146 for
+    // the last ten reports something in between and looks fine.
+    //
+    // Needs NO new analysis. The measured beats are already here, so this is arithmetic
+    // over what step 2 already fetched -- which is the same reason the groove fix in
+    // September was free: store everything, derive at read time.
+    struct TempoSpan { double from = 0.0, to = 0.0, bpm = 0.0; int beats = 0; };
+    std::vector<TempoSpan> tempoAcross(const Visual&, int windows = 4) const;
+    // Those windows as one sentence: steady, or drifting and by how much.
+    juce::String tempoDriftSummary(const Visual&) const;
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();
     void timerCallback() override;

@@ -1185,6 +1185,12 @@ void CanvasView::analysisArrived(juce::int64 blockId, const juce::File& take,
 
     v->analysis = Visual::Analysis::Measured;
     v->analysisNote = adopted.joinIntoString(", ") + " (confidence " + confText + ")";
+    // Step 2b, reported on EVERY analysis rather than behind a command nobody would think
+    // to run. An extension is joined to the END of a take, so if SA3 drifts, one tempo for
+    // the whole file hides it: 140 for thirty seconds and 146 for the last ten reports
+    // something in between and looks fine.
+    if (const auto drift = tempoDriftSummary(*v); drift.isNotEmpty())
+        v->analysisNote += " - " + drift;
     if (onTakeNote) onTakeNote(v->block.name + ": " + v->analysisNote);
     markDirty();
     repaint();
@@ -1670,6 +1676,17 @@ void CanvasView::showBlockMenu(Visual& v)
         }
         else
             key.addItem(95, "no onsets yet -- press ANALYSE", false);
+        // Step 2b in full: every window, so "it drifts" can be read as WHERE it drifts.
+        if (const auto spans = tempoAcross(v); spans.size() >= 2)
+        {
+            juce::PopupMenu across;
+            for (size_t i = 0; i < spans.size(); ++i)
+                across.addItem(120 + (int) i,
+                                juce::String(spans[i].from, 1) + "-" + juce::String(spans[i].to, 1)
+                                    + " s   " + juce::String(spans[i].bpm, 1) + " bpm  ("
+                                    + juce::String(spans[i].beats) + " beats)", false);
+            key.addSubMenu("Tempo across this take", across);
+        }
         // THE THING THE USER ACTUALLY ASKED. The grid does not chase the onsets on its
         // own and never will: it is drawn, never enforced. Analyse is what MEASURES a grid
         // off the audio and moves bar 1 onto a real downbeat.
@@ -2801,6 +2818,100 @@ void CanvasView::paintBlockOverlay(juce::Graphics& g, const Visual& v, juce::Rec
 // "do the bars line up with the music" -- which is a thing you can see but could not, until
 // now, read. Straight from the same rule the ticks are drawn by, so the number and the
 // picture can never disagree.
+// ---- step 2b: the tempo across a take, window by window ------------------------------
+//
+// The MEDIAN interval in each window, not the mean. That is not a style choice: a mean of
+// beat intervals across two octaves is what reported Smurf as 127 BPM -- a tempo occurring
+// nowhere in the song -- because the DBN's beat list held a 0.70 s cluster and a 0.35 s one
+// and the mean sat between them (CLAUDE.md 2026-09-17). The median picks a real interval.
+//
+// Equal COUNTS of beats per window rather than equal seconds, so each window is the same
+// amount of evidence. A window with three beats in it is not a tempo measurement.
+std::vector<CanvasView::TempoSpan> CanvasView::tempoAcross(const Visual& v, int windows) const
+{
+    std::vector<TempoSpan> out;
+    const double from = v.block.sourceOffset;
+    const double to   = from + juce::jmax(0.0, v.block.length);
+
+    std::vector<double> beats;
+    for (const auto t : v.beats) if (t >= from && t <= to) beats.push_back(t);
+    if (beats.size() < 8) return out;   // fewer than this is not two halves of anything
+
+    // At least 6 beats a window, so a short take asks for fewer windows rather than
+    // reporting four numbers none of which measured anything.
+    windows = juce::jlimit(2, windows, (int) (beats.size() / 6));
+    if (windows < 2) return out;
+
+    const size_t per = beats.size() / (size_t) windows;
+    for (int w = 0; w < windows; ++w)
+    {
+        const size_t a = (size_t) w * per;
+        const size_t b = (w == windows - 1) ? beats.size() : a + per;
+        if (b - a < 2) continue;
+        std::vector<double> gaps;
+        for (size_t i = a + 1; i < b; ++i) gaps.push_back(beats[i] - beats[i - 1]);
+        if (gaps.empty()) continue;
+        std::sort(gaps.begin(), gaps.end());
+        const double median = gaps[gaps.size() / 2];
+        if (median <= 0.0) continue;
+        out.push_back({ beats[a], beats[b - 1], 60.0 / median, (int) (b - a) });
+    }
+    return out;
+}
+
+juce::String CanvasView::tempoDriftSummary(const Visual& v) const
+{
+    const auto spans = tempoAcross(v);
+    if (spans.size() < 2) return {};
+
+    // AN OCTAVE IS NOT A DRIFT, and the first real extension this was pointed at proved
+    // why the distinction has to be built in rather than noticed by eye. Block 36's
+    // extension measured 142.86 bpm over the kept audio and 69.77 over the new -- which
+    // reads as a catastrophic 51% collapse and is almost certainly half-time: 142.86/2 is
+    // 71.43, and 69.77 is ONE 50 fps frame away from it, exactly the quantisation the
+    // tempo fit was built to see through (CLAUDE.md 2026-09-17).
+    //
+    // So the comparison is done in log space, folded to the octave. A halved reading is
+    // reported as a halved reading -- which is a real thing to know and a different thing
+    // to fix -- and the residual drift WITHIN that octave is reported honestly beside it.
+    // Calling an octave a 51% tempo change would have made this instrument's first answer
+    // its first wrong answer.
+    auto fold = [](double bpm, double ref) {
+        if (bpm <= 0.0 || ref <= 0.0) return bpm;
+        while (bpm < ref / 1.415) bpm *= 2.0;
+        while (bpm > ref * 1.415) bpm /= 2.0;
+        return bpm;
+    };
+    const double ref = spans.front().bpm;
+
+    double lo = ref, hi = ref;
+    int halved = 0, doubled = 0;
+    for (const auto& s : spans)
+    {
+        const double f = fold(s.bpm, ref);
+        lo = juce::jmin(lo, f); hi = juce::jmax(hi, f);
+        if (s.bpm < ref / 1.415) ++halved;
+        else if (s.bpm > ref * 1.415) ++doubled;
+    }
+    const double spread = hi - lo;
+
+    juce::String octave;
+    if (halved > 0)  octave = " - " + juce::String(halved) + " window"
+                            + (halved == 1 ? "" : "s") + " read HALF-TIME (an octave, not a drift)";
+    if (doubled > 0) octave += " - " + juce::String(doubled) + " window"
+                            + (doubled == 1 ? "" : "s") + " read DOUBLE-TIME (an octave, not a drift)";
+
+    // HALF A BPM, and labelled a guess: it is roughly the resolution the beat network
+    // itself has (50 fps, so neighbouring periods near 140 bpm are about 0.6 bpm apart),
+    // so anything under it is below what the measurement can distinguish and calling it
+    // drift would be reading noise.
+    if (spread < 0.5)
+        return "holds " + juce::String(ref, 1) + " bpm across the take" + octave;
+    return "tempo moves " + juce::String(ref, 1) + " -> " + juce::String(fold(spans.back().bpm, ref), 1)
+         + " bpm (spread " + juce::String(spread, 1) + " over "
+         + juce::String((int) spans.size()) + " windows, octave-folded)" + octave;
+}
+
 double CanvasView::onGridShareOf(const Visual& v) const
 {
     if (v.onsets.empty()) return -1.0;
