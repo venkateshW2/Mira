@@ -1199,6 +1199,46 @@ void CanvasView::analysisArrived(juce::int64 blockId, const juce::File& take,
 
 void CanvasView::setFileOn(Visual& v, const juce::File& f)
 {
+    // IS THIS DIFFERENT AUDIO, or the same file being re-assigned?
+    //
+    // The distinction decides whether a MEASURED tempo survives, and it has to be asked
+    // here because every route goes through this one function -- including the document
+    // load, which re-assigns the file a block already had. Clearing on every call would
+    // destroy the stored measurement on every reopen; clearing on none is the bug below.
+    //
+    // Convention 9: paths compared with `pathsEquivalent`, never `==`.
+    // "Changed" needs a PREVIOUS file to have changed from. A block being given its first
+    // take has not had its audio replaced -- and on a document load that is exactly the
+    // case, with the tempo already read out of the `.mira` and describing precisely the
+    // file about to be assigned. Without this clause every reopen would throw away every
+    // measurement in the project.
+    const bool audioChanged =
+        v.block.file != juce::File() && f != v.block.file
+        && !(f != juce::File()
+             && mira::pathsEquivalent(f.getFullPathName().toStdString(),
+                                       v.block.file.getFullPathName().toStdString()));
+
+    // A TEMPO MEASURED FROM AUDIO DIES WITH THAT AUDIO.
+    //
+    // "if I regenerate a block the key and tempo stay those of the earlier generation."
+    // Exactly so: `musicFromTake` refuses to overwrite anything that is not from the
+    // prompt, which is convention 5 protecting a measurement -- and convention 5 is about
+    // a human outranking a machine, not about a measurement outranking the audio it was
+    // measured FROM. A new take is different audio, so the old number describes something
+    // nobody is hearing. That is convention 12, and it is the same shape as the `initAudio`
+    // that guided every generation after it.
+    //
+    // A TYPED tempo survives, and so does a tempo inherited from a parent block: neither
+    // was a claim about the samples. Only the measurement was.
+    if (audioChanged && v.block.tempoSource == "measured")
+    {
+        v.block.tempoSource = {};        // so musicFromTake re-derives from the new recipe
+        v.block.tempoConfidence = 0.0;
+        v.block.tempoOctave = 0;
+        // Likewise: a conform is an operation performed on a take that has now gone.
+        v.block.conformedTo.clear();
+    }
+
     v.block.file = f;
     v.thumb.reset();
     if (f.existsAsFile())

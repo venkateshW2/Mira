@@ -736,6 +736,30 @@ take would come back at the wrong tempo while the ratio printed on screen said o
 
 **Done when** a block that came back at 88.1 can sit at 87.3 without anyone typing a ratio.
 
+### A measured tempo dies with its audio (2026-09-20)
+
+*"If I regenerate a block, the key and tempo stay those of the earlier generation."*
+
+`musicFromTake` refuses to overwrite anything whose source is not `"prompt"` — which was
+convention 5 protecting a measurement. But **convention 5 is about a human outranking a
+machine, not about a measurement outranking the audio it was measured FROM.** A new take is
+different audio, so the old number describes something nobody is hearing: convention 12, and
+the same shape as the `initAudio` that silently guided every generation after it.
+
+- A **measured** tempo, its confidence, its octave and any **conform** recorded against it
+  are cleared when the audio actually changes. The block then re-derives from the new take's
+  own sidecar, which is what it would have done if it had never been analysed.
+- A **typed** tempo survives, and so does one inherited from a parent block. Neither was ever
+  a claim about the samples.
+- A human **bar 1** survives, per convention 5 as written — arguably it is as stale as the
+  measurement, but that is the convention's explicit case and not a thing to erode quietly.
+
+**The subtlety that would have shipped a much worse bug:** "changed" needs a *previous* file
+to have changed from. On a document load the block's file starts empty and is then assigned —
+with the tempo already read out of the `.mira`, describing precisely that file. Treating a
+first assignment as a change would have thrown away **every measurement in the project on
+every reopen**. Compared with `pathsEquivalent`, never `==` (convention 9).
+
 ### Step 3b — conform, because a tempo without a phase is half an answer
 
 Added 2026-09-20 after using 3.2, from the user's own objection: *"if we take a tempo from a
