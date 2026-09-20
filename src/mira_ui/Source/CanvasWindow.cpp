@@ -846,17 +846,60 @@ juce::Rectangle<int> CanvasView::blockGainBox(const Visual& v) const
 //
 // Only where there is audio to analyse. A chip on an empty block would be an affordance
 // with nothing behind it, which is the fault blockMuteBox's own comment names.
+//
+// A WORD, not a letter, wherever a word fits. The first version was a 15-pixel "A" next to
+// two other 15-pixel squares, and the user's report was simply "the analyse button is
+// hidden" -- true twice over, since the name was also painted across it. M and the gain
+// box can be glyphs because you already know what they are; this is the one control on the
+// block nobody has ever seen before, and a new verb has to be spelled.
 juce::Rectangle<int> CanvasView::blockAnalyseBox(const Visual& v) const
 {
     if (!v.block.hasAudio() || isReferenceLane(v.block.lane)) return {};
     auto gb = blockGainBox(v);
     if (gb.isEmpty()) return {};
     auto r = boundsOf(v);
-    // Wider than the gain box needs, because the tempo box and the name both come out of
-    // what is left. Below this the block says its name and nothing else, which is the
-    // padlock's rule again: a control that does not fit is replaced by words.
+    // The word needs room and so does the name. Below the wide gate it falls back to the
+    // letter rather than vanishing -- the padlock's rule, a control that does not fit is
+    // replaced by something smaller that still says it is there.
+    const int w = r.getWidth() >= 300 ? 54 : 15;
     if (r.getWidth() < 128) return {};
-    return { gb.getRight() + 3, gb.getY(), 15, gb.getHeight() };
+    return { gb.getRight() + 3, gb.getY(), w, gb.getHeight() };
+}
+
+// What that button says, which is also the block's whole analysis state in one word.
+juce::String CanvasView::analyseLabelOf(const Visual& v, bool wide)
+{
+    switch (v.analysis)
+    {
+        case Visual::Analysis::Running:  return wide ? "READING" : "*";
+        case Visual::Analysis::Measured: return wide ? "MEASURED" : "A";
+        case Visual::Analysis::Refused:  return wide ? "UNSURE" : "?";
+        case Visual::Analysis::Failed:   return wide ? "FAILED" : "!";
+        case Visual::Analysis::None:
+        default:                         return wide ? "ANALYSE" : "A";
+    }
+}
+
+// The header row, from the first pixel the NAME may use to the right edge. One
+// definition, asked by the name, by the tempo box and by nothing else -- because the copy
+// of this arithmetic that did not know about the Analyse chip drew the block's name
+// straight over it, and a button you cannot see is a button that does not exist. That is
+// the same failure blockTagBox's own comment already describes; it just happened to the
+// line below the comment instead of the one above it.
+juce::Rectangle<int> CanvasView::blockHeaderRow(const Visual& v) const
+{
+    auto r = boundsOf(v);
+    auto row = r.reduced(6, 2).removeFromTop(14);
+    // Whichever chip is furthest right, asked in order rather than assumed: each one has
+    // its own width gate, so a block wide enough for gain is not always wide enough for
+    // Analyse.
+    if (const auto ab = blockAnalyseBox(v); !ab.isEmpty())
+        return row.withTrimmedLeft(ab.getRight() - r.getX() - 2);
+    if (const auto gb = blockGainBox(v); !gb.isEmpty())
+        return row.withTrimmedLeft(gb.getRight() - r.getX() - 2);
+    if (const auto mb = blockMuteBox(v); !mb.isEmpty())
+        return row.withTrimmedLeft(mb.getWidth() + 4);
+    return row;
 }
 
 // Tempo and key, on the RIGHT of the header row. Drawn there, double-clicked there, and
@@ -869,16 +912,7 @@ juce::Rectangle<int> CanvasView::blockTagBox(const Visual& v) const
     // gesture -- so drawing a tempo box on it would be an affordance that does nothing,
     // and the film's dialogue has no tempo worth claiming anyway.
     if (r.getHeight() < 46 || !v.block.hasAudio() || isReferenceLane(v.block.lane)) return {};
-    auto row = r.reduced(6, 2).removeFromTop(14);
-    // Whichever chip is furthest right, so adding one never lands the tempo box on top of
-    // it. Asked in order rather than assumed, because each chip has its own width gate and
-    // a block wide enough for gain is not always wide enough for Analyse.
-    if (const auto ab = blockAnalyseBox(v); !ab.isEmpty())
-        row = row.withTrimmedLeft(ab.getRight() - r.getX() - 2);
-    else if (const auto gb = blockGainBox(v); !gb.isEmpty())
-        row = row.withTrimmedLeft(gb.getRight() - r.getX() - 2);
-    else if (const auto mb = blockMuteBox(v); !mb.isEmpty())
-        row = row.withTrimmedLeft(mb.getWidth() + 4);
+    auto row = blockHeaderRow(v);
     if (row.getWidth() <= 150) return {};
     return row.removeFromRight(juce::jmin(130, row.getWidth() / 2));
 }
@@ -2379,6 +2413,19 @@ void CanvasView::clearAll()
 // Below ~5 px the lines sit closer together than they are wide and the footer becomes a
 // grey band that says nothing -- so beats drop out first, then bars, then the footer
 // itself. A grid you cannot count is not a smaller grid, it is noise.
+// Where the waveform is drawn inside a block. ONE definition, because the grid and the
+// onsets are now drawn OVER it and a second copy of this arithmetic would put them a few
+// pixels off the audio they are about -- the same reasoning gridFooterHeight itself is
+// one decision rather than two.
+juce::Rectangle<int> CanvasView::blockWaveArea(const Visual& v, juce::Rectangle<int> r) const
+{
+    // The name strip only costs height while there is height to spare; below that the
+    // waveform gets all of it, which is the point of zooming in vertically.
+    const int nameStrip = r.getHeight() >= 46 ? 16 : 0;
+    return r.reduced(4, 3).withTrimmedTop(nameStrip)
+            .withTrimmedBottom(gridFooterHeight(v, r.getHeight()));
+}
+
 int CanvasView::gridFooterHeight(const Visual& v, int blockHeight) const
 {
     if (blockHeight < kGridFooterMin) return 0;
@@ -2398,7 +2445,14 @@ int CanvasView::gridFooterHeight(const Visual& v, int blockHeight) const
 // the block would grow an empty band or lose the ticks it made room for.
 //
 // Three pixels apart on average. Below that a run of transients is a grey smear that says
-// "there is audio here", which the waveform three pixels above already says better.
+// "there is audio here", which the waveform already says better.
+//
+// Measured rather than picked (convention 2): over 830 analysed files the onset rate runs
+// min 1.57/s, p10 6.82, p50 9.92, p90 13.73, max 15.42. At the zoom a block is normally
+// arranged at (~56 px/s) that is 35.7 px per onset at the sparsest and 3.6 at the very
+// densest -- so this draws them for essentially every take at working zoom, and starts
+// dropping the densest tenth only once you have zoomed out to about 40 px/s, which is
+// exactly where they stop being countable anyway.
 bool CanvasView::onsetTicksVisible(const Visual& v) const
 {
     if (v.onsets.empty()) return false;
@@ -2507,6 +2561,110 @@ void CanvasView::paintBlockGrid(juce::Graphics& g, const Visual& v, juce::Rectan
                         juce::Rectangle<float>(x + 2.0f, top, 22.0f, (float) foot.getHeight())
                             .toNearestInt(),
                         juce::Justification::centredLeft, false);
+        }
+    }
+}
+
+// ---- the grid and the onsets, drawn OVER the waveform --------------------------------
+//
+// Step 1 deliberately kept this to a footer, on the argument that beat lines through the
+// waveform are what makes a drawn grid start to feel like one you have to obey. The user
+// looked at the result and asked for the opposite -- for the bars and the onsets to read
+// on the wave the way they do in the mira browser -- so this reverses that call. The
+// reasoning was not wrong, it was outvoted by the thing it was a guess about: you cannot
+// line a transient up against a bar line you have to look away from to see.
+//
+// THE RULE IS UNCHANGED. Nothing snaps; this is still scaffolding. What keeps it
+// scaffolding is the weighting: bars read, beats are faint, and both are drawn UNDER the
+// onsets, because the onsets are the measurement and the grid is the interpretation.
+void CanvasView::paintBlockOverlay(juce::Graphics& g, const Visual& v, juce::Rectangle<int> r,
+                                    bool isSelected)
+{
+    auto wave = blockWaveArea(v, r);
+    if (wave.getHeight() < 12 || wave.getWidth() < 4) return;
+
+    juce::Graphics::ScopedSaveState clip (g);
+    g.reduceClipRegion(wave);
+
+    const float top = (float) wave.getY(), bottom = (float) wave.getBottom();
+    const double from = v.block.sourceOffset;
+    const double to   = from + juce::jmax(0.0, v.block.length);
+    auto xOf = [&](double sourceSeconds) {
+        return (float) secondsToX(v.block.start + (sourceSeconds - from));
+    };
+
+    // The grid, in source time: bar 1 is already stored there, which is exactly why this
+    // stays on the music when the block's left edge is trimmed.
+    const bool haveGrid = v.block.tempo > 0.0;
+    const double spb = haveGrid ? 60.0 / v.block.tempo : 0.0;
+    const int meter = juce::jmax(1, v.block.meter);
+
+    if (haveGrid)
+    {
+        const double pxPerBeat = spb * pixelsPerSecond;
+        const bool beats = pxPerBeat >= 9.0;          // stricter than the footer: this is
+        const bool bars  = pxPerBeat * meter >= 6.0;  // over the audio, so noise costs more
+        if (bars)
+        {
+            const long long firstBeat = (long long) std::floor((from - v.block.barOnePos) / spb);
+            const long long lastBeat  = (long long) std::ceil((to - v.block.barOnePos) / spb);
+            if (lastBeat - firstBeat <= 20000)
+                for (long long n = firstBeat; n <= lastBeat; ++n)
+                {
+                    const long long bar = (n >= 0 ? n / meter : -(((-n) + meter - 1) / meter));
+                    const bool isBar = (n - bar * meter) == 0;
+                    if (!isBar && !beats) continue;
+                    const float x = xOf(v.block.barOnePos + (double) n * spb);
+                    if (x < (float) wave.getX() - 1.0f || x > (float) wave.getRight()) continue;
+                    // A BAR line spans the whole wave and a beat line only its middle
+                    // third. That difference is what lets you count bars without reading
+                    // numbers, and it is why the beats can stay faint enough to ignore.
+                    if (isBar)
+                    {
+                        g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.34f : 0.24f));
+                        g.drawLine(x, top, x, bottom, 1.0f);
+                    }
+                    else
+                    {
+                        g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.15f : 0.10f));
+                        g.drawLine(x, top + (bottom - top) * 0.34f,
+                                    x, bottom - (bottom - top) * 0.34f, 1.0f);
+                    }
+                }
+        }
+    }
+
+    // THE ONSETS, on top, in two tiers -- the browser's own rule, and deliberately the
+    // same numbers (a 16th cell, 18% of it counts as on the grid) so the two windows
+    // cannot say different things about the same audio. On-grid onsets are tall and bright
+    // and off-grid ones short and dim, which means a take whose grid has locked onto the
+    // wrong period shows NOTHING tall: the split is the fastest read of whether the tempo
+    // on the header is really the tempo of the music.
+    if (!onsetTicksVisible(v)) return;
+
+    const double cell = haveGrid ? spb / 4.0 : 0.0;
+    constexpr double kOnGridTolerance = 0.18;
+    for (const auto t : v.onsets)
+    {
+        if (t < from || t > to) continue;
+        const float x = xOf(t);
+        if (x < (float) wave.getX() - 1.0f || x > (float) wave.getRight()) continue;
+
+        bool onGrid = false;
+        if (haveGrid && cell > 0.0)
+        {
+            const double cells = (t - v.block.barOnePos) / cell;
+            onGrid = std::abs(cells - std::round(cells)) <= kOnGridTolerance;
+        }
+        if (onGrid)
+        {
+            g.setColour(MiraLookAndFeel::accent.withAlpha(isSelected ? 0.95f : 0.8f));
+            g.drawLine(x, top, x, bottom, 1.0f);
+        }
+        else
+        {
+            g.setColour(MiraLookAndFeel::warn.withAlpha(isSelected ? 0.6f : 0.45f));
+            g.drawLine(x, bottom - (bottom - top) * 0.42f, x, bottom, 1.0f);
         }
     }
 }
@@ -2640,9 +2798,7 @@ void CanvasView::paint(juce::Graphics& g)
         {
             // The name strip only costs height while there is height to spare; below that
             // the waveform gets all of it, which is the point of zooming in vertically.
-            const int nameStrip = r.getHeight() >= 46 ? 16 : 0;
-            auto wave = r.reduced(4, 3).withTrimmedTop(nameStrip)
-                         .withTrimmedBottom(gridFooterHeight(*item, r.getHeight()));
+            auto wave = blockWaveArea(*item, r);
             // The waveform occupies only as much of the block as it actually fills. The
             // rest is the TAIL, and drawing the thumbnail across it would show empty space
             // as if it were silence someone recorded.
@@ -2725,6 +2881,11 @@ void CanvasView::paint(juce::Graphics& g)
         // Under the muted hatch and under the selection outline: the grid is the least
         // important thing in the block, and it has to look it.
         paintBlockGrid(g, *item, r, tint, isSelected);
+        // ...and over the WAVEFORM, which is where you actually line a transient up
+        // against a bar. Only where there is a thumbnail: lines over an empty frame are
+        // a grid drawn on nothing.
+        if (item->thumb != nullptr && item->thumb->getTotalLength() > 0.0)
+            paintBlockOverlay(g, *item, r, isSelected);
 
         // A MUTED BLOCK has to read as muted at a glance, not on inspection: hatched, so
         // it is distinguishable from a quiet one even in a screenshot.
@@ -2776,11 +2937,10 @@ void CanvasView::paint(juce::Graphics& g)
                            gb, juce::Justification::centred, false);
             }
 
-            // ANALYSE (2.1). Four states and each one has to be legible at 15x13 px, so
-            // it is the FILL that carries the state and the letter stays "A": running is
-            // the accent colour, measured is a quiet tick of the track's own colour,
-            // refused and failed are the warn colour. A chip that changed its letter
-            // would be a chip you have to learn to read.
+            // ANALYSE (2.1). It reads as a BUTTON -- a solid fill and a word -- because it
+            // is the only verb on the block and the only one nobody has met before. The
+            // word doubles as the state: ANALYSE / READING / MEASURED / UNSURE / FAILED,
+            // so the thing you press and the thing it told you are the same control.
             if (const auto ab = blockAnalyseBox(*item); !ab.isEmpty())
             {
                 const auto st = item->analysis;
@@ -2788,15 +2948,15 @@ void CanvasView::paint(juce::Graphics& g)
                 const bool measured = st == Visual::Analysis::Measured;
                 const bool warn     = st == Visual::Analysis::Refused
                                    || st == Visual::Analysis::Failed;
-                g.setColour(running  ? MiraLookAndFeel::accent.withAlpha(0.85f)
-                            : warn   ? MiraLookAndFeel::warn.withAlpha(0.55f)
-                            : measured ? tint.withAlpha(0.55f)
-                                       : tint.withAlpha(0.25f));
+                g.setColour(running  ? MiraLookAndFeel::accent
+                            : warn   ? MiraLookAndFeel::warn.withAlpha(0.8f)
+                            : measured ? tint.brighter(0.3f).withAlpha(0.85f)
+                                       : tint.brighter(0.5f).withAlpha(0.6f));
                 g.fillRoundedRectangle(ab.toFloat(), 2.5f);
-                g.setColour(running ? MiraLookAndFeel::surface
-                                    : MiraLookAndFeel::text.withAlpha(measured || warn ? 0.9f : 0.6f));
-                g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.0f)));
-                g.drawText("A", ab, juce::Justification::centred, false);
+                g.setColour(MiraLookAndFeel::surface);
+                g.setFont(laf.sansMedium(MiraLookAndFeel::textSize(8.5f)));
+                g.drawText(analyseLabelOf(*item, ab.getWidth() > 20), ab,
+                            juce::Justification::centred, false);
             }
 
             g.setColour(isSelected ? MiraLookAndFeel::text : tint.brighter(0.4f));
@@ -2814,10 +2974,7 @@ void CanvasView::paint(juce::Graphics& g)
                              + (item->block.hasAudio()
                                     ? "  -  " + item->block.file.getFileNameWithoutExtension()
                                     : juce::String());
-            const auto gb = blockGainBox(*item);
-            auto headerRow = r.reduced(6, 2).removeFromTop(14)
-                               .withTrimmedLeft(gb.isEmpty() ? (mb.isEmpty() ? 0 : mb.getWidth() + 4)
-                                                             : gb.getRight() - r.getX() - 2);
+            auto headerRow = blockHeaderRow(*item);
 
             // Key and tempo on the RIGHT of the same row, so the name can be as long as it
             // likes without pushing them off.

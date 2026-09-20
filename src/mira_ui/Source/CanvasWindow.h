@@ -618,6 +618,15 @@ private:
     // it has a state you need to see -- a slow job that says nothing is indistinguishable
     // from one that never started.
     juce::Rectangle<int> blockAnalyseBox(const Visual& v) const;
+    // What that button says -- also the block's analysis state in one word, so the thing
+    // you press and the thing it told you are the same control.
+    static juce::String analyseLabelOf(const Visual& v, bool wide);
+    // The header row from the first pixel the NAME may use. ONE definition: the copy that
+    // did not know about the Analyse chip drew the block's name straight over it.
+    juce::Rectangle<int> blockHeaderRow(const Visual& v) const;
+    // Where the waveform is drawn inside a block. ONE definition, because the grid and the
+    // onsets are drawn OVER it and a second copy would put them a few pixels off the audio.
+    juce::Rectangle<int> blockWaveArea(const Visual& v, juce::Rectangle<int> r) const;
     // Where the tempo and key sit in the block header -- ONE definition, so the painter,
     // the double-click and the editor cannot disagree about a 130-pixel box.
     juce::Rectangle<int> blockTagBox(const Visual& v) const;
@@ -715,6 +724,12 @@ private:
     bool onsetTicksVisible(const Visual&) const;
     void paintBlockGrid(juce::Graphics&, const Visual&, juce::Rectangle<int>,
                         juce::Colour tint, bool isSelected);
+    // Bars, beats and onsets drawn OVER the waveform, the way the browser draws them.
+    // Step 1 argued for a footer only; the user looked at it and asked for the opposite.
+    // The rule is unchanged -- nothing snaps -- and what keeps it scaffolding is the
+    // weighting: bars read, beats are faint, and the onsets sit on top of both.
+    void paintBlockOverlay(juce::Graphics&, const Visual&, juce::Rectangle<int>,
+                           bool isSelected);
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();
     void timerCallback() override;

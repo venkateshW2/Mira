@@ -401,6 +401,39 @@ have been dead since the day it shipped. Compiling is not verifying.
       painter, for the same reason `gridFooterHeight` itself is one.
       A consequence worth naming: **bar 1 now needs a tempo to be draggable**, not just a
       footer, or the gesture would move a number nothing draws.
+**Second pass, after the first look (2026-09-20).** The user's report was *"the analyse
+button is hidden"*, and it was — twice over.
+
+- **The block's NAME was painted over the chip.** Where the header text may start was
+  computed in two places, and the copy that draws the name did not know a third chip had
+  been added. `blockHeaderRow()` is one definition now, asked by the name and by the tempo
+  box. This is the failure `blockTagBox`'s own comment already describes, which happened to
+  the line below that comment rather than the one above it.
+- **A 15-pixel "A" beside two other 15-pixel squares was the wrong control anyway.** M and
+  the gain box can be glyphs because you already know what they are; Analyse is the one verb
+  on a block nobody has met. It is a labelled button now, and **the word is the state** —
+  ANALYSE / READING / MEASURED / UNSURE / FAILED — so the thing you press and the thing it
+  told you are the same control. It falls back to a single character on a narrow block.
+- **The grid and the onsets are drawn OVER the waveform**, the way the browser draws them,
+  at the user's explicit request. **This reverses 1.3's call** that a footer is safer than
+  an overlay. That reasoning was not wrong, it was outvoted by the thing it was a guess
+  about: you cannot line a transient up against a bar line you have to look away from to
+  see. The rule is unchanged — nothing snaps — and what keeps it scaffolding is the
+  weighting: **bars span the wave, beats only its middle third and stay faint, and the
+  onsets sit on top of both**, because the onsets are the measurement and the grid is the
+  interpretation.
+- **The onsets are two-tier, and deliberately the browser's own numbers** (a 16th cell, 18%
+  of it counts as on the grid), so the two windows cannot say different things about the
+  same audio. On-grid onsets are tall and bright, off-grid ones short and warn-coloured —
+  which means **a take whose grid locked onto the wrong period shows nothing tall.** That
+  split is the fastest read there is of whether the tempo on the header is really the tempo
+  of the music, and it is free.
+- Their density guard was measured, not picked: over 830 analysed files the onset rate runs
+  p10 6.82/s, **p50 9.92/s**, p90 13.73, max 15.42. At the zoom a block is normally arranged
+  at (~56 px/s) that is 35.7 px per onset at the sparsest and 3.6 at the densest, so they
+  draw for essentially every take at working zoom and start dropping the densest tenth only
+  around 40 px/s — where they have stopped being countable anyway.
+
 - [ ] **2.6** Verify on screen. Analyse a generated take; watch the chip and the tempo box
       while it runs; check the adopted tempo against the recipe's; find a take the gate
       refuses and read what it says; confirm a hand-dragged bar 1 survives an analysis;
