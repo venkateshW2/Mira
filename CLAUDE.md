@@ -177,7 +177,56 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
-### 2026-09-20 (latest) — an SA3 extension holds tempo EXACTLY, n=2
+### 2026-09-20 (latest) — the block becomes musical: conform, snap, and the child
+
+[MIRA-BLOCKS.md](MIRA-BLOCKS.md) **steps 3, 3b, 3c and 4**, all used and confirmed working by
+the user the same day. With step 2 and 2b below, **the whole of MIRA-BLOCKS 1–4 landed on
+2026-09-20 in 26 commits.** Step 5 is deliberately NOT started — §10 says not until 1–4 are
+in daily use, and they are hours old.
+
+- **Step 3 — stretch.** `signalsmith-stretch` vendored (`spike/08_stretch_latency`), and its
+  **120 ms of latency measured before anything depended on it** — a third of a beat at
+  143 bpm, and it would have shipped invisibly as "the stretch feels slightly late". The
+  delay is `inputLatency*ratio + outputLatency` exactly, so alignment is a subtraction.
+  `Stretch.h` is deliberately **JUCE-free so the spike tests the shipping code**: seven
+  ratios, worst error 0.5 ms, 0.0 ms at ratio 1.0. It also needed a **second clone** —
+  `signalsmith-linear` is not a submodule, found only by compiling it.
+- **Step 3b — CONFORM, because a tempo without a phase is half an answer.** The user's
+  objection was the design review: *"if we take a tempo from a different block we should
+  match their POSITION also, or else what's the point."* Right — two blocks at 107.14 whose
+  downbeats sit 0.2 s apart flam, which is worse than two at different tempos.
+  **One rule covers everything: snap the child's bar 1 to the nearest line of the parent's
+  bar grid, EXTENDED past the parent in both directions.** Overlapping blocks lock their
+  phase; sequential blocks keep counting across the join; **the track never enters into it**,
+  which matters because a block moves between tracks freely and that is the whole reason
+  tempo lives on the block.
+- **Step 3c — snap a trim to the grid**, so a loop is a whole number of bars. Off by default,
+  the block's OWN grid only, alt to bypass. **This is the one place the canvas enforces
+  anything**, and it stays honest with §1 by asking permission for it.
+- **Step 4 — the child.** A link is a **source for a number, not a second system**: it fills
+  the child's prompt before you generate, reports when the parent moved, and never
+  re-stretches audio on its own. **Stale is a remembered NUMBER, not a flag** — a flag would
+  have to be set by every path that can change a parent's tempo and would be wrong the first
+  time someone added another one.
+
+**Every bug today was found by using it, and none by the compiler.** Six of them, and each
+is the same family — *a second copy of one fact*:
+
+| reported as | actually |
+|---|---|
+| "the analyse button is hidden" | the block's NAME was drawn over it — header-left computed in two places |
+| "what is what, iam confused" | a bar line and an onset were both full-height marks |
+| "onsets not aligning with the bars" | the bars were a synthetic grid from one BPM scalar; the measured beats were already in the database |
+| "nothing happens" | the stretch menu's ids sat inside the take menu's undeclared 100–299 range |
+| "nothing copied" | the panel's sync-on-leave read its own emptiness back over the copy — **twice**, at both ends of one call |
+| "a 30 sec block made it 15" | capped at the generator's DEFAULT (30) instead of its maximum (380), and asked for a fixed 8 bars |
+| "regenerate keeps the old tempo" | convention 5 was protecting a measurement from the audio it was measured FROM |
+
+Two of those produced named things so they cannot recur quietly: a `BlockMenu` id enum, and
+**`showPanelFor()`** — *push to the panel without letting it write back first*. A trap that
+bites twice in one feature has earned a function.
+
+### 2026-09-20 — an SA3 extension holds tempo EXACTLY, n=2
 
 [MIRA-BLOCKS.md](MIRA-BLOCKS.md) **step 2b — the measurement this whole plan was written to
 be able to make.** Nobody knew, and there had never been an instrument to ask.
@@ -828,45 +877,41 @@ separate faults, each fixed and each re-measured against the same six.
 
 ## ⛔ Start here next session
 
-### Next — relaunch MIRA, then verify step 4 (and 3c) on screen
+### Next — MIRA-BLOCKS is at a natural stopping point. Use it before building more.
 
-**A build is waiting.** Step 4 (the child) and step 3c (snap a trim to the grid) are
-compiled but the running app still holds the old binary — it was left running on purpose
-because an analysis was in progress. Relaunch to pick them up.
+**Steps 1–4 are built and working (2026-09-20), confirmed by the user on screen.** A block
+knows its tempo, can be analysed, can be counted in the other octave, conformed to another
+block in rate and phase, trimmed to the grid, and generated as a child that already carries
+its parent's prompt, tempo and key.
 
-Then: link a block to another with **Follows**, check its prompt gains the parent's tempo and
-key, change the parent's tempo and watch the child's badge go warn-coloured, and confirm a
-cycle is refused with a reason. For 3c: set **Snap** to bar and trim a block to a loop.
+**Step 5 (the sampler) should NOT be started yet.** MIRA-BLOCKS §10 says not until 1–4 are in
+daily use, and they are one day old. Everything that went wrong today was found by *using*
+the thing, not by building more of it.
 
-### Then — verify MIRA-BLOCKS step 3 by ear (3.7)
+**When step 5 does start, 5.1 as written is wrong** and the measurement says so: at the
+corpus's median onset rate (9.92/s) *"one slice per detected transient"* is **297 slices in a
+30-second block** — confetti, and 297 voices. Slice at **grid divisions confirmed by an
+onset** instead, reusing the Snap unit as the slice density. The reasoning is in
+MIRA-BLOCKS.md §5.
 
-**3.0–3.5 are built and not yet heard.** Stretch a take to another block's tempo from the
-block menu, A/B it against the original with Choose Take, and check bar 1 still lands where
-it should. The arithmetic is verified (spike/08: worst error 0.5 ms over seven ratios, 0.0 ms
-at ratio 1.0) — what is NOT verified is whether it sounds acceptable on real generated
-material, which is the only question left and the only one a measurement cannot answer.
+**Three smaller things are probably wanted first, and two of them were predicted:**
 
-### Then — the rest of step 3, and step 4
+- **The Analyse chip says `READING` while it is actually QUEUED** behind the browser's batch
+  (one shared queue, one job at a time). A slow job that says nothing is indistinguishable
+  from one that never started — that is this project's own convention, and it is currently
+  broken. Small, and owed.
+- **Loop a single block** — select it, loop exactly its range, hear the bars go round. This is
+  what "easy to make loops" was reaching for.
+- **Duplicate-with-conform** — Cmd-D laying the next copy down already in phase and on a bar
+  line, instead of at an offset you then conform by hand.
 
-**3.0 is built and not yet seen on screen:** `/` halves and `*` doubles the selected block's
-tempo, with two block-menu items named by the RESULTING tempo. On a measured block it moves
-the drawn BEATS (`Block::tempoOctave`, anchored on the first downbeat so the bars do not
-move), not only the number — and leaves `tempoSource` alone, because choosing an octave is
-not un-measuring anything.
+**Still unverified by ear: 3.7** — stretch a take to another block's tempo and A/B it against
+the original with Choose Take. The arithmetic is proven (spike/08); whether it *sounds*
+acceptable on real generated material is the one question a measurement cannot answer.
 
-### Then — step 3, smaller than it was written
-
-**Steps 1, 2, 2a and 2b are done and verified (2026-09-20).**
-
-2b's answer changes step 3. An SA3 extension holds tempo exactly, so it does not need
-stretching — what it can need is its **octave** named right. So step 3 now opens with:
-
-- **3.0 (new, first): halve / double the block's tempo.** A menu item and a keystroke,
-  `tempoSource` unchanged. Costs nothing, stretches nothing, and it is the fix for the one
-  real failure 2b found.
-- Then 3.1–3.7 as written — with stretch-to understood as conforming a *separate* take to a
-  block's tempo (step 4's child case), not as repairing an extension, which is not what
-  MIRA-BLOCKS §6 assumed when it was written.
+**Step 2b wants more points, and they are nearly free:** n=2 says an SA3 extension holds
+tempo exactly. Every analysis now prints a drift sentence, so another data point costs one
+Analyse on an extension you were making anyway.
 
 ---
 
