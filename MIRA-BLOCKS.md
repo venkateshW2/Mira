@@ -773,7 +773,20 @@ what you hear as flam.
       out fresh on every load and a name is both stable and the thing a badge has to say
       anyway. One icon for both would make *"this audio was stretched once"* and *"this block
       is tied to block 3"* look like the same thing.
-- [ ] **3b.5** Verify on screen and by ear.
+- [x] **3b.5** **The stretch and bar 1 confirmed working by the user on screen.** The
+      conform badges and the phase snap are still to be judged by ear.
+
+**A bug found by opening a new project, and it is one bug wearing three hats.** A new
+project came up with the previous one's **film**, its **reference track** and its
+**markers** still loaded. `newDocument` hand-rolled its own reset -- items, selection, lane
+names, gains, masks, count -- and forgot every document-owned thing added since it was
+written. `fromJson`, the load path, clears all of them correctly.
+**Two resets, one a partial copy of the other, is exactly how that happens.** There is one
+now: New loads an empty document through `fromJson`, so it cannot drift from Open again.
+`clearAll()` -- dead code, never called, and incomplete in the same way -- is deleted rather
+than fixed, because a third reset nobody calls is a fourth bug waiting.
+Found in the same breath: `fromJson` never told the **marker list window**, so that kept
+showing the previous project's markers. Same shape, same fix.
 
 **Deliberately NOT a live link.** `conformedTo` records an action; it does not re-run.
 §3's position stands — *"follows block N means a source for a number, not a second system"* —

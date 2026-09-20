@@ -2417,6 +2417,12 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
             videoClips.push_back(v);   // audioBlockId is relinked below, not read
         }
 
+    // The marker LIST WINDOW is a separate window that outlives a document, so loading one
+    // has to tell it. Without this it kept showing the previous project's markers -- the
+    // same shape of fault as the video and the reference lane surviving a New, and found
+    // in the same breath.
+    if (onMarkersChanged) onMarkersChanged();
+
     // Convention 9: never compare two paths with ==. The document holds the path as it
     // was written; the window holds the path as the chooser gave it.
     if (videoClips.empty())
@@ -2554,9 +2560,17 @@ bool CanvasView::newDocument(const juce::File& folder, const juce::String& name)
     const auto root = folder.getChildFile(clean);
     if (!root.isDirectory() && !root.createDirectory().wasOk()) return false;
 
-    items.clear(); selected.clear(); laneNames.clear(); laneDb.clear();
-    muteMask = soloMask = 0;
-    laneCount = 1;
+    // A NEW PROJECT IS AN EMPTY DOCUMENT, loaded the same way any other document is.
+    //
+    // This used to hand-roll the reset -- items, selection, lane names, gains, masks, count
+    // -- and it forgot the video clips, the reference lane and the markers, so opening a new
+    // project came up with the last project's FILM still loaded and its reference track
+    // still on the canvas. Two resets, one of them a partial copy of the other, is how that
+    // happens; there is now one, and it is the load path, which cannot drift from itself.
+    //
+    // `fromJson` clears every document-owned thing and fires onVideoCleared, so the picture
+    // window closes with the project that had it.
+    fromJson("{}", root, false);
     projectFolder = root;
     documentFile = root.getChildFile(clean + kExtension);
     dirty = false;
@@ -2598,17 +2612,6 @@ bool CanvasView::saveDocumentAs(const juce::File& miraFile)
     projectFolder = target.getParentDirectory();
     documentFile = target;
     return saveDocument();
-}
-
-void CanvasView::clearAll()
-{
-    items.clear();
-    selected.clear();
-    laneNames.clear();
-    muteMask = soloMask = 0;
-    applyMasks();
-    rebuildAudio();
-    repaint();
 }
 
 // Whether this block draws a grid at all, and how much room it takes.

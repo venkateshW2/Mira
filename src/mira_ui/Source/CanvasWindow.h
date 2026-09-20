@@ -156,7 +156,6 @@ public:
     // a second block with an empty generator, which is a thing you ask for deliberately.
     void splitAtPlayhead();
     void fit();
-    void clearAll();
     void addEmptyBlock();
 
     // ---- the document (.mira) ---------------------------------------------------------
