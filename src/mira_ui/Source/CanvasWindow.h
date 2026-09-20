@@ -253,6 +253,11 @@ public:
     // generate, so offering it only on blocks that already have audio is one generation
     // too late.
     void addBlockFollowing(juce::int64 parentId);
+    // What the GENERATOR will actually accept, pushed in by the owner rather than copied as
+    // a literal -- the first version hardcoded 30, which is the slider's DEFAULT and not its
+    // maximum, and quietly halved every child of a 30-second block.
+    void setGeneratorMaxSeconds(double s) { generatorMaxSeconds = juce::jmax(1.0, s); }
+    double generatorMaxSeconds = 380.0;
     // Walks the whole chain: A -> B -> C -> A is the same mistake with more rope.
     bool wouldCycle(juce::int64 childId, juce::int64 parentId) const;
 

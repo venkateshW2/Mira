@@ -1534,16 +1534,26 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
     child->settings = parentSettings;
     child->block.followsBlockId = parentId;
 
+    const double parentLength = parent->block.length;
     if (parentTempo > 0.0)
     {
-        // A WHOLE NUMBER OF BARS, because that is the only length worth asking a model for
-        // when you already know the tempo -- and 8 unless 8 does not fit in the generator's
-        // default duration, in which case halve until it does rather than asking for a
-        // length the worker will refuse.
+        // THE PARENT'S LENGTH, ROUNDED TO WHOLE BARS -- not a fixed 8.
+        //
+        // The first version asked for 8 bars and capped at 30 s, and both were wrong. 8 is
+        // arbitrary: if the block you are following is 16 bars, a child of 8 is a number
+        // nobody chose. And 30 s is the generator's DEFAULT, not its maximum (10-380) --
+        // so following a 30 s block at 128 bpm produced 8 bars = 15 s, exactly half, which
+        // is what "a 30 sec block made it 15" was.
+        //
+        // "Another one like this" is what the gesture means, so the length is the parent's.
+        // Rounded to whole bars because that is the one thing about it worth improving: a
+        // 29.7 s parent asks for 16 bars at 30.0 s, and the block you get back loops.
         const double barSeconds = (60.0 / parentTempo) * parentMeter;
-        int wanted = 8;
-        while (wanted > 1 && barSeconds * wanted > 30.0) wanted /= 2;
-        child->block.length = barSeconds * wanted;
+        int wantedBars = juce::jmax(1, juce::roundToInt(parentLength / barSeconds));
+        // Never past what the worker will actually accept. Halved rather than clamped to
+        // the limit itself, so the answer stays a whole number of bars.
+        while (wantedBars > 1 && barSeconds * wantedBars > generatorMaxSeconds) wantedBars /= 2;
+        child->block.length = barSeconds * wantedBars;
 
         // IN PHASE FROM BIRTH. Starting on a bar line of the parent is the whole point:
         // a child generated off the grid has to be conformed before it is worth hearing,
@@ -1604,7 +1614,8 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
         onTakeNote(child->block.name + " follows " + (p != nullptr ? p->block.name : juce::String("?"))
                     + (parentTempo > 0.0
                         ? " - " + juce::String(child->block.length / ((60.0 / parentTempo) * parentMeter), 0)
-                            + " bars at " + juce::String(parentTempo, 1) + " bpm, on the grid. "
+                            + " bars (" + juce::String(child->block.length, 1) + "s) at "
+                            + juce::String(parentTempo, 1) + " bpm, on the grid. "
                             + "Its prompt is ready; press Generate."
                         : juce::String(" - it has no tempo to pass on yet"))
                     + carried);
@@ -7051,6 +7062,11 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             juce::AudioThumbnailCache& cache, GenerateContent* panelIn)
         : view(laf, formats, cache), panel(panelIn), tabs(laf), formatManager(formats), look(laf)
     {
+        // Asked, not assumed: the canvas sizes a followed block in whole bars and must not
+        // ask the worker for a length it will refuse. Copying the number here as a literal
+        // is how "30" -- the slider's default -- ended up standing in for its maximum.
+        if (panel != nullptr) view.setGeneratorMaxSeconds(panel->maxDuration());
+
         auto button = [this](juce::TextButton& b, const juce::String& text) {
             b.setButtonText(text);
             addAndMakeVisible(b);
