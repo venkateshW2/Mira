@@ -434,6 +434,35 @@ button is hidden"*, and it was — twice over.
   draw for essentially every take at working zoom and start dropping the densest tenth only
   around 40 px/s — where they have stopped being countable anyway.
 
+**Third pass — "what is what… iam confused" (2026-09-20).** The overlay was drawing two
+different claims as the same mark, and the fix is a rule rather than a colour tweak.
+
+- **The grid is the only thing that spans the whole wave.** An on-grid onset was drawn full
+  height in amber, so *"a bar starts here"* and *"a transient is here"* were the same mark.
+  **Onsets now never reach the top** — they rise from the floor. Spans the block = the grid,
+  grows up from the bottom = a transient. Two marks anyone can tell apart untaught.
+- **The bar lines were invisible.** White at 24% alpha over a bright waveform is not a faint
+  line, it is no line. They are the BLOCK'S OWN TINT now, brighter and heavier than the
+  beats, which also ties the grid to the block it belongs to on a canvas of stacked takes.
+- **An unmeasured grid is DASHED.** This is the user's actual question — *"so the bar
+  doesn't shift according to the onset?"* — answered in the picture instead of in prose.
+  Until you press ANALYSE the grid is **the tempo you asked SA3 for**, laid out from the
+  start of the file, and it has no reason to land on anything. Dashed says provisional;
+  solid says measured off the audio underneath it.
+- **Off-grid onsets are dim, not red.** An onset that does not land on the grid is not an
+  error — it is a note played where the grid did not predict, and most music is full of
+  them. Red said "fault" about the ordinary case.
+- **"What the marks mean" in the block menu**, plus the number the picture was already
+  showing: **what share of this block's onsets land on its grid**. Computed from the very
+  same rule the ticks are drawn by (`isOnGrid`), so the number and the picture can never
+  disagree. If almost nothing is amber and the share is low, the grid is not this audio's
+  grid — which is the fastest read there is of whether the header's tempo is real.
+
+The lesson worth keeping: **the picture was designed to be learnable without a legend, and
+it still needed one.** A visual language nobody is ever told is a language nobody reads —
+and the report that surfaced it was not "this is wrong", it was "I am confused", which is
+the cheaper of the two and only arrives if someone is actually looking.
+
 - [ ] **2.6** Verify on screen. Analyse a generated take; watch the chip and the tempo box
       while it runs; check the adopted tempo against the recipe's; find a take the gate
       refuses and read what it says; confirm a hand-dragged bar 1 survives an analysis;

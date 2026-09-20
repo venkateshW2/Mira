@@ -1615,6 +1615,43 @@ void CanvasView::showBlockMenu(Visual& v)
                                    && v.analysis != Visual::Analysis::Running);
     if (v.analysisNote.isNotEmpty())
         m.addItem(25, v.analysisNote, false);   // a readout, not a command
+
+    // WHAT THE MARKS MEAN, in the one place you can read a sentence. The picture was
+    // built to be learnable without this -- the grid spans the wave, onsets grow up from
+    // the floor, a dashed grid has not been measured -- but "iam confused" is the report
+    // that says a visual language nobody was ever told is a language nobody reads.
+    //
+    // Only where there is something to explain. A legend for marks that are not on screen
+    // is clutter that teaches the wrong thing.
+    if (v.block.tempo > 0.0 || !v.onsets.empty())
+    {
+        juce::PopupMenu key;
+        if (v.block.tempo > 0.0)
+        {
+            const bool measured = v.block.tempoSource == "measured";
+            key.addItem(90, "full-height lines = the " + juce::String(v.block.meter)
+                             + "/4 grid" + (measured ? " (solid: measured off this audio)"
+                                                     : " (DASHED: not measured -- this is the "
+                                                       "tempo you ASKED for)"), false);
+        }
+        if (!v.onsets.empty())
+        {
+            key.addItem(91, "ticks from the floor = detected onsets", false);
+            key.addItem(92, "   tall + amber = lands on the grid", false);
+            key.addItem(93, "   short + dim  = lands between grid lines", false);
+            if (const double share = onGridShareOf(v); share >= 0.0)
+                key.addItem(94, juce::String(juce::roundToInt(share * 100.0))
+                                 + "% of the onsets land on this grid", false);
+        }
+        else
+            key.addItem(95, "no onsets yet -- press ANALYSE", false);
+        // THE THING THE USER ACTUALLY ASKED. The grid does not chase the onsets on its
+        // own and never will: it is drawn, never enforced. Analyse is what MEASURES a grid
+        // off the audio and moves bar 1 onto a real downbeat.
+        if (v.block.tempoSource != "measured")
+            key.addItem(96, "the grid does not follow the onsets until you Analyse", false);
+        m.addSubMenu("What the marks mean", key);
+    }
     m.addSeparator();
     m.addItem(8, "Rename block...");
     // EXPORT WHAT YOU HEAR. The take on disk is the raw generation -- it knows nothing
@@ -2439,6 +2476,16 @@ int CanvasView::gridFooterHeight(const Visual& v, int blockHeight) const
     return kGridFooterHeight;
 }
 
+// A 16th of the beat, and 18% of that cell counts as landing on it. The browser's own
+// numbers (WaveformView.cpp's onset lane), reused rather than rederived: a 16th at 80 BPM
+// is 187 ms, so 18% is ~34 ms -- tight enough to mean something, loose enough to survive
+// the ~11.6 ms quantisation of the onset detector's own hop.
+bool CanvasView::isOnGrid(double t, double phase, double cell)
+{
+    const double cells = (t - phase) / cell;
+    return std::abs(cells - std::round(cells)) <= 0.18;
+}
+
 // Whether the onset ticks are worth drawing at this zoom -- the same kind of density
 // decision the beats and bars already make, and asked in ONE place for the same reason:
 // gridFooterHeight reserves the strip and paintBlockGrid fills it, and if they disagreed
@@ -2578,7 +2625,7 @@ void CanvasView::paintBlockGrid(juce::Graphics& g, const Visual& v, juce::Rectan
 // scaffolding is the weighting: bars read, beats are faint, and both are drawn UNDER the
 // onsets, because the onsets are the measurement and the grid is the interpretation.
 void CanvasView::paintBlockOverlay(juce::Graphics& g, const Visual& v, juce::Rectangle<int> r,
-                                    bool isSelected)
+                                    juce::Colour tint, bool isSelected)
 {
     auto wave = blockWaveArea(v, r);
     if (wave.getHeight() < 12 || wave.getWidth() < 4) return;
@@ -2587,23 +2634,29 @@ void CanvasView::paintBlockOverlay(juce::Graphics& g, const Visual& v, juce::Rec
     g.reduceClipRegion(wave);
 
     const float top = (float) wave.getY(), bottom = (float) wave.getBottom();
+    const float h = bottom - top;
     const double from = v.block.sourceOffset;
     const double to   = from + juce::jmax(0.0, v.block.length);
     auto xOf = [&](double sourceSeconds) {
         return (float) secondsToX(v.block.start + (sourceSeconds - from));
     };
 
-    // The grid, in source time: bar 1 is already stored there, which is exactly why this
-    // stays on the music when the block's left edge is trimmed.
     const bool haveGrid = v.block.tempo > 0.0;
     const double spb = haveGrid ? 60.0 / v.block.tempo : 0.0;
     const int meter = juce::jmax(1, v.block.meter);
+    // A GRID YOU HAVE NOT MEASURED IS DRAWN DASHED. This is the answer to "why doesn't the
+    // bar move onto the onsets" made visible instead of written down: until you press
+    // ANALYSE the grid is the tempo you ASKED SA3 for, laid out from the start of the file,
+    // and it has no reason to land on anything. Dashed says provisional; solid says this
+    // was measured off the audio underneath it. Nothing else in the block has to explain it.
+    const bool measured = v.block.tempoSource == "measured";
 
     if (haveGrid)
     {
         const double pxPerBeat = spb * pixelsPerSecond;
-        const bool beats = pxPerBeat >= 9.0;          // stricter than the footer: this is
-        const bool bars  = pxPerBeat * meter >= 6.0;  // over the audio, so noise costs more
+        const bool beats = pxPerBeat >= 9.0;
+        const bool bars  = pxPerBeat * meter >= 6.0;
+        const float dashes[] = { 3.0f, 3.0f };
         if (bars)
         {
             const long long firstBeat = (long long) std::floor((from - v.block.barOnePos) / spb);
@@ -2616,57 +2669,74 @@ void CanvasView::paintBlockOverlay(juce::Graphics& g, const Visual& v, juce::Rec
                     if (!isBar && !beats) continue;
                     const float x = xOf(v.block.barOnePos + (double) n * spb);
                     if (x < (float) wave.getX() - 1.0f || x > (float) wave.getRight()) continue;
-                    // A BAR line spans the whole wave and a beat line only its middle
-                    // third. That difference is what lets you count bars without reading
-                    // numbers, and it is why the beats can stay faint enough to ignore.
-                    if (isBar)
-                    {
-                        g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.34f : 0.24f));
-                        g.drawLine(x, top, x, bottom, 1.0f);
-                    }
-                    else
-                    {
-                        g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.15f : 0.10f));
-                        g.drawLine(x, top + (bottom - top) * 0.34f,
-                                    x, bottom - (bottom - top) * 0.34f, 1.0f);
-                    }
+
+                    // THE GRID IS THE ONLY THING THAT SPANS THE WHOLE WAVE. That is the
+                    // whole visual rule, and it exists because the first version broke it:
+                    // an on-grid onset was drawn full height in amber, so two completely
+                    // different claims -- "a bar starts here" and "a transient is here" --
+                    // were the same mark, and the block became unreadable.
+                    //
+                    // The block's own TINT, not white. White at 24% over a bright waveform
+                    // is invisible, which is what the first version actually shipped.
+                    const auto c = isBar ? tint.brighter(0.9f).withAlpha(isSelected ? 0.85f : 0.65f)
+                                         : tint.brighter(0.6f).withAlpha(isSelected ? 0.34f : 0.24f);
+                    g.setColour(c);
+                    const float y0 = isBar ? top : top + h * 0.3f;
+                    const float y1 = isBar ? bottom : bottom - h * 0.3f;
+                    if (measured) g.drawLine(x, y0, x, y1, isBar ? 1.4f : 1.0f);
+                    else          g.drawDashedLine({ x, y0, x, y1 }, dashes, 2, isBar ? 1.4f : 1.0f);
                 }
         }
     }
 
-    // THE ONSETS, on top, in two tiers -- the browser's own rule, and deliberately the
-    // same numbers (a 16th cell, 18% of it counts as on the grid) so the two windows
-    // cannot say different things about the same audio. On-grid onsets are tall and bright
-    // and off-grid ones short and dim, which means a take whose grid has locked onto the
-    // wrong period shows NOTHING tall: the split is the fastest read of whether the tempo
-    // on the header is really the tempo of the music.
+    // THE ONSETS, and they NEVER reach the top. They rise from the bottom, so "grows up
+    // from the floor" means a transient and "spans the block" means the grid -- two marks
+    // you can tell apart without being told which is which.
+    //
+    // Two tiers, on deliberately the browser's own numbers (a 16th cell, 18% of it counts
+    // as on the grid), so the two windows cannot say different things about one file. The
+    // on-grid ones are amber and taller; the off-grid ones are dim and short -- DIM, not
+    // red, because an onset that does not land on the grid is not an error, it is just a
+    // note played somewhere the grid did not predict, and most music is full of them.
+    //
+    // What the split is FOR: if almost nothing is amber, the grid is not this audio's grid.
+    // That is the fastest read there is of whether the tempo in the header is real, and it
+    // is exactly what an unmeasured (dashed) grid looks like over a generated take.
     if (!onsetTicksVisible(v)) return;
 
     const double cell = haveGrid ? spb / 4.0 : 0.0;
-    constexpr double kOnGridTolerance = 0.18;
     for (const auto t : v.onsets)
     {
         if (t < from || t > to) continue;
         const float x = xOf(t);
         if (x < (float) wave.getX() - 1.0f || x > (float) wave.getRight()) continue;
 
-        bool onGrid = false;
-        if (haveGrid && cell > 0.0)
-        {
-            const double cells = (t - v.block.barOnePos) / cell;
-            onGrid = std::abs(cells - std::round(cells)) <= kOnGridTolerance;
-        }
-        if (onGrid)
-        {
-            g.setColour(MiraLookAndFeel::accent.withAlpha(isSelected ? 0.95f : 0.8f));
-            g.drawLine(x, top, x, bottom, 1.0f);
-        }
-        else
-        {
-            g.setColour(MiraLookAndFeel::warn.withAlpha(isSelected ? 0.6f : 0.45f));
-            g.drawLine(x, bottom - (bottom - top) * 0.42f, x, bottom, 1.0f);
-        }
+        const bool onGrid = haveGrid && cell > 0.0 && isOnGrid(t, v.block.barOnePos, cell);
+        g.setColour(onGrid ? MiraLookAndFeel::accent.withAlpha(isSelected ? 0.95f : 0.8f)
+                           : MiraLookAndFeel::textDim.withAlpha(isSelected ? 0.6f : 0.45f));
+        g.drawLine(x, bottom - h * (onGrid ? 0.55f : 0.26f), x, bottom, 1.0f);
     }
+}
+
+// How many of a block's onsets land on its grid, 0..1, or -1 when the question cannot be
+// asked. This is the two-tier picture reduced to one number, and it is the honest answer to
+// "do the bars line up with the music" -- which is a thing you can see but could not, until
+// now, read. Straight from the same rule the ticks are drawn by, so the number and the
+// picture can never disagree.
+double CanvasView::onGridShareOf(const Visual& v) const
+{
+    if (v.block.tempo <= 0.0 || v.onsets.empty()) return -1.0;
+    const double cell = (60.0 / v.block.tempo) / 4.0;
+    const double from = v.block.sourceOffset;
+    const double to   = from + juce::jmax(0.0, v.block.length);
+    int n = 0, on = 0;
+    for (const auto t : v.onsets)
+    {
+        if (t < from || t > to) continue;
+        ++n;
+        if (isOnGrid(t, v.block.barOnePos, cell)) ++on;
+    }
+    return n == 0 ? -1.0 : (double) on / (double) n;
 }
 
 juce::Rectangle<int> CanvasView::boundsOf(const Visual& v) const
@@ -2885,7 +2955,7 @@ void CanvasView::paint(juce::Graphics& g)
         // against a bar. Only where there is a thumbnail: lines over an empty frame are
         // a grid drawn on nothing.
         if (item->thumb != nullptr && item->thumb->getTotalLength() > 0.0)
-            paintBlockOverlay(g, *item, r, isSelected);
+            paintBlockOverlay(g, *item, r, tint, isSelected);
 
         // A MUTED BLOCK has to read as muted at a glance, not on inspection: hatched, so
         // it is distinguishable from a quiet one even in a screenshot.

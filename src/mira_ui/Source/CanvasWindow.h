@@ -729,7 +729,13 @@ private:
     // The rule is unchanged -- nothing snaps -- and what keeps it scaffolding is the
     // weighting: bars read, beats are faint, and the onsets sit on top of both.
     void paintBlockOverlay(juce::Graphics&, const Visual&, juce::Rectangle<int>,
-                           bool isSelected);
+                           juce::Colour tint, bool isSelected);
+    // The one rule both the ticks and the percentage are computed from, so the picture and
+    // the number can never disagree. The browser's own numbers -- see the definition.
+    static bool isOnGrid(double t, double phase, double cell);
+    // The two-tier picture as ONE number: what share of this block's onsets land on its
+    // grid, or -1 when there is no grid or no onsets to ask about.
+    double onGridShareOf(const Visual&) const;
     Visual* hitTest(juce::Point<int>, Drag& what);
     void rebuildAudio();
     void timerCallback() override;
