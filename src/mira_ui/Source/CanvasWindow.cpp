@@ -1561,11 +1561,8 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
     // born with one call ago.
     adoptParentMusic(*child, false);
 
-    // Detach the panel before re-pointing it, or `pointPanelAt`'s own sync-on-leave reads
-    // that same stale empty panel back over everything above. Clearing the id is what makes
-    // "the panel has nothing to say about this block" true rather than merely intended.
-    panelBlockId = 0;
-    pointPanelAt(child);
+    // adoptParentMusic has already pushed it through showPanelFor, which is the one path
+    // that does not read the panel back first.
 
     rebuildAudio();
     markDirty();
@@ -2160,6 +2157,23 @@ void CanvasView::syncPanelSettings()
     if (onCaptureSettings == nullptr || panelBlockId == 0) return;
     for (auto& i : items)
         if (i->block.id == panelBlockId) { i->settings = onCaptureSettings(); return; }
+}
+
+// Push settings to the panel WITHOUT letting it write back first.
+//
+// This trap has now bitten twice in one feature, so it gets a name. `pointPanelAt` syncs on
+// LEAVE -- it folds whatever is on screen into the block the panel was showing -- which is
+// exactly right when the user has been typing and wrong when the CODE has just authored the
+// settings itself. If the panel is still pointed at this very block holding the empty
+// recipe it was born with, that sync reads the emptiness straight back over the new
+// settings, and the result is a block that looks untouched.
+//
+// Clearing the id first is what makes "the panel has nothing to say about this block" TRUE
+// rather than merely intended.
+void CanvasView::showPanelFor(const Visual* v)
+{
+    panelBlockId = 0;
+    pointPanelAt(v);
 }
 
 void CanvasView::pointPanelAt(const Visual* v)
@@ -4674,7 +4688,10 @@ bool CanvasView::adoptParentMusic(Visual& child, bool syncPanelFirst)
     // describes the audio it is about to ask for. Conflating those is exactly the mistake
     // musicFromTake exists to prevent -- a tempo you just typed describing audio made before
     // you typed it.
-    pointPanelAt(&child);
+    // The SAME rule as the top of this function: a caller that authored these settings
+    // itself must not have them read back off a panel that never showed them.
+    if (syncPanelFirst) pointPanelAt(&child);
+    else                showPanelFor(&child);
     return true;
 }
 

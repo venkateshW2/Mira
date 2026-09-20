@@ -889,6 +889,13 @@ recipe it was born with. `adoptParentMusic` then began with `syncPanelSettings()
 folds the PANEL's state into the block — so it read that empty panel straight back over the
 parent's settings a line after they were copied. `pointPanelAt` would have done it a second
 time, since it syncs on leave.
+**It took two goes, because the same sync happens at both ends of the call.** The first fix
+skipped `syncPanelSettings()` at the TOP of `adoptParentMusic`; but that function ENDS with
+`pointPanelAt`, which syncs on *leave* — and read the still-empty panel back over the clone
+a second time, one line lower. The trap has a name now: **`showPanelFor()`**, "push to the
+panel without letting it write back first", used by every path that authors settings in
+code. A trap that bites twice in one feature has earned a function.
+
 **The rule the fix encodes: the panel is only the authority on settings it was actually
 shown.** A caller that has just built the settings itself says so, and the id is cleared
 before re-pointing rather than the sync being merely expected not to matter.

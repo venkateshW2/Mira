@@ -787,6 +787,9 @@ private:
     // drifted: Cmd-D left the panel aimed at the ORIGINAL, so the next Generate landed on
     // the block you had just copied away from. Pass nullptr to point it at nothing.
     void pointPanelAt(const Visual* v);
+    // Push to the panel WITHOUT letting it write back first. For code that has just
+    // authored `settings` itself -- see the definition; this trap has bitten twice.
+    void showPanelFor(const Visual* v);
     int zoomAnchorX() const;
     // Which block the panel is currently showing, or 0 for none.
     juce::int64 panelBlockId = 0;
