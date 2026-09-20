@@ -341,21 +341,76 @@ until step 2 measures one.
 **Done when** a generated block draws a usable grid with no analysis at all, and you can put
 bar 1 where your ear says it goes. ✔
 
-### Step 2 — Analyse
+### Step 2 — Analyse — **built 2026-09-20, NOT YET SEEN ON SCREEN**
 
-- [ ] **2.1** An **Analyse** button in the block header. Sends the take through the existing
-      `enqueueAnalyze` path. Shows that it is running — a slow job that says nothing is
-      indistinguishable from one that never started.
-- [ ] **2.2** Read the row back: tempo, beats, downbeats, onsets, meter, key, chords,
-      `beat_grid_stability`. Store what the block needs; leave the rest in the library.
-- [ ] **2.3** The grid snaps to the measured beats and bar 1 to the first downbeat —
-      **unless `barOneIsHuman`**, which survives (convention 5).
-- [ ] **2.4** **The confidence gate.** Below threshold the block says so, keeps the grid it
-      has, and does not set `tempoSource = "measured"`. The threshold is a starting guess and
-      is labelled one until measured against real takes.
-- [ ] **2.5** The footer draws **onsets** as well as beats, because those are the slice
-      points step 5 will use and seeing them is how you know step 5 will work.
-- [ ] **2.6** Verify on screen.
+2.1–2.5 are written and the app builds and launches. **2.6 is open**, and until it is done
+this is the same state MIRA-VIDEO Phase 1 was in when the whole Canvas menu turned out to
+have been dead since the day it shipped. Compiling is not verifying.
+
+- [x] **2.1** An **A** chip in the block header, third after M and the gain box, plus
+      **Analyse take** in the block menu — both landing in `analyseSelection()`, so they
+      cannot disagree about what Analyse means. Four states carried by the chip's FILL and
+      not by its letter (running / measured / refused / failed), because a chip that
+      changes its letter is a chip you have to learn to read. **While it runs the TEMPO BOX
+      says `analysing…`**: that is where your eye already is for a tempo and it is the thing
+      about to change, so the running state is reported where the answer will appear rather
+      than only on a 15-pixel square and a status line one repaint can overwrite.
+      **A canvas take is usually not in the library at all**, and `mira analyze
+      --paths-from` SKIPS a path with no row, then prints "nothing to analyze" and exits 0 —
+      so without registering it first the analysis appears to run, succeeds, and changes
+      nothing. It is registered with `upsertScannedFile` before the enqueue, which is also
+      the side effect §5 wants: your generated audio becomes searchable beside your source
+      material instead of living only inside a project folder.
+      **`--groove` is forced on** whatever the Analyze menu happens to be set to. Onsets and
+      the fitted grid ARE the question a block is asking; a session toggle silently deciding
+      whether a feature works is exactly the invisible dependency convention 6 is about.
+- [x] **2.2** `measurementFor()` in `Main.cpp` reads the row back into a `Measurement` —
+      tempo, stability, meter, bar spread, first downbeat, key, onsets. It lives with the
+      database and not in the canvas, the same line `loadSetting`/`saveSetting` already
+      draw: **the canvas has no database and is not getting one.** Legacy rows are converted
+      out of active time (`$.timebase != "file"`), and `human.$.key` outranks
+      `machine.$.key.key` (convention 5). Chords are deliberately not read — §11.
+      Verified against the real library before it was trusted: every key in §5's table is
+      present and populated on 819 analysed rows.
+- [x] **2.3** Tempo, meter, key and bar 1 adopted from the measurement, **each asked
+      separately** whether it has earned the right to overwrite what the block believes.
+      Bar 1 takes the first downbeat **unless `barOneIsHuman`**, which survives and says so
+      (convention 5). One `pushUndo()` for one answer, so adopting a grid is one Cmd-Z.
+- [x] **2.4** **The confidence gate, and it fires often.** Below `kGridConfidenceGate` the
+      block keeps its grid, does **not** become `tempoSource = "measured"`, and says
+      *"measured 88.14 bpm at confidence 0.71 — below 0.90, so the grid is left as it was"*.
+      `Refused` is its own state and not a kind of `Failed`: the analysis SUCCEEDED and its
+      answer was not good enough to impose, which is the system working.
+      **Measured, not guessed** (convention 2): of 819 analysed rows carrying a stability,
+      468 clear 0.90 and 385 clear 0.95 — so this refuses roughly four takes in ten.
+      The meter has a **second, different** gate, because `beat_grid_stability` says the
+      beats are steady and `meter_bar_spread` says whether they group into a bar the same
+      way twice; a steady grid with a drifting bar is exactly where 4 is a guess. 1.5 is the
+      number the groove panel already turns red at, reused deliberately — two thresholds for
+      one question would let the canvas adopt a meter another window is drawing in red.
+      Over the 386 rows that have a meter and clear the stability gate: min 1.005, p25
+      1.075, **p50 1.336**, p75 1.647, max 39.4.
+- [x] **2.5** The footer draws **onsets**, and **outside the gate**. An onset is a
+      measurement of the audio; whether the beat grid is trustworthy says nothing about
+      whether a transient is where it is — and on a take whose grid was refused the onsets
+      are the only honest thing on screen about its timing. So **the footer now exists for
+      onsets alone**, with no tempo at all, which is not a special case but the case that
+      matters most. They are drawn from the bottom up and shorter than a beat line, so an
+      onset landing on a beat reads as two marks rather than one longer one. Their density
+      guard is `onsetTicksVisible()` — ONE decision asked by both `gridFooterHeight` and the
+      painter, for the same reason `gridFooterHeight` itself is one.
+      A consequence worth naming: **bar 1 now needs a tempo to be draggable**, not just a
+      footer, or the gesture would move a number nothing draws.
+- [ ] **2.6** Verify on screen. Analyse a generated take; watch the chip and the tempo box
+      while it runs; check the adopted tempo against the recipe's; find a take the gate
+      refuses and read what it says; confirm a hand-dragged bar 1 survives an analysis;
+      reopen the project and confirm the onsets come back without re-measuring.
+
+Also built, because the alternative was a block stuck saying `analysing…` forever: the
+analyze queue grew **watchers** — who is waiting for which file — fired from the CLI's own
+`progress:` line and **swept as failed when the queue drains without one**. Matched with
+`pathsEquivalent` and never with `==`: the CLI echoes the path back as the DATABASE holds
+it, and the canvas asked with JUCE's bytes (convention 9, the bug that cost most of a day).
 
 **Done when** clicking Analyse on a generated take tells you what you actually made, as
 opposed to what you asked for.
@@ -451,15 +506,14 @@ The big one, and the reason the rest exists. Only after 1–4 are real.
 
 ## 12. Where to start next
 
-**Step 2 — Analyse.** Step 1 is built and verified on screen (2026-09-20), so a block now
-draws the grid it was ASKED for. Step 2 is the grid it actually GOT.
+**Verify step 2 on screen (2.6).** 2.1–2.5 are written, build clean and the app launches;
+nothing has been watched doing it. That is the state MIRA-VIDEO Phase 1 was in when the
+Canvas menu turned out to have been dead since the day it shipped — convention 8.
 
-`enqueueAnalyze` in `Main.cpp` already shells out to the `mira` CLI and re-analyses
-regardless of `analyzed_at`; §5 tabulates the exact `files.machine` keys to read back.
-Everything the block needs to hold it already has a field for — `tempoSource = "measured"`
-and `tempoConfidence` were written in step 1 for exactly this, and `barOneIsHuman` is the
-flag that decides whether a measurement is allowed to move bar 1 (convention 5).
+Then **step 2b**, the measurement step 2 makes possible: extend a block, analyse both
+halves, and find out whether an SA3 extension holds tempo. Nobody knows, and until now the
+project has had no instrument to ask.
 
-Start at **2.1**, the button and its running state, then **2.4**, the confidence gate —
-before 2.3 makes anything snap. A measurement that can overwrite a grid before there is
-anything stopping it is the failure §10 names first.
+Step 3 (stretch to) should not start before 2b: what a stretch is FOR depends on how far
+an extension actually drifts, and 3.5 refuses a stretch on the strength of the very
+confidence number step 2 has just started producing.

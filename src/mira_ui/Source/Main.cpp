@@ -14,6 +14,7 @@
 #include "mira/analyze/CueDetection.h"
 #include "mira/analyze/Groove.h"
 #include "mira/db/Database.h"
+#include "mira/db/PathNormalise.h"
 #include "mira/scan/Scanner.h"
 #include "MiraLookAndFeel.h"
 #include "FileTable.h"
@@ -3303,6 +3304,73 @@ public:
     // load discarded everything the first had built. Harmless-looking until a film was
     // involved: the trace showed "reference: read straight from finalucut.mp4" twice, and
     // on a 40-minute reel that is the expensive half of opening a project, done twice.
+    // ---- MIRA-BLOCKS.md step 2.2: the row, read back ---------------------------------
+    //
+    // Everything the canvas needs out of `files.machine`, in the canvas's own vocabulary.
+    // It lives HERE and not in the canvas because the canvas has no database and is not
+    // getting one -- the same line `loadSetting`/`saveSetting` already draw.
+    //
+    // Nothing is invented. A field the row does not carry is simply left at its default,
+    // and `ok` is false unless there is a real grid to report (convention 1 and 6: an
+    // omitted field is the system working, a substituted one is the bug).
+    mira::canvas::Measurement measurementFor(const juce::File& take)
+    {
+        mira::canvas::Measurement m;
+        if (database == nullptr) { m.note = "no library open"; return m; }
+
+        const auto record = database->findByPath(take.getFullPathName().toStdString());
+        if (!record) { m.note = "that take is not in the library"; return m; }
+        if (!record->analyzedAt) { m.note = "that take has not been analysed"; return m; }
+
+        const auto& machine = record->machine;
+
+        // Legacy rows hold times in ACTIVE (spliced) time rather than file time -- the
+        // same conversion reloadTimelineLanes does, and for the same reason: a take
+        // analysed before `$.timebase` existed would otherwise put its downbeat and its
+        // onsets at positions in a file nobody has.
+        auto spans = database->parseActiveSpans(record->activeSpans);
+        const bool legacyTimebase =
+            database->jsonExtractString(machine, "$.timebase").value_or("") != "file";
+        auto toFileTime = [&spans, legacyTimebase](double t) {
+            return legacyTimebase ? mira::activeTimeToFileTime(spans, t) : t;
+        };
+
+        // `beat_this_bpm` is THE tempo: since 2026-09-17 it holds the octave-folded
+        // least-squares fit, not the network's raw answer, and it is what the waveform's
+        // beat grid, `mira search bpm:` and the captions all read.
+        if (auto bpm = database->jsonExtractDouble(machine, "$.rhythm.beat_this_bpm");
+            bpm && *bpm >= 20.0 && *bpm <= 400.0)
+            m.bpm = *bpm;
+        if (auto st = database->jsonExtractDouble(machine, "$.rhythm.beat_grid_stability"))
+            m.stability = *st;
+        if (auto mt = database->jsonExtractDouble(machine, "$.rhythm.meter"))
+            m.meter = static_cast<int>(*mt);
+        if (auto sp = database->jsonExtractDouble(machine, "$.rhythm.meter_bar_spread"))
+            m.barSpread = *sp;
+        // `human` outranks machine (convention 5, PRD §11), here as everywhere else: a key
+        // typed into File Details is the answer, not the one libKeyFinder produced.
+        auto key = database->jsonExtractString(record->human, "$.key");
+        if (!key) key = database->jsonExtractString(machine, "$.key.key");
+        if (key) m.key = juce::String(*key);
+
+        for (auto& t : (m.onsets = database->jsonDoubleArray(machine, "$.onset_times")))
+            t = toFileTime(t);
+
+        auto downbeats = database->jsonDoubleArray(machine, "$.rhythm.beat_this_downbeats");
+        if (!downbeats.empty()) m.firstDownbeat = toFileTime(downbeats.front());
+
+        if (m.bpm <= 0.0)
+        {
+            // A row with no tempo is not a failure of this function; it is an answer, and
+            // it has to say which one. "Analysed, and there is no grid in it" and "never
+            // analysed" look identical from the outside (convention 10).
+            m.note = "analysed, but no usable tempo came out of it";
+            return m;
+        }
+        m.ok = true;
+        return m;
+    }
+
     void showCanvasWindow(bool bindCurrentProject = true)
     {
         // refreshMenuState() at every exit, not just on creation. The macOS menu bar bakes
@@ -3337,6 +3405,75 @@ public:
         canvasWindow->saveSetting = [this](const juce::String& key, const juce::String& value) {
             if (database != nullptr) database->setSetting(key.toStdString(), value.toStdString());
         };
+        // ---- MIRA-BLOCKS.md step 2 ---------------------------------------------------
+        // What the library already knows, with nothing run. Called for every block as a
+        // document opens, so a take analysed last week gets its onsets back.
+        canvasWindow->getView().onMeasurementLookup =
+            [this](const juce::File& take) { return measurementFor(take); };
+
+        canvasWindow->getView().onAnalyseRequested =
+            [this](const juce::File& take, juce::int64 blockId)
+        {
+            auto answer = [this, take, blockId](mira::canvas::Measurement m) {
+                if (canvasWindow != nullptr)
+                    canvasWindow->getView().analysisArrived(blockId, take, m);
+            };
+            if (database == nullptr || !miraCliPath.existsAsFile())
+            {
+                mira::canvas::Measurement m;
+                m.note = "the mira analyzer is not next to this app";
+                answer(m);
+                return;
+            }
+
+            // A CANVAS TAKE IS USUALLY NOT IN THE LIBRARY YET. `mira analyze --paths-from`
+            // SKIPS a path with no row and then reports "nothing to analyze" and exits 0 --
+            // so without this the analysis appears to run, succeeds, and changes nothing.
+            // Registering it here is also the side effect MIRA-BLOCKS.md §5 wants: your
+            // generated audio becomes searchable and captionable beside your source
+            // material instead of living only inside a project folder.
+            const auto path = take.getFullPathName().toStdString();
+            if (!database->findByPath(path))
+            {
+                database->upsertScannedFile(path, mira::sha256File(path),
+                                             take.getLastModificationTime().toMilliseconds() / 1000,
+                                             take.getSize(),
+                                             juce::Time::getCurrentTime().toMilliseconds() / 1000);
+                if (!database->findByPath(path))
+                {
+                    mira::canvas::Measurement m;
+                    m.note = "could not register " + take.getFileName() + " in the library";
+                    answer(m);
+                    return;
+                }
+                if (folderTree != nullptr) folderTree->refresh();
+            }
+
+            // Registered BEFORE the enqueue, and deliberately not conditional on it
+            // accepting anything: if this take is already in a running batch the queue
+            // drops it as a duplicate and returns, and the watcher still has to fire when
+            // that batch reaches it.
+            analyzeWatchers.push_back({ juce::String(path),
+                                         [this, take, answer](bool ok) {
+                                             if (!ok)
+                                             {
+                                                 mira::canvas::Measurement m;
+                                                 m.note = "the analyzer did not finish "
+                                                        + take.getFileName();
+                                                 answer(m);
+                                                 return;
+                                             }
+                                             answer(measurementFor(take));
+                                         } });
+
+            // `--groove` forced on, whatever the Analyze menu says -- see the overload.
+            // The other stages stay as the session has them: chords and transcription cost
+            // real time and neither one moves a grid.
+            auto options = analyzeOptions;
+            options.groove = true;
+            enqueueAnalyze({ juce::String(path) }, options);
+        };
+
         canvasWindow->getView().attachTo(sharedAudioDevice);
         if (bindCurrentProject) canvasWindow->getView().setProject(getCurrentProject());
         canvasWindow->onClosed = [this] {
@@ -4249,6 +4386,17 @@ private:
     // scoped to the active tab).
     void enqueueAnalyze(std::vector<juce::String> paths)
     {
+        enqueueAnalyze(std::move(paths), analyzeOptions);
+    }
+
+    // The same queue with the options stated rather than inherited. The canvas needs
+    // `--groove` whatever the Analyze menu happens to be set to: onsets and the fitted
+    // grid ARE the question a block is asking (MIRA-BLOCKS.md §5), and a block analysed
+    // without them comes back with no onsets and no slice points, silently -- a session
+    // toggle deciding whether a feature works is exactly the kind of invisible
+    // dependency convention 6 is about.
+    void enqueueAnalyze(std::vector<juce::String> paths, AnalyzeOptions options)
+    {
         if (paths.empty()) return;
         if (!miraCliPath.existsAsFile())
         {
@@ -4297,7 +4445,7 @@ private:
         // starts, but the gap between the click and that first stage report was long
         // enough to read as "nothing happened".
         const int accepted = static_cast<int>(paths.size());
-        analyzeQueue.push_back({ std::move(paths), analyzeOptions });
+        analyzeQueue.push_back({ std::move(paths), options });
         statusBar->setActivityText("queued " + juce::String(accepted) + " file"
                                     + (accepted == 1 ? "" : "s") + " for analysis" + ellipsisText(), true);
         updateAnalysisState();
@@ -4507,10 +4655,51 @@ private:
         logStore.append(LogStore::Source::app,
                          "finished " + juce::String(n) + "/" + juce::String(m) + " "
                              + juce::File(finishedPath).getFileName());
+        fireAnalyzeWatchers(finishedPath, true);
+    }
+
+    // ---- MIRA-BLOCKS.md step 2: somebody is waiting for one particular file ----------
+    //
+    // The analyze queue reports progress to the whole window; the canvas needs to know
+    // about ONE take. A small list rather than a callback on the batch, because a batch
+    // is not the unit anyone waits for: two blocks analysed in the same gesture land in
+    // one batch, and each block's grid has to arrive on its own.
+    //
+    // Matched with `pathsEquivalent` and NOT with `==`: the CLI echoes back the path as
+    // the DATABASE holds it, which is whatever normalisation the row was written in, and
+    // the canvas asked with JUCE's bytes. That is convention 9, and comparing these two
+    // with `==` is precisely the bug that cost most of a day on 2026-09-17.
+    void fireAnalyzeWatchers(const juce::String& path, bool ok)
+    {
+        std::vector<std::function<void(bool)>> due;
+        for (auto it = analyzeWatchers.begin(); it != analyzeWatchers.end();)
+        {
+            if (mira::pathsEquivalent(it->first.toStdString(), path.toStdString()))
+            {
+                due.push_back(std::move(it->second));
+                it = analyzeWatchers.erase(it);
+            }
+            else ++it;
+        }
+        for (auto& fn : due) fn(ok);
     }
 
     void onAnalyzeFinished(bool success)
     {
+        // Anything still waiting never got a `progress:` line of its own -- the CLI could
+        // not decode it, or the batch died part way. Answering "no" is the whole of
+        // convention 6 here: a watcher left hanging is a block that says "analysing..."
+        // for the rest of the session and never says why.
+        //
+        // Only when the queue is about to be empty: a watcher for a file in a LATER batch
+        // is still legitimately waiting, and failing it here would report a failure for
+        // work that has not started.
+        if (analyzeQueue.empty() && !analyzeWatchers.empty())
+        {
+            auto pending = std::move(analyzeWatchers);
+            analyzeWatchers.clear();
+            for (auto& w : pending) w.second(false);
+        }
         activeAnalyzeBatch.clear(); // any left over after a failure mid-batch shouldn't stay stuck "analyzing"
         analyzeJob.reset();
         analyzeCurrentPath = {};
@@ -4614,6 +4803,9 @@ private:
     std::deque<QueuedAnalyzeBatch> analyzeQueue;
     std::set<juce::String> activeAnalyzeBatch; // shrinks as AnalyzeJob reports each file done
     std::unique_ptr<AnalyzeJob> analyzeJob;
+    // Who is waiting for which file (MIRA-BLOCKS.md step 2). A vector and not a map: the
+    // same take can legitimately be waited on twice, and a map would lose one of them.
+    std::vector<std::pair<juce::String, std::function<void(bool)>>> analyzeWatchers;
 
     // What the CLI is doing right now, as reported by its own `starting:`/`stage:` lines.
     juce::String analyzeCurrentPath, analyzeCurrentStage;

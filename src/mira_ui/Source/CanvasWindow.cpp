@@ -837,6 +837,28 @@ juce::Rectangle<int> CanvasView::blockGainBox(const Visual& v) const
     return { mb.getRight() + 3, mb.getY(), 30, mb.getHeight() };
 }
 
+// ANALYSE (MIRA-BLOCKS.md 2.1), third in the header row after M and the gain box.
+//
+// A chip on the block rather than only a menu item, for the same reason M is one: a menu
+// is where you go to find something, a button on the thing itself is where you go to DO
+// it -- and analysing a take is something you do over and over while listening, then
+// watch, because it takes a minute on a long one.
+//
+// Only where there is audio to analyse. A chip on an empty block would be an affordance
+// with nothing behind it, which is the fault blockMuteBox's own comment names.
+juce::Rectangle<int> CanvasView::blockAnalyseBox(const Visual& v) const
+{
+    if (!v.block.hasAudio() || isReferenceLane(v.block.lane)) return {};
+    auto gb = blockGainBox(v);
+    if (gb.isEmpty()) return {};
+    auto r = boundsOf(v);
+    // Wider than the gain box needs, because the tempo box and the name both come out of
+    // what is left. Below this the block says its name and nothing else, which is the
+    // padlock's rule again: a control that does not fit is replaced by words.
+    if (r.getWidth() < 128) return {};
+    return { gb.getRight() + 3, gb.getY(), 15, gb.getHeight() };
+}
+
 // Tempo and key, on the RIGHT of the header row. Drawn there, double-clicked there, and
 // the tempo editor opens there -- one definition, because three copies of this arithmetic
 // is how a control ends up drawn in one place and clickable in another.
@@ -848,7 +870,12 @@ juce::Rectangle<int> CanvasView::blockTagBox(const Visual& v) const
     // and the film's dialogue has no tempo worth claiming anyway.
     if (r.getHeight() < 46 || !v.block.hasAudio() || isReferenceLane(v.block.lane)) return {};
     auto row = r.reduced(6, 2).removeFromTop(14);
-    if (const auto gb = blockGainBox(v); !gb.isEmpty())
+    // Whichever chip is furthest right, so adding one never lands the tempo box on top of
+    // it. Asked in order rather than assumed, because each chip has its own width gate and
+    // a block wide enough for gain is not always wide enough for Analyse.
+    if (const auto ab = blockAnalyseBox(v); !ab.isEmpty())
+        row = row.withTrimmedLeft(ab.getRight() - r.getX() - 2);
+    else if (const auto gb = blockGainBox(v); !gb.isEmpty())
         row = row.withTrimmedLeft(gb.getRight() - r.getX() - 2);
     else if (const auto mb = blockMuteBox(v); !mb.isEmpty())
         row = row.withTrimmedLeft(mb.getWidth() + 4);
@@ -965,6 +992,157 @@ void CanvasView::musicFromTake(Visual& v, bool force)
     else if (!v.block.barOneIsHuman) v.block.barOnePos = 0.0;
 }
 
+// ---- MIRA-BLOCKS.md step 2: the grid it actually GOT --------------------------------
+
+void CanvasView::analyseSelection()
+{
+    if (!onAnalyseRequested)
+    {
+        // Convention 6, at the outermost edge: the canvas can be built without an owner
+        // that knows about the library (it is a separate window by design), and a chip
+        // that silently does nothing in that build is worse than one that says why.
+        if (onTakeNote) onTakeNote("this canvas has no library to analyse into");
+        return;
+    }
+
+    int asked = 0, running = 0, empty = 0;
+    for (auto& i : items)
+    {
+        if (selected.count(i->block.id) == 0) continue;
+        if (isReferenceLane(i->block.lane)) continue;   // the film's audio is not ours to measure
+        if (!i->block.hasAudio() || !i->block.file.existsAsFile()) { ++empty; continue; }
+        // Asking twice for the same block queues a second identical run behind the first,
+        // and the second one's answer is the first one's answer -- the same reasoning
+        // enqueueAnalyze's own duplicate guard is built on.
+        if (i->analysis == Visual::Analysis::Running) { ++running; continue; }
+
+        i->analysis = Visual::Analysis::Running;
+        i->analysisNote = "analysing" + juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"));
+        ++asked;
+        onAnalyseRequested(i->block.file, i->block.id);
+    }
+    repaint();
+
+    if (onTakeNote)
+    {
+        if (asked > 0)
+            onTakeNote("analysing " + juce::String(asked) + " take"
+                        + (asked == 1 ? "" : "s") + juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"))
+                        + " this takes about a minute each");
+        else if (running > 0) onTakeNote("already analysing - wait for it to finish");
+        else if (empty > 0)   onTakeNote("nothing to analyse - that block has no take yet");
+        else                  onTakeNote("select a block to analyse");
+    }
+}
+
+// THE CONFIDENCE GATE (2.4) lives here, and it is the reason this function reads the way
+// it does: the measurement arrives whole, and then each part of it is asked separately
+// whether it has earned the right to overwrite what the block already believes.
+//
+// Nothing here is a fallback. A measurement that does not clear the gate leaves the grid
+// exactly as it was and SAYS SO -- a wrong grid imposed confidently is the failure this
+// project has already had twice (MIRA-BLOCKS.md §10), and an unexplained refusal is the
+// one that took three rounds of theories to find (convention 6, convention 10).
+void CanvasView::analysisArrived(juce::int64 blockId, const juce::File& take,
+                                 const Measurement& m)
+{
+    Visual* v = nullptr;
+    for (auto& i : items) if (i->block.id == blockId) { v = i.get(); break; }
+    // The block was deleted, or it is showing a different take now -- you chose another
+    // one while this ran. Either way the answer is about audio this block is no longer
+    // made of, and applying it would draw a grid measured from a file nobody is hearing.
+    if (v == nullptr) return;
+    if (!mira::pathsEquivalent(v->block.file.getFullPathName().toStdString(),
+                                take.getFullPathName().toStdString()))
+    {
+        if (onTakeNote)
+            onTakeNote("analysed " + take.getFileName() + " - that block has moved on to "
+                        + "another take, so its grid is unchanged");
+        if (v->analysis == Visual::Analysis::Running) v->analysis = Visual::Analysis::None;
+        repaint();
+        return;
+    }
+
+    if (!m.ok)
+    {
+        v->analysis = Visual::Analysis::Failed;
+        v->analysisNote = m.note.isNotEmpty() ? m.note : juce::String("analysis produced no grid");
+        if (onTakeNote) onTakeNote(v->block.name + ": " + v->analysisNote);
+        repaint();
+        return;
+    }
+
+    // Onsets first, and OUTSIDE the gate. An onset is a measurement of the audio; whether
+    // the beat grid is trustworthy says nothing about whether a transient is where it is
+    // -- and on a take whose grid is refused, the onsets are the only honest thing on
+    // screen about its timing.
+    v->onsets = m.onsets;
+
+    const auto bpmText = juce::String(m.bpm, m.bpm < 100.0 ? 2 : 1);
+    const auto confText = juce::String(m.stability, 2);
+
+    if (m.stability < kGridConfidenceGate)
+    {
+        v->analysis = Visual::Analysis::Refused;
+        // The number AND the reason, because the point of the gate is that you can
+        // overrule it: the tempo box is still a drag box, and now you know what the
+        // machine thought before you decide it was wrong.
+        v->analysisNote = "measured " + bpmText + " bpm at confidence " + confText
+                        + " - below " + juce::String(kGridConfidenceGate, 2)
+                        + ", so the grid is left as it was";
+        if (onTakeNote) onTakeNote(v->block.name + ": " + v->analysisNote);
+        repaint();
+        return;
+    }
+
+    pushUndo();   // one snapshot for one answer, so adopting a grid is one Cmd-Z to undo
+
+    juce::StringArray adopted;
+    v->block.tempo = m.bpm;
+    v->block.tempoSource = "measured";
+    v->block.tempoConfidence = m.stability;
+    adopted.add(bpmText + " bpm");
+
+    // The meter has a gate of its own and it is not this one. `beat_grid_stability` says
+    // the BEATS are steady; `meter_bar_spread` says whether they group into a bar the same
+    // way twice. A steady grid with a drifting bar is exactly the case where 4 is a guess.
+    if (m.meter >= 2 && m.barSpread > 0.0 && m.barSpread <= kMeterSpreadLimit)
+    {
+        v->block.meter = m.meter;
+        adopted.add(juce::String(m.meter) + "/4");
+    }
+
+    // Key comes from libKeyFinder with its own harmonicity gate, so a key that arrives at
+    // all has already been judged. It replaces the prompt's key because one describes the
+    // audio and the other describes what was asked for -- and there is no way to type a
+    // key by hand yet, so nothing human is being overwritten.
+    if (m.key.isNotEmpty() && m.key != v->block.key)
+    {
+        v->block.key = m.key;
+        adopted.add(m.key);
+    }
+
+    // BAR 1 (2.3). Convention 5: a downbeat you put there by ear outranks a model, and it
+    // survives every analysis after it. The measured one is in SOURCE time already, which
+    // is the same clock barOnePos is kept in.
+    if (m.firstDownbeat >= 0.0)
+    {
+        if (v->block.barOneIsHuman)
+            adopted.add("bar 1 kept where you put it");
+        else
+        {
+            v->block.barOnePos = m.firstDownbeat;
+            adopted.add("bar 1 at " + juce::String(m.firstDownbeat, 2) + "s");
+        }
+    }
+
+    v->analysis = Visual::Analysis::Measured;
+    v->analysisNote = adopted.joinIntoString(", ") + " (confidence " + confText + ")";
+    if (onTakeNote) onTakeNote(v->block.name + ": " + v->analysisNote);
+    markDirty();
+    repaint();
+}
+
 void CanvasView::setFileOn(Visual& v, const juce::File& f)
 {
     v.block.file = f;
@@ -989,10 +1167,40 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
         v.thumb = std::make_unique<juce::AudioThumbnail>(512, formats, cache);
         v.thumb->setSource(new juce::FileInputSource(f));
     }
+    // A measurement describes ONE file. The take just changed, so last take's onsets,
+    // state and note are now claims about audio nobody is hearing -- convention 12's bug
+    // exactly, and the reason musicFromTake clears rather than keeps.
+    v.analysis = Visual::Analysis::None;
+    v.analysisNote.clear();
+    v.onsets.clear();
+
     // Every route a take can arrive by goes through here -- a generation adopted, a take
     // chosen, a file dropped, a block split or duplicated, a document loaded -- so this is
     // the one place that has to know the audio changed.
     musicFromTake(v);
+
+    // What the library ALREADY knows, if anything: a take analysed in a previous session
+    // gets its onsets back on reopen without measuring anything again. It sets nothing
+    // else -- the document already holds whatever grid was adopted, and re-adopting it
+    // here would let a measurement outrank a tempo you typed after it.
+    if (onMeasurementLookup && v.block.hasAudio() && f.existsAsFile())
+    {
+        const auto known = onMeasurementLookup(f);
+        if (known.ok)
+        {
+            v.onsets = known.onsets;
+            // Only claim "measured" when the DOCUMENT says the measurement was adopted.
+            // A row exists for every analysed file, including ones whose grid the gate
+            // refused, and showing those as measured would be the chip lying about the
+            // one thing it is there to report.
+            if (v.block.tempoSource == "measured")
+            {
+                v.analysis = Visual::Analysis::Measured;
+                v.analysisNote = "measured in an earlier session (confidence "
+                               + juce::String(v.block.tempoConfidence, 2) + ")";
+            }
+        }
+    }
 }
 
 // One place that names a block, so a dropped file and a "+ Block" cannot end up in
@@ -1365,6 +1573,14 @@ void CanvasView::showBlockMenu(Visual& v)
     // by where it came from), but it is not always what you want, so the other answer is
     // one item rather than an argument: renumber from here.
     m.addItem(23, "Bar 1 starts here", v.block.tempo > 0.0);
+    // The same verb as the header chip, with room for a sentence. The chip is where you
+    // press it; this is where you read what it said -- a 15-pixel square cannot hold
+    // "measured 88.1 bpm at confidence 0.71, below 0.90, so the grid is left as it was",
+    // and that sentence is the entire point of the gate.
+    m.addItem(24, "Analyse take", v.block.hasAudio()
+                                   && v.analysis != Visual::Analysis::Running);
+    if (v.analysisNote.isNotEmpty())
+        m.addItem(25, v.analysisNote, false);   // a readout, not a command
     m.addSeparator();
     m.addItem(8, "Rename block...");
     // EXPORT WHAT YOU HEAR. The take on disk is the raw generation -- it knows nothing
@@ -1411,6 +1627,7 @@ void CanvasView::showBlockMenu(Visual& v)
                          }
                          if (result >= 100 && result < 300) { self.chooseTake(id, result); return; }
                          if (result == 8) { self.beginRenameBlock(id); return; }
+                         if (result == 24) { self.analyseSelection(); return; }
                          if (result == 23)
                          {
                              self.pushUndo();
@@ -2164,10 +2381,33 @@ void CanvasView::clearAll()
 // itself. A grid you cannot count is not a smaller grid, it is noise.
 int CanvasView::gridFooterHeight(const Visual& v, int blockHeight) const
 {
-    if (v.block.tempo <= 0.0 || blockHeight < kGridFooterMin) return 0;
+    if (blockHeight < kGridFooterMin) return 0;
+    // ONSETS KEEP THE FOOTER ALIVE WITH NO TEMPO (2.5). That is not a special case, it is
+    // the case that matters most: a take whose grid the gate refused often has no tempo at
+    // all, and its onsets are then the only honest thing on screen about its timing.
+    if (onsetTicksVisible(v)) return kGridFooterHeight;
+    if (v.block.tempo <= 0.0) return 0;
     const double pxPerBeat = (60.0 / v.block.tempo) * pixelsPerSecond;
     if (pxPerBeat < 5.0 && pxPerBeat * juce::jmax(1, v.block.meter) < 5.0) return 0;
     return kGridFooterHeight;
+}
+
+// Whether the onset ticks are worth drawing at this zoom -- the same kind of density
+// decision the beats and bars already make, and asked in ONE place for the same reason:
+// gridFooterHeight reserves the strip and paintBlockGrid fills it, and if they disagreed
+// the block would grow an empty band or lose the ticks it made room for.
+//
+// Three pixels apart on average. Below that a run of transients is a grey smear that says
+// "there is audio here", which the waveform three pixels above already says better.
+bool CanvasView::onsetTicksVisible(const Visual& v) const
+{
+    if (v.onsets.empty()) return false;
+    const double from = v.block.sourceOffset;
+    const double to   = from + juce::jmax(0.0, v.block.length);
+    int n = 0;
+    for (const auto t : v.onsets) if (t >= from && t <= to) ++n;
+    if (n == 0) return false;
+    return (double) n * 3.0 <= v.block.length * pixelsPerSecond;
 }
 
 // The grid, drawn as a FOOTER along the bottom of the block (MIRA-BLOCKS.md 1.3).
@@ -2186,17 +2426,46 @@ void CanvasView::paintBlockGrid(juce::Graphics& g, const Visual& v, juce::Rectan
 {
     if (gridFooterHeight(v, r.getHeight()) <= 0) return;
 
+    // The footer can exist for the onsets alone, so the strip and its ticks are drawn
+    // before anything asks about a tempo -- there may not be one.
+    {
+        auto foot = r.withTop(r.getBottom() - kGridFooterHeight).reduced(1, 0);
+        g.setColour(tint.withAlpha(0.18f));
+        g.fillRect(foot);
+
+        if (onsetTicksVisible(v))
+        {
+            // ONSETS, drawn from the BOTTOM up and shorter than a beat line, so a tick
+            // that happens to land on a beat reads as two marks rather than one longer
+            // one. They are the slice points step 5 will cut at: seeing them is how you
+            // know in advance whether slicing this take will work.
+            juce::Graphics::ScopedSaveState clip (g);
+            g.reduceClipRegion(foot);
+            g.setColour(MiraLookAndFeel::accent.withAlpha(isSelected ? 0.55f : 0.38f));
+            const double from = v.block.sourceOffset;
+            const double to   = from + juce::jmax(0.0, v.block.length);
+            const float bottom = (float) foot.getBottom();
+            const float top    = bottom - foot.getHeight() * 0.38f;
+            for (const auto t : v.onsets)
+            {
+                if (t < from || t > to) continue;
+                const float x = (float) secondsToX(v.block.start + (t - from));
+                if (x < (float) foot.getX() - 1.0f || x > (float) foot.getRight()) continue;
+                g.drawLine(x, top, x, bottom, 1.0f);
+            }
+        }
+    }
+
+    if (v.block.tempo <= 0.0) return;
     const double spb = 60.0 / v.block.tempo;
     const double pxPerBeat = spb * pixelsPerSecond;
     const bool beats = pxPerBeat >= 5.0;
     const int meter = juce::jmax(1, v.block.meter);
 
+    // The strip is already filled above; this is the grid drawn INTO it.
     auto foot = r.removeFromBottom(kGridFooterHeight).reduced(1, 0);
     juce::Graphics::ScopedSaveState clip (g);
     g.reduceClipRegion(foot);
-
-    g.setColour(tint.withAlpha(0.18f));
-    g.fillRect(foot);
 
     // Bar 1 on the TIMELINE, and the first beat at or left of the block's left edge. The
     // floor is done in beats rather than by walking from bar 1, so a block whose bar 1
@@ -2507,6 +2776,29 @@ void CanvasView::paint(juce::Graphics& g)
                            gb, juce::Justification::centred, false);
             }
 
+            // ANALYSE (2.1). Four states and each one has to be legible at 15x13 px, so
+            // it is the FILL that carries the state and the letter stays "A": running is
+            // the accent colour, measured is a quiet tick of the track's own colour,
+            // refused and failed are the warn colour. A chip that changed its letter
+            // would be a chip you have to learn to read.
+            if (const auto ab = blockAnalyseBox(*item); !ab.isEmpty())
+            {
+                const auto st = item->analysis;
+                const bool running  = st == Visual::Analysis::Running;
+                const bool measured = st == Visual::Analysis::Measured;
+                const bool warn     = st == Visual::Analysis::Refused
+                                   || st == Visual::Analysis::Failed;
+                g.setColour(running  ? MiraLookAndFeel::accent.withAlpha(0.85f)
+                            : warn   ? MiraLookAndFeel::warn.withAlpha(0.55f)
+                            : measured ? tint.withAlpha(0.55f)
+                                       : tint.withAlpha(0.25f));
+                g.fillRoundedRectangle(ab.toFloat(), 2.5f);
+                g.setColour(running ? MiraLookAndFeel::surface
+                                    : MiraLookAndFeel::text.withAlpha(measured || warn ? 0.9f : 0.6f));
+                g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(9.0f)));
+                g.drawText("A", ab, juce::Justification::centred, false);
+            }
+
             g.setColour(isSelected ? MiraLookAndFeel::text : tint.brighter(0.4f));
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
             // "block1 _ name of the file": the block's own name AND what is in it. The
@@ -2537,12 +2829,18 @@ void CanvasView::paint(juce::Graphics& g)
             if (auto tagBox = blockTagBox(*item); !tagBox.isEmpty())
             {
                 auto tags = musicLabelOf(item->block);
+                // WHILE IT RUNS, the tempo box says so. It is the place your eye is
+                // already on for a tempo and it is the thing about to change, so the
+                // running state is reported where the answer will appear rather than only
+                // on a 15-pixel chip and a status line one repaint can overwrite.
+                const bool busy = item->analysis == Visual::Analysis::Running;
+                if (busy) tags = "analysing" + juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"));
                 // A block whose prompt said nothing about tempo still shows the BOX, faint
                 // and with a dash in it. Drawing nothing would be honest about the tempo
                 // and silent about the gesture: roughly a quarter of takes arrive with no
                 // BPM in their recipe, and those are exactly the blocks someone needs to
                 // be able to double-click and type one into.
-                const bool placeholder = tags.isEmpty();
+                const bool placeholder = tags.isEmpty();   // busy always has text, so never here
                 if (placeholder)
                     tags = keyAndTempoOf(item->settings).isNotEmpty()
                                ? keyAndTempoOf(item->settings)
@@ -2551,7 +2849,7 @@ void CanvasView::paint(juce::Graphics& g)
                 // It LOOKS like the gain box next to it, because it behaves like it: a
                 // number you drag. A readout and a control that are dragged the same way
                 // and drawn differently is how you get a control nobody finds.
-                if (item->block.tempo > 0.0 || placeholder)
+                if (item->block.tempo > 0.0 || placeholder || busy)
                 {
                     g.setColour(tint.withAlpha(placeholder ? 0.12f : 0.3f));
                     g.fillRoundedRectangle(tagBox.toFloat(), 2.5f);
@@ -2870,8 +3168,11 @@ CanvasView::Visual* CanvasView::hitTest(juce::Point<int> p, Drag& what)
         // THE GRID FOOTER drags bar 1 (1.4). Trimming keeps the edges: trim has only the
         // seven pixels at each end, and the footer has all the rest of its band, so the
         // cheaper gesture to lose is the one with a whole strip to spare.
+        // A tempo is required, not just a footer: the footer can be there for the onsets
+        // alone (2.5), and dragging "bar 1" on a block with no grid moves a number nothing
+        // draws -- a gesture with no visible effect, which is the worst kind.
         if (const int foot = gridFooterHeight(**it, r.getHeight());
-            foot > 0 && p.y >= r.getBottom() - foot
+            foot > 0 && b.tempo > 0.0 && p.y >= r.getBottom() - foot
             && p.x - r.getX() > kEdgeGrab && r.getRight() - p.x > kEdgeGrab)
         { what = Drag::BarOne; return it->get(); }
         if (p.x - r.getX() <= kEdgeGrab)        what = Drag::TrimLeft;
@@ -3072,6 +3373,20 @@ void CanvasView::mouseDown(const juce::MouseEvent& e)
         rebuildAudio();
         markDirty();
         repaint();
+        return;
+    }
+
+    // ANALYSE (2.1). Checked here beside the mute chip and BEFORE the popup-menu branch
+    // for the same reason: a control drawn on a block has to win over the gestures the
+    // block itself offers, or a three-pixel miss starts a drag instead.
+    //
+    // No pushUndo -- asking a question changes nothing. The snapshot is taken in
+    // analysisArrived, where an answer actually moves the grid.
+    if (auto ab = blockAnalyseBox(*hit); !ab.isEmpty() && ab.contains(e.getPosition())
+                                          && !e.mods.isPopupMenu())
+    {
+        drag = Drag::None;
+        analyseSelection();
         return;
     }
 

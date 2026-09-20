@@ -177,7 +177,64 @@ These are not style preferences. Each one exists because breaking it caused a re
 
 Newest first. Keep this current — it is how the next session finds the thread.
 
-### 2026-09-20 (latest) — the block has a tempo, and the grid is drawn
+### 2026-09-20 (latest) — the block can be analysed, and four takes in ten are refused
+
+[MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 2, tasks 2.1–2.5. **Built, builds clean, launches —
+and NOT YET SEEN ON SCREEN.** 2.6 is open, and convention 8 says that is the whole
+difference between this entry and the one below it.
+
+Step 1 drew the grid a block was ASKED for. This is the grid it actually GOT.
+
+- **A canvas take is usually not in the library at all**, and `mira analyze --paths-from`
+  **skips a path with no row**, then prints `nothing to analyze` and exits **0**. So without
+  registering the take first the analysis would appear to run, succeed, and change nothing —
+  a silent no-op wearing a success. It is registered with `upsertScannedFile` before the
+  enqueue, which is also the side effect worth wanting: generated audio becomes searchable
+  and captionable beside the source material instead of living only inside a project folder.
+- **`--groove` is forced on**, whatever the Analyze menu is set to. Onsets and the fitted
+  grid ARE the question a block is asking; a sticky session toggle deciding whether a
+  feature works at all is the invisible dependency convention 6 exists for.
+- **The confidence gate fires often, and that is the point.** Of 819 analysed rows carrying
+  a `beat_grid_stability`, **468 clear 0.90 and 385 clear 0.95** — so the gate refuses
+  roughly four takes in ten. Below it the block keeps its grid, does not become
+  `tempoSource = "measured"`, and says *"measured 88.14 bpm at confidence 0.71 — below 0.90,
+  so the grid is left as it was"*. **`Refused` is its own state, not a kind of `Failed`:**
+  the analysis SUCCEEDED and its answer was not good enough to impose, which is the system
+  working (convention 1), not something that went wrong.
+- **The meter has a SECOND, different gate.** `beat_grid_stability` says the beats are
+  steady; `meter_bar_spread` says whether they group into a bar the same way twice, and a
+  steady grid with a drifting bar is exactly where 4 is a guess. 1.5 is the number the
+  groove panel already turns red at, reused deliberately — two thresholds for one question
+  would let the canvas adopt a meter another window is drawing in red. Measured over the 386
+  rows with a meter that clear the stability gate: min 1.005, p25 1.075, **p50 1.336**,
+  p75 1.647, max 39.4.
+- **Onsets are drawn OUTSIDE the gate, and the footer now exists for them alone.** An onset
+  is a measurement of the audio; whether the beat grid is trustworthy says nothing about
+  whether a transient is where it is — and on a take whose grid was refused, the onsets are
+  the only honest thing on screen about its timing. So a block with no tempo at all still
+  gets a footer if it has onsets. One consequence, taken deliberately: **bar 1 now needs a
+  tempo to be draggable**, not just a footer, or the gesture would move a number nothing
+  draws.
+- **Watchers, so a block cannot be stuck saying `analysing…` forever.** The analyze queue
+  reports to the whole window; the canvas needs to know about ONE take. Watchers fire off
+  the CLI's own `progress:` line and are **swept as failed when the queue drains without
+  one** — a batch that died, or a file the decoder refused. Matched with `pathsEquivalent`
+  and never with `==`: the CLI echoes the path back as the DATABASE holds it and the canvas
+  asked with JUCE's bytes, which is convention 9 and the bug that cost most of a day.
+- **The running state is shown where the ANSWER will appear.** The chip is 15 pixels and the
+  status line is one repaint from being overwritten, so the tempo box itself reads
+  `analysing…` — the place your eye is already on for a tempo, and the thing about to
+  change.
+- **`measurementFor()` lives with the database, not in the canvas.** The canvas has no
+  database and is not getting one; the owner runs the analysis, reads `files.machine` back
+  and hands the canvas a finished answer in its own vocabulary. The same line
+  `loadSetting`/`saveSetting` already draw.
+
+Checked before it was trusted rather than after: every JSON key in MIRA-BLOCKS.md §5 is
+present and populated across the real library, and the two thresholds above are measured
+distributions rather than round numbers (convention 2).
+
+### 2026-09-20 — the block has a tempo, and the grid is drawn
 
 [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 1, all six tasks. **Verified on screen by the user**,
 including the round trip: a typed tempo and a dragged bar 1 both survive save and reopen.
@@ -696,23 +753,21 @@ separate faults, each fixed and each re-measured against the same six.
 
 ## ⛔ Start here next session
 
-### Next — [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 2, Analyse
+### Next — verify MIRA-BLOCKS step 2 on screen (2.6), then step 2b
 
-**Step 1 is built and verified (2026-09-20)**, so a block draws the grid it was ASKED for.
-Step 2 is the grid it actually GOT: an Analyse button in the block header, the row read back
-for tempo, beats, downbeats, onsets, meter, key and `beat_grid_stability`, and the grid
-snapping to the measurement.
+**Step 2 is written and unverified (2026-09-20).** It builds clean and the app launches;
+nothing has been watched doing it. Analyse a generated take; watch the **A** chip and the
+tempo box while it runs; check the adopted tempo against the recipe's; find a take the gate
+refuses and read what it says; confirm a hand-dragged bar 1 survives an analysis; reopen the
+project and confirm the onsets come back without re-measuring.
 
-**Do 2.1 and then 2.4 — the confidence gate — before 2.3 makes anything snap.** A wrong grid
-imposed confidently is the failure this project has already had twice (the 100 BPM loop that
-read 149.4, the groove histogram flat on all 94 files), and the gate is the whole defence.
-`tempoSource = "measured"`, `tempoConfidence` and `barOneIsHuman` were all written in step 1
-for exactly this.
+Then **step 2b — the measurement step 2 makes possible: does an SA3 extension hold tempo?**
+Extend a block, analyse both halves, compare. Nobody knows, and until now there has been no
+instrument to ask. Write the answer into MIRA-BLOCKS.md §7 with a date.
 
-**Nothing needs new analysis code.** `enqueueAnalyze` already shells to the `mira` CLI, and
-every number needed is already written into `files.machine` — the exact JSON keys are
-tabulated in MIRA-BLOCKS.md §5. Step 2b is then the measurement nobody has ever been able to
-make: does an SA3 extension hold tempo?
+**Step 3 (stretch to) should not start before 2b.** What a stretch is FOR depends on how far
+an extension actually drifts, and 3.5 refuses a stretch on the strength of the very
+confidence number step 2 has only just started producing.
 
 ---
 

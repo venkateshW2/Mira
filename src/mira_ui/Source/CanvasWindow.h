@@ -46,6 +46,37 @@ struct VideoClip
     juce::int64 audioBlockId = 0;  // the locked reference block (Phase 2), or 0
 };
 
+// ---- MIRA-BLOCKS.md step 2: what the library measured about a take ------------------
+//
+// The canvas has no database of its own and is not getting one (the same reasoning that
+// keeps `loadSetting`/`saveSetting` as callbacks). So the owner runs the analysis, reads
+// `files.machine` back, and hands the canvas THIS -- a finished answer in the canvas's
+// own vocabulary rather than a JSON blob and a parser on both sides.
+//
+// Every number here is in SOURCE time (seconds into the file), because that is what the
+// block stores and what survives a trim.
+struct Measurement
+{
+    // False means the take has no usable grid -- the row is missing, the analysis failed,
+    // or it produced no beats. `note` says which. Convention 6: a failed measurement is
+    // never a substitute value.
+    bool ok = false;
+    juce::String note;
+    double bpm = 0.0;
+    // $.rhythm.beat_grid_stability -- the share of beat intervals within 25% of the
+    // median. THE gate: 0.99-1.00 on grids known to be right, 0.64-0.85 on grids known to
+    // be wrong (CLAUDE.md 2026-09-17, six tracks against the user's own tempos).
+    double stability = 0.0;
+    int    meter = 0;            // 0 = not measured
+    double barSpread = 0.0;      // past 1.5 the beats drifted; the meter is not to be trusted
+    double firstDownbeat = -1.0; // < 0 = none found
+    juce::String key;
+    // $.onset_times. Drawn in the footer (2.5) and the slice points step 5 will use.
+    // Not gated by `stability`: an onset is a measurement of the AUDIO, and whether the
+    // beat grid is trustworthy says nothing about whether a transient is where it is.
+    std::vector<double> onsets;
+};
+
 class CanvasView : public juce::Component,
                    public juce::FileDragAndDropTarget,
                    private juce::Timer
@@ -218,6 +249,55 @@ public:
     // Something worth knowing about a take that just landed -- so far, that it stops
     // sounding well before its length.
     std::function<void(const juce::String&)> onTakeNote;
+
+    // ---- MIRA-BLOCKS.md step 2 -----------------------------------------------------
+    // Analyse this take. The owner registers it in the library if it is not there yet,
+    // runs the analyzer, reads the row back and calls `analysisArrived`. Asynchronous by
+    // nature -- a minute of work on a long take -- which is why the block carries a
+    // Running state rather than this returning anything.
+    std::function<void(const juce::File& take, juce::int64 blockId)> onAnalyseRequested;
+    // What the library ALREADY knows about a take, without analysing anything. Used when
+    // a document opens, so a block that was analysed in a previous session gets its
+    // onsets back without re-measuring. Never touches the grid: the document already
+    // holds the tempo that was adopted, and re-adopting it here would let a measurement
+    // silently outrank a number you typed afterwards.
+    std::function<Measurement(const juce::File& take)> onMeasurementLookup;
+    // The answer. Safe to call for a block that has since been deleted or repointed at
+    // another take -- it checks both before touching anything.
+    void analysisArrived(juce::int64 blockId, const juce::File& take, const Measurement& m);
+    // Analyse every selected block that has audio. The menu item and the header chip both
+    // land here, so they cannot disagree about what Analyse means.
+    void analyseSelection();
+
+    // THE CONFIDENCE GATE (MIRA-BLOCKS.md 2.4), and it is a starting guess -- labelled
+    // one until it has been measured against real generated takes rather than against the
+    // six ground-truth tracks below.
+    //
+    // 0.90 is the gap between the two clusters the only ground truth this project has
+    // produced: grids known to be RIGHT read 0.99/1.00/1.00, grids known to be WRONG read
+    // 0.64/0.67/0.85 (CLAUDE.md 2026-09-17). It is also the number `mira analyze` already
+    // uses to decide a grid is worth cross-checking against a second postprocessor, so
+    // using a different one here would mean the analyzer doubted a grid the canvas
+    // accepted without argument.
+    //
+    // Below it nothing is adopted. A wrong grid imposed confidently is the failure this
+    // project has already had twice (MIRA-BLOCKS.md §10), and this is the whole defence.
+    //
+    // Measured against the library rather than assumed to be harmless: of 819 analysed
+    // rows carrying a stability, 468 clear 0.90 and 385 clear 0.95. So this refuses
+    // roughly four takes in ten -- it is a real gate that will fire often, not a
+    // rubber stamp, and that is what it is for.
+    static constexpr double kGridConfidenceGate = 0.90;
+    // Past this the beats drifted through the bar and the meter is not a measurement of
+    // anything (ANALYSIS.md; the groove panel already turns red here). It is the SAME
+    // number the groove panel uses, deliberately: two thresholds for one question would
+    // let the canvas adopt a meter the panel three windows away is drawing in red.
+    //
+    // Measured over the 386 rows that have a meter AND clear the stability gate above:
+    // min 1.005, p25 1.075, p50 1.336, p75 1.647, max 39.4. So 1.5 sits around p65 and
+    // takes the top third of the spread out -- stricter than the middle of the corpus,
+    // which is the right direction for a number that overwrites something.
+    static constexpr double kMeterSpreadLimit = 1.5;
     void extendSelection(bool remix);
     // Length, tail and whether there is audio, for the single selection. What decides
     // whether Extend and Remix can do anything.
@@ -353,6 +433,22 @@ private:
         // forced equal; the difference between them is the empty tail you drag out past
         // the end of the audio, which is the range an extend or a remix fills in.
         double audioSeconds = 0.0;
+
+        // ---- step 2, the analysis ---------------------------------------------------
+        // Where this block is in the analyse cycle. `Refused` is its own state and not a
+        // kind of `Failed`: the analysis SUCCEEDED and the grid it found was not good
+        // enough to impose, which is the system working (convention 1) rather than
+        // something that went wrong.
+        enum class Analysis { None, Running, Measured, Refused, Failed };
+        Analysis analysis = Analysis::None;
+        // The sentence that goes with it, kept so it can be re-read from the block menu
+        // rather than living only in a status line one repaint can overwrite.
+        juce::String analysisNote;
+        // Onset times in SOURCE seconds. Session state, not document state: they are
+        // 12 KB of JSON per take and they are already in the library, so writing them
+        // into every `.mira` would fatten the document with a copy of something that has
+        // a home. Re-read on demand through `onMeasurementLookup`.
+        std::vector<double> onsets;
     };
 
     // BarOne drags the grid footer, which moves where bar 1 sits WITHIN THE FILE -- see
@@ -517,6 +613,11 @@ private:
     // them has ever had a button.
     juce::Rectangle<int> blockMuteBox(const Visual& v) const;
     juce::Rectangle<int> blockGainBox(const Visual& v) const;
+    // The Analyse chip, third in the header row after M and the gain box. A chip and not
+    // a menu-only item because step 2 is a thing you do repeatedly while listening, and
+    // it has a state you need to see -- a slow job that says nothing is indistinguishable
+    // from one that never started.
+    juce::Rectangle<int> blockAnalyseBox(const Visual& v) const;
     // Where the tempo and key sit in the block header -- ONE definition, so the painter,
     // the double-click and the editor cannot disagree about a 130-pixel box.
     juce::Rectangle<int> blockTagBox(const Visual& v) const;
@@ -608,6 +709,10 @@ private:
     // makes room for a footer that the density guard then refuses to draw, and the block
     // grows a mystery empty band.
     int gridFooterHeight(const Visual&, int blockHeight) const;
+    // 2.5 -- whether the onset ticks are dense enough to be noise at this zoom. Asked by
+    // gridFooterHeight and by the painter, and therefore defined once for the same reason
+    // gridFooterHeight itself is.
+    bool onsetTicksVisible(const Visual&) const;
     void paintBlockGrid(juce::Graphics&, const Visual&, juce::Rectangle<int>,
                         juce::Colour tint, bool isSelected);
     Visual* hitTest(juce::Point<int>, Drag& what);
