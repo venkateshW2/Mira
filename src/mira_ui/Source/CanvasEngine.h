@@ -143,6 +143,12 @@ struct Block
     // stable across a reload and the thing a badge has to say out loud anyway.
     juce::String conformedTo;
     juce::int64 followsBlockId = 0;   // 0 = independent
+    // The parent's tempo as of the last time this child was reconciled with it. STALE is
+    // `parent.tempo != followedTempo` -- a remembered number rather than a flag, because a
+    // flag would have to be set by every path that can change a parent's tempo and would be
+    // wrong the first time someone added another one. This cannot go out of date: it is a
+    // comparison, made when it is asked.
+    double followedTempo = 0.0;
     // Whether a bar 1 set by hand survives the next analysis. Convention 5: `human`
     // outranks machine, so a nudge you made by ear is not overwritten by a model.
     bool barOneIsHuman = false;

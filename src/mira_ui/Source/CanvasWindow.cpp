@@ -1595,6 +1595,7 @@ namespace BlockMenu {
         kTakesFirst = 100, kTakesLast = 299,   // 100+i show, 200+i trash
         kStretchFirst = 400, kStretchLast = 459,
         kStretchUnavailable = 399,
+        kFollowsNone = 460, kFollowsFirst = 461, kFollowsLast = 498, kFollowsRefresh = 499,
         kLegendFirst = 500                     // all disabled: readouts, never clicked
     };
 }
@@ -1740,6 +1741,38 @@ void CanvasView::showBlockMenu(Visual& v)
                        "prompt's, not the audio's)", false);
         else
             m.addSubMenu("Conform this block to", targets);
+
+        // ---- FOLLOWS (4.1) ----------------------------------------------------------
+        // Separate from Conform on purpose. Conform is an ACTION you press; this is a
+        // RELATIONSHIP that fills the prompt next time you generate. Merging them would
+        // mean either that linking silently rendered audio, or that conforming silently
+        // created a dependency -- and both of those are things you would want to have been
+        // asked about.
+        juce::PopupMenu follows;
+        followTargets.clear();
+        follows.addItem(BlockMenu::kFollowsNone, "Independent", v.block.followsBlockId != 0,
+                         v.block.followsBlockId == 0);
+        follows.addSeparator();
+        for (const auto& other : items)
+        {
+            if (other->block.id == v.block.id || other->block.tempo <= 0.0) continue;
+            if (isReferenceLane(other->block.lane)) continue;
+            const int id = BlockMenu::kFollowsFirst + (int) followTargets.size();
+            if (id > BlockMenu::kFollowsLast) break;
+            followTargets.push_back(other->block.id);
+            // A cycle is shown greyed WITH its reason rather than hidden: a block missing
+            // from a list is a question ("why can't I pick that one?"), and the answer is
+            // worth more than the tidiness.
+            const bool loops = wouldCycle(v.block.id, other->block.id);
+            follows.addItem(id, other->block.name + "   " + juce::String(other->block.tempo, 1)
+                                 + " bpm" + (loops ? "   (would loop back here)" : ""),
+                             !loops, v.block.followsBlockId == other->block.id);
+        }
+        m.addSubMenu("Follows", follows);
+        if (isStale(v))
+            m.addItem(BlockMenu::kFollowsRefresh,
+                       "Its parent moved to " + juce::String(parentOf(v)->block.tempo, 1)
+                           + " bpm - put that in this block's prompt");
     }
     // The same verb as the header chip, with room for a sentence. The chip is where you
     // press it; this is where you read what it said -- a 15-pixel square cannot hold
@@ -1852,6 +1885,31 @@ void CanvasView::showBlockMenu(Visual& v)
                              const size_t i = (size_t) (result - BlockMenu::kStretchFirst);
                              if (i < self.stretchTargets.size())
                                  self.conformSelectionTo((juce::int64) self.stretchTargets[i]);
+                             return;
+                         }
+                         if (result == BlockMenu::kFollowsNone) { self.setFollows(id, 0); return; }
+                         if (result >= BlockMenu::kFollowsFirst && result <= BlockMenu::kFollowsLast)
+                         {
+                             const size_t i = (size_t) (result - BlockMenu::kFollowsFirst);
+                             if (i < self.followTargets.size())
+                                 self.setFollows(id, self.followTargets[i]);
+                             return;
+                         }
+                         if (result == BlockMenu::kFollowsRefresh)
+                         {
+                             for (auto& b : self.items)
+                                 if (b->block.id == id)
+                                 {
+                                     self.pushUndo();
+                                     if (self.adoptParentMusic(*b))
+                                     {
+                                         self.markDirty(); self.repaint();
+                                         if (self.onTakeNote)
+                                             self.onTakeNote(b->block.name
+                                                 + "'s prompt now asks for its parent's tempo");
+                                     }
+                                     break;
+                                 }
                              return;
                          }
                          if (result >= BlockMenu::kTakesFirst && result <= BlockMenu::kTakesLast)
@@ -2144,6 +2202,7 @@ juce::String CanvasView::toJson(const juce::File& base) const
             o->setProperty("tempoSource", i->block.tempoSource);
             if (i->block.tempoOctave != 0) o->setProperty("tempoOctave", i->block.tempoOctave);
             if (i->block.conformedTo.isNotEmpty()) o->setProperty("conformedTo", i->block.conformedTo);
+            if (i->block.followedTempo > 0.0) o->setProperty("followedTempo", i->block.followedTempo);
             o->setProperty("tempoConfidence", i->block.tempoConfidence);
             o->setProperty("barOneIsHuman", i->block.barOneIsHuman);
             // The parent is written as its INDEX in this array, not as its id. Ids are
@@ -2359,6 +2418,7 @@ bool CanvasView::fromJson(const juce::String& json, const juce::File& base, bool
             v->block.tempoSource = b.getProperty("tempoSource", "").toString();
             v->block.tempoOctave = juce::jlimit(-2, 2, (int) b.getProperty("tempoOctave", 0));
             v->block.conformedTo = b.getProperty("conformedTo", "").toString();
+            v->block.followedTempo = juce::jmax(0.0, (double) b.getProperty("followedTempo", 0.0));
             v->block.tempoConfidence = juce::jlimit(0.0, 1.0,
                                                     (double) b.getProperty("tempoConfidence", 0.0));
             v->block.barOneIsHuman = (bool) b.getProperty("barOneIsHuman", false);
@@ -3452,9 +3512,21 @@ void CanvasView::paint(juce::Graphics& g)
             // they read as chrome rather than as part of the title.
             {
                 juce::String badge;
+                bool stale = false;
                 if (item->stretchedFrom.isNotEmpty())
                     badge << juce::String(juce::CharPointer_UTF8("\xe2\x86\x94")) << " stretched";
-                if (item->block.conformedTo.isNotEmpty())
+                // A LIVE LINK outranks the record of a past action: if a block follows
+                // something, that is the fact worth the pixels, and "conformed to" is how it
+                // got there. Only one of them is shown, so the badge never has to be read
+                // twice to work out which kind of claim it is making.
+                if (const auto* p = parentOf(*item); p != nullptr)
+                {
+                    stale = isStale(*item);
+                    if (badge.isNotEmpty()) badge << "  ";
+                    badge << juce::String(juce::CharPointer_UTF8("\xe2\x86\x92")) << " "
+                          << p->block.name << (stale ? "  stale" : "");
+                }
+                else if (item->block.conformedTo.isNotEmpty())
                 {
                     if (badge.isNotEmpty()) badge << "  ";
                     badge << juce::String(juce::CharPointer_UTF8("\xe2\x86\x92"))
@@ -3466,7 +3538,11 @@ void CanvasView::paint(juce::Graphics& g)
                     const int w = juce::jmin(headerRow.getWidth() / 2,
                                               juce::roundToInt(juce::GlyphArrangement::getStringWidth(g.getCurrentFont(), badge)) + 10);
                     auto box = headerRow.removeFromRight(w);
-                    g.setColour(tint.withAlpha(isSelected ? 0.40f : 0.28f));
+                    // STALE IS THE WARN COLOUR, because it is the one state here that is
+                    // asking you for something: the parent moved and this block's prompt
+                    // still says the old number.
+                    g.setColour(stale ? MiraLookAndFeel::warn.withAlpha(isSelected ? 0.65f : 0.45f)
+                                      : tint.withAlpha(isSelected ? 0.40f : 0.28f));
                     g.fillRoundedRectangle(box.toFloat(), 2.5f);
                     g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.85f : 0.6f));
                     g.drawText(badge, box, juce::Justification::centred, false);
@@ -4362,6 +4438,140 @@ void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWhee
     scrollVerticallyBy (juce::roundToInt (-step * 120.0));
 }
 
+// ---- MIRA-BLOCKS.md step 4: the child ------------------------------------------------
+//
+// A LINK IS A SOURCE FOR A NUMBER, NOT A SECOND SYSTEM (§3). It fills the child's prompt
+// before you generate, so the take arrives close; it tells you when the parent has moved
+// underneath it; and it does nothing else. It NEVER re-stretches audio on its own -- that
+// would be a dependency graph quietly rewriting files, which collides head-on with the rule
+// that every change to a block's audio writes a new take you chose.
+CanvasView::Visual* CanvasView::parentOf(const Visual& v)
+{
+    if (v.block.followsBlockId == 0) return nullptr;
+    for (auto& i : items) if (i->block.id == v.block.followsBlockId) return i.get();
+    return nullptr;
+}
+
+const CanvasView::Visual* CanvasView::parentOf(const Visual& v) const
+{
+    return const_cast<CanvasView*>(this)->parentOf(v);
+}
+
+// 4.4 -- STALE means the parent's tempo is not the one this child was last reconciled with.
+// A remembered number rather than a flag: a flag would have to be set by every path that
+// can change a parent's tempo (analyse, drag, halve, double, conform, undo) and would be
+// wrong the first time someone added another one. This is a comparison, made when asked.
+bool CanvasView::isStale(const Visual& v) const
+{
+    const auto* p = parentOf(v);
+    return p != nullptr && p->block.tempo > 0.0
+        && std::abs(p->block.tempo - v.block.followedTempo) > 0.005;
+}
+
+// 4.2 -- A LINK THAT COMES BACK TO ITSELF. Refused at the point it would be made, which is
+// the only place it can be refused with a reason; a cycle detected later is a hang or a
+// stack overflow with nothing to say. Walks the chain rather than checking one step,
+// because A -> B -> C -> A is the same mistake with more rope.
+bool CanvasView::wouldCycle(juce::int64 childId, juce::int64 parentId) const
+{
+    juce::int64 at = parentId;
+    for (int guard = 0; guard < 256 && at != 0; ++guard)
+    {
+        if (at == childId) return true;
+        const Visual* next = nullptr;
+        for (const auto& i : items) if (i->block.id == at) { next = i.get(); break; }
+        if (next == nullptr) return false;
+        at = next->block.followsBlockId;
+    }
+    return false;
+}
+
+// 4.3 -- the parent's tempo and key, written into the CHILD'S PROMPT.
+//
+// Done when the link is made or reconciled, and SAID OUT LOUD -- not silently at the moment
+// of generation. A prompt is text the user wrote; something that rewrites it invisibly, at
+// the instant it is consumed, is the "one Extend guided every generation after it" bug in a
+// new costume: invisible because nothing showed it and nothing recorded it.
+static juce::String withPromptField (juce::String prompt, const juce::String& key,
+                                      const juce::String& value)
+{
+    if (value.isEmpty()) return prompt;
+    const int at = prompt.indexOfIgnoreCase (key + ":");
+    if (at < 0)
+        return prompt.trim().isEmpty() ? (key + ": " + value)
+                                       : (prompt.trim().trimCharactersAtEnd(",") + ", " + key + ": " + value);
+    const int valueAt = at + key.length() + 1;
+    auto rest = prompt.substring (valueAt);
+    const int end = rest.indexOfChar (',');
+    return prompt.substring (0, valueAt) + " " + value + (end >= 0 ? rest.substring (end) : juce::String());
+}
+
+bool CanvasView::adoptParentMusic(Visual& child)
+{
+    const auto* p = parentOf(child);
+    if (p == nullptr || p->block.tempo <= 0.0) return false;
+
+    // The panel may be holding unsaved edits to this very block's prompt.
+    syncPanelSettings();
+
+    auto* o = child.settings.isObject() ? child.settings.getDynamicObject() : nullptr;
+    if (o == nullptr) { child.settings = emptyRecipe(); o = child.settings.getDynamicObject(); }
+
+    auto prompt = o->getProperty("prompt").toString();
+    const auto bpm = std::abs(p->block.tempo - std::round(p->block.tempo)) < 0.05
+                        ? juce::String((int) std::round(p->block.tempo))
+                        : juce::String(p->block.tempo, 1);
+    prompt = withPromptField(prompt, "BPM", bpm);
+    if (p->block.key.isNotEmpty()) prompt = withPromptField(prompt, "Keyscale", p->block.key);
+    o->setProperty("prompt", prompt);
+
+    child.block.followedTempo = p->block.tempo;
+    // The child's own GRID is not touched. Its tempo describes the audio it HAS; the prompt
+    // describes the audio it is about to ask for. Conflating those is exactly the mistake
+    // musicFromTake exists to prevent -- a tempo you just typed describing audio made before
+    // you typed it.
+    pointPanelAt(&child);
+    return true;
+}
+
+void CanvasView::setFollows(juce::int64 childId, juce::int64 parentId)
+{
+    Visual* child = nullptr;
+    for (auto& i : items) if (i->block.id == childId) { child = i.get(); break; }
+    if (child == nullptr) return;
+
+    if (parentId != 0 && wouldCycle(childId, parentId))
+    {
+        // Convention 6: refused, with the reason, at the point of the gesture.
+        if (onTakeNote)
+            onTakeNote("that would make a loop - " + child->block.name
+                        + " is already upstream of that block");
+        return;
+    }
+
+    pushUndo();
+    child->block.followsBlockId = parentId;
+    if (parentId == 0)
+    {
+        child->block.followedTempo = 0.0;
+        if (onTakeNote) onTakeNote(child->block.name + " is independent again");
+    }
+    else if (adoptParentMusic(*child))
+    {
+        const auto* p = parentOf(*child);
+        if (onTakeNote)
+            onTakeNote(child->block.name + " follows " + p->block.name
+                        + " - its prompt now asks for " + juce::String(p->block.tempo, 1)
+                        + " bpm" + (p->block.key.isNotEmpty() ? " in " + p->block.key : juce::String())
+                        + ". Generate, then Conform to tidy up what comes back.");
+    }
+    else if (onTakeNote)
+        onTakeNote("linked, but that block has no tempo to pass on yet");
+
+    markDirty();
+    repaint();
+}
+
 // ---- conform: the other half of a stretch -------------------------------------------
 //
 // "if we take a tempo from a different block then we should match their POSITION also, or
@@ -4468,6 +4678,10 @@ bool CanvasView::conformSelectionTo(juce::int64 parentId)
     }
 
     child->block.conformedTo = parent->block.name;
+    // 4.4 -- conforming to your PARENT is what clears stale. Conforming to anything else is
+    // an action about two blocks and says nothing about the link.
+    if (child->block.followsBlockId == parent->block.id)
+        child->block.followedTempo = parent->block.tempo;
     rebuildAudio();
     markDirty();
     announceSelection();
@@ -5270,6 +5484,25 @@ void CanvasView::removeSelected()
                                 }),
                  items.end());
     selected.clear();
+
+    // ORPHANED CHILDREN. A link that points at a block which no longer exists is state
+    // outliving the thing it described -- convention 12, and here it is worse than usual
+    // because the link is silent: `parentOf` simply returns null, the badge disappears, and
+    // the block looks independent while still carrying a dead id that the next save writes
+    // out. Cut, and said out loud, because losing a relationship you set up is worth a line.
+    juce::StringArray orphaned;
+    for (auto& v : items)
+        if (v->block.followsBlockId != 0 && parentOf(*v) == nullptr)
+        {
+            v->block.followsBlockId = 0;
+            v->block.followedTempo = 0.0;
+            orphaned.add(v->block.name);
+        }
+    if (!orphaned.isEmpty() && onTakeNote)
+        onTakeNote(orphaned.joinIntoString(", ") + (orphaned.size() == 1 ? " no longer follows"
+                                                                         : " no longer follow")
+                    + " anything - the block they followed is gone");
+
     rebuildAudio();
     repaint();
 }

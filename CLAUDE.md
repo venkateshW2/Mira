@@ -828,7 +828,17 @@ separate faults, each fixed and each re-measured against the same six.
 
 ## ⛔ Start here next session
 
-### Next — verify MIRA-BLOCKS step 3 by ear (3.7)
+### Next — relaunch MIRA, then verify step 4 (and 3c) on screen
+
+**A build is waiting.** Step 4 (the child) and step 3c (snap a trim to the grid) are
+compiled but the running app still holds the old binary — it was left running on purpose
+because an analysis was in progress. Relaunch to pick them up.
+
+Then: link a block to another with **Follows**, check its prompt gains the parent's tempo and
+key, change the parent's tempo and watch the child's badge go warn-coloured, and confirm a
+cycle is refused with a reason. For 3c: set **Snap** to bar and trim a block to a loop.
+
+### Then — verify MIRA-BLOCKS step 3 by ear (3.7)
 
 **3.0–3.5 are built and not yet heard.** Stretch a take to another block's tempo from the
 block menu, A/B it against the original with Choose Take, and check bar 1 still lands where

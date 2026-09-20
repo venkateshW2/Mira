@@ -242,9 +242,19 @@ public:
     // TRACK never enters into it -- a block moves between tracks freely.
     bool conformSelectionTo(juce::int64 parentId);
 
+    // ---- MIRA-BLOCKS.md step 4: the child ---------------------------------------------
+    // A link is a SOURCE FOR A NUMBER, not a second system: it fills the child's prompt
+    // before you generate, it tells you when the parent has moved underneath it, and it
+    // does nothing else. It never re-stretches audio on its own.
+    void setFollows(juce::int64 childId, juce::int64 parentId);   // 0 = independent
+    // Walks the whole chain: A -> B -> C -> A is the same mistake with more rope.
+    bool wouldCycle(juce::int64 childId, juce::int64 parentId) const;
+
     // The tempos the block menu last offered, so the callback can answer by index rather
     // than by encoding a bpm in a menu id.
     std::vector<double> stretchTargets;
+    // Likewise for the Follows submenu: block ids, answered by index.
+    std::vector<juce::int64> followTargets;
     void toggleMetronome();
     bool metronomeIsOn() const { return metronomeOn; }
     // Rebuilt whenever the selection, the grid or the geometry changes -- it is a list of
@@ -843,6 +853,15 @@ private:
     // when snapping is off, the block has no grid, or nothing is near enough to be meant.
     // Here rather than beside `snapUnit` because it takes a Visual, declared below.
     double snapSourceTime(const Visual&, double sourceSeconds) const;
+    // Step 4 internals, here because they take a Visual.
+    Visual* parentOf(const Visual&);
+    const Visual* parentOf(const Visual&) const;
+    // The parent's tempo is not the one this child was last reconciled with.
+    bool isStale(const Visual&) const;
+    // Write the parent's tempo and key into the CHILD'S PROMPT, and remember the tempo it
+    // was reconciled with. Does not touch the child's own grid: its tempo describes the
+    // audio it HAS, the prompt describes the audio it is about to ask for.
+    bool adoptParentMusic(Visual& child);
     // Whether an onset lands on the grid: within 18% of a 16th, measured against the BEAT
     // IT FALLS IN rather than against a period extrapolated from bar 1. On a grid that
     // breathes even slightly those are different questions by the end of a take.

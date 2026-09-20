@@ -835,15 +835,38 @@ exactly the takes it is most wanted for.
 
 - [ ] **3c.6** Verify on screen.
 
-### Step 4 — the child
+### Step 4 — the child — **BUILT 2026-09-20, not yet seen on screen**
 
-- [ ] **4.1** **Follows block N** in the block menu, stored as `followsBlockId`. Drawn on the
-      block — a badge naming the parent.
-- [ ] **4.2** Cycle check on link: A → B → A is refused with a reason.
-- [ ] **4.3** The parent's tempo and key are written into the child's prompt **before**
-      generation, so the take arrives close and the stretch is small or unnecessary.
-- [ ] **4.4** When the parent's tempo changes, children are marked **stale** — never
-      re-stretched behind your back.
+- [x] **4.1** **Follows ▸ \<block\>** in the block menu, stored as `followsBlockId`, with a
+      badge on the header naming the parent. **Separate from Conform on purpose**: Conform is
+      an ACTION you press, this is a RELATIONSHIP that fills the prompt next time you
+      generate. Merging them would mean either that linking silently rendered audio or that
+      conforming silently created a dependency, and both are things you would want to have
+      been asked about.
+- [x] **4.2** **Cycle check, walking the whole chain** — A → B → C → A is the same mistake
+      with more rope. Refused at the point the link would be made, which is the only place it
+      can be refused *with a reason*; a cycle found later is a hang with nothing to say. A
+      looping candidate is shown **greyed with its reason** rather than hidden: a block
+      missing from a list is a question, and the answer is worth more than the tidiness.
+- [x] **4.3** **The parent's tempo and key are written into the child's PROMPT** when the
+      link is made, and **said out loud** — not silently at the moment of generation. A
+      prompt is text you wrote; something that rewrites it invisibly at the instant it is
+      consumed is the *"one Extend guided every generation after it"* bug in a new costume.
+      The child's own GRID is untouched: its tempo describes the audio it HAS, the prompt
+      describes the audio it is about to ask for, and conflating those is precisely what
+      `musicFromTake` exists to prevent.
+- [x] **4.4** **Stale is a remembered NUMBER, not a flag.** `followedTempo` holds the
+      parent's tempo as of the last reconciliation, and stale is a comparison made when
+      asked. A flag would have to be set by every path that can change a parent's tempo —
+      analyse, drag, halve, double, conform, undo — and would be wrong the first time someone
+      added another one. The badge turns **warn-coloured** and the menu offers to put the new
+      number in the prompt. **Nothing is ever re-stretched behind your back**; conforming to
+      your parent is what clears it.
+- [x] **4.6** **A deleted parent cuts its children loose, and says so.** A link pointing at a
+      block that no longer exists is state outliving the thing it described (convention 12) —
+      and worse than usual here because it is silent: `parentOf` returns null, the badge
+      vanishes, and the block *looks* independent while still carrying a dead id the next
+      save writes out.
 - [ ] **4.5** Verify on screen.
 
 **Done when** generating a second block against the first needs no retyping.
