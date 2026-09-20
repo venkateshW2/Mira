@@ -3356,8 +3356,15 @@ public:
         for (auto& t : (m.onsets = database->jsonDoubleArray(machine, "$.onset_times")))
             t = toFileTime(t);
 
-        auto downbeats = database->jsonDoubleArray(machine, "$.rhythm.beat_this_downbeats");
-        if (!downbeats.empty()) m.firstDownbeat = toFileTime(downbeats.front());
+        // THE BEATS THEMSELVES, not only a tempo to lay a grid out from. A grid built
+        // from one BPM scalar drifts away from the audio on anything that is not
+        // metronomic, and the canvas draws these directly for the same reason the
+        // browser's bar ruler always has.
+        for (auto& t : (m.beats = database->jsonDoubleArray(machine, "$.rhythm.beat_this_beats")))
+            t = toFileTime(t);
+        for (auto& t : (m.downbeats = database->jsonDoubleArray(machine, "$.rhythm.beat_this_downbeats")))
+            t = toFileTime(t);
+        if (!m.downbeats.empty()) m.firstDownbeat = m.downbeats.front();
 
         if (m.bpm <= 0.0)
         {

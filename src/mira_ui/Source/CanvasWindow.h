@@ -70,6 +70,12 @@ struct Measurement
     int    meter = 0;            // 0 = not measured
     double barSpread = 0.0;      // past 1.5 the beats drifted; the meter is not to be trusted
     double firstDownbeat = -1.0; // < 0 = none found
+    // THE REAL BEATS, not a tempo to lay a grid out from. `$.rhythm.beat_this_beats` and
+    // `beat_this_downbeats`. A synthetic grid built from one BPM scalar drifts away from
+    // the audio on anything that is not metronomic -- which is what "the onsets are not
+    // aligning with the bars" actually was -- and the browser has drawn real downbeats for
+    // exactly this reason since the bar ruler was written.
+    std::vector<double> beats, downbeats;
     juce::String key;
     // $.onset_times. Drawn in the footer (2.5) and the slice points step 5 will use.
     // Not gated by `stability`: an onset is a measurement of the AUDIO, and whether the
@@ -444,6 +450,9 @@ private:
         // The sentence that goes with it, kept so it can be re-read from the block menu
         // rather than living only in a status line one repaint can overwrite.
         juce::String analysisNote;
+        // The measured beats and downbeats in SOURCE seconds, when this block has been
+        // analysed. Session state for the same reason the onsets are.
+        std::vector<double> beats, downbeats;
         // Onset times in SOURCE seconds. Session state, not document state: they are
         // 12 KB of JSON per take and they are already in the library, so writing them
         // into every `.mira` would fatten the document with a copy of something that has
@@ -669,6 +678,17 @@ private:
     // found by y and the y of that lane can never disagree.
     int laneToY(int lane) const;
     int yToLane(int y) const;
+    // How far the stack of TRACKS is scrolled, in pixels. The ruler, the marker row and the
+    // video strip sit above `lanesTop()` and deliberately do not move: a time axis that slid
+    // away from the blocks it numbers would be worse than no time axis at all.
+    int scrollY = 0;
+    int lanesTotalHeight() const;
+    int maxScrollY() const;
+    void scrollVerticallyBy(int pixels);
+    // Re-clamp after anything that changes the content height -- a track removed, a lane
+    // shortened, the window grown. Without it, scrolling to the bottom of twelve tracks and
+    // deleting ten leaves the canvas parked below everything it has.
+    void clampScroll();
     // Declared after Visual, which they take by reference.
     juce::File blockFolderFor(const Visual&) const;
     Visual* singleSelection();
@@ -730,9 +750,25 @@ private:
     // weighting: bars read, beats are faint, and the onsets sit on top of both.
     void paintBlockOverlay(juce::Graphics&, const Visual&, juce::Rectangle<int>,
                            juce::Colour tint, bool isSelected);
-    // The one rule both the ticks and the percentage are computed from, so the picture and
-    // the number can never disagree. The browser's own numbers -- see the definition.
-    static bool isOnGrid(double t, double phase, double cell);
+    // ---- what lines a block actually draws ------------------------------------------
+    // ONE answer, consumed by the footer, by the overlay, by the onset colouring and by the
+    // percentage. Four painters deriving a grid four ways is how a bar line, a bar number
+    // and an "on the grid" tick end up disagreeing about the same beat.
+    struct GridLines
+    {
+        std::vector<double> beats;   // SOURCE seconds
+        std::vector<char>   isBar;   // parallel: is this beat a downbeat
+        std::vector<int>    barNo;   // parallel: bar number for a downbeat, else 0
+        // True when these are MEASURED positions rather than a period laid out from one
+        // BPM scalar. It is what decides solid vs dashed, and it is the honest difference
+        // between "where the beats are" and "where they would be if the tempo were exact".
+        bool measured = false;
+    };
+    GridLines gridLinesOf(const Visual&, double from, double to) const;
+    // Whether an onset lands on the grid: within 18% of a 16th, measured against the BEAT
+    // IT FALLS IN rather than against a period extrapolated from bar 1. On a grid that
+    // breathes even slightly those are different questions by the end of a take.
+    static bool onsetOnGrid(double t, const GridLines&);
     // The two-tier picture as ONE number: what share of this block's onsets land on its
     // grid, or -1 when there is no grid or no onsets to ask about.
     double onGridShareOf(const Visual&) const;
@@ -746,6 +782,10 @@ private:
     // at exactly when you needed it to.
     static constexpr int kHeaderWidth = 148;
     static constexpr int kEdgeGrab = 7;   // px either side of a block edge that trims
+    // px either side of a BAR LINE that drags bar 1. Narrower than kEdgeGrab because a bar
+    // line sits in the middle of a block where the competing gesture is Move, and moving a
+    // block by accident is more expensive than missing the grid by three pixels.
+    static constexpr int kBarLineGrab = 4;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CanvasView)
 };

@@ -1111,6 +1111,12 @@ void CanvasView::analysisArrived(juce::int64 blockId, const juce::File& take,
     // -- and on a take whose grid is refused, the onsets are the only honest thing on
     // screen about its timing.
     v->onsets = m.onsets;
+    // THE REAL BEATS, kept whatever the gate decides. They are where the beats ARE; the
+    // gate is about whether the TEMPO they imply is steady enough to adopt as the block's
+    // number. Drawing measured beats on a take whose tempo was refused is not a
+    // contradiction -- it is the most useful thing that take can show you.
+    v->beats = m.beats;
+    v->downbeats = m.downbeats;
 
     const auto bpmText = juce::String(m.bpm, m.bpm < 100.0 ? 2 : 1);
     const auto confText = juce::String(m.stability, 2);
@@ -1198,7 +1204,13 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
             // past the end of its audio and the gap is the range to fill in.
             if (v.block.length <= 0.0) v.block.length = v.audioSeconds;
         }
-        v.thumb = std::make_unique<juce::AudioThumbnail>(512, formats, cache);
+        // 128 source samples per thumbnail point, not 512. At 44.1 kHz that is 2.9 ms
+        // per point instead of 11.6 -- four times the detail, which is what "the waveform
+        // doesn't have good resolution" was about: a block zoomed in far enough to place a
+        // transient by eye was drawing one point every 11.6 ms and looked like a smear.
+        // The take stack and the inpaint strip already use 256 for the same reason; this
+        // is the surface you zoom furthest into, so it gets the finest.
+        v.thumb = std::make_unique<juce::AudioThumbnail>(128, formats, cache);
         v.thumb->setSource(new juce::FileInputSource(f));
     }
     // A measurement describes ONE file. The take just changed, so last take's onsets,
@@ -1207,6 +1219,8 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
     v.analysis = Visual::Analysis::None;
     v.analysisNote.clear();
     v.onsets.clear();
+    v.beats.clear();
+    v.downbeats.clear();
 
     // Every route a take can arrive by goes through here -- a generation adopted, a take
     // chosen, a file dropped, a block split or duplicated, a document loaded -- so this is
@@ -1223,6 +1237,8 @@ void CanvasView::setFileOn(Visual& v, const juce::File& f)
         if (known.ok)
         {
             v.onsets = known.onsets;
+            v.beats = known.beats;
+            v.downbeats = known.downbeats;
             // Only claim "measured" when the DOCUMENT says the measurement was adopted.
             // A row exists for every analysed file, including ones whose grid the gate
             // refused, and showing those as measured would be the chip lying about the
@@ -1411,6 +1427,7 @@ void CanvasView::removeLane(int lane)
     markDirty();
     rebuildAudio();
     repaint();
+    clampScroll();
 }
 
 void CanvasView::addEmptyBlock()
@@ -1630,9 +1647,10 @@ void CanvasView::showBlockMenu(Visual& v)
         {
             const bool measured = v.block.tempoSource == "measured";
             key.addItem(90, "full-height lines = the " + juce::String(v.block.meter)
-                             + "/4 grid" + (measured ? " (solid: measured off this audio)"
-                                                     : " (DASHED: not measured -- this is the "
-                                                       "tempo you ASKED for)"), false);
+                             + "/4 grid"
+                             + (measured ? " (SOLID: the beats mira measured in this audio)"
+                                         : " (DASHED: not measured -- this is the tempo you "
+                                           "ASKED for, so it lands where it lands)"), false);
         }
         if (!v.onsets.empty())
         {
@@ -1650,6 +1668,8 @@ void CanvasView::showBlockMenu(Visual& v)
         // off the audio and moves bar 1 onto a real downbeat.
         if (v.block.tempoSource != "measured")
             key.addItem(96, "the grid does not follow the onsets until you Analyse", false);
+        else
+            key.addItem(96, "drag a bar line, or the footer, to move bar 1", false);
         m.addSubMenu("What the marks mean", key);
     }
     m.addSeparator();
@@ -2476,17 +2496,101 @@ int CanvasView::gridFooterHeight(const Visual& v, int blockHeight) const
     return kGridFooterHeight;
 }
 
-// A 16th of the beat, and 18% of that cell counts as landing on it. The browser's own
-// numbers (WaveformView.cpp's onset lane), reused rather than rederived: a 16th at 80 BPM
-// is 187 ms, so 18% is ~34 ms -- tight enough to mean something, loose enough to survive
-// the ~11.6 ms quantisation of the onset detector's own hop.
-bool CanvasView::isOnGrid(double t, double phase, double cell)
+// ---- what lines a block actually draws ----------------------------------------------
+//
+// ONE answer, asked by the footer, the overlay, the onset colouring and the percentage.
+// Four painters deriving a grid four ways is how a bar line, a bar number and an "on the
+// grid" tick end up disagreeing about the same beat.
+//
+// MEASURED BEATS WIN OVER A SYNTHETIC GRID. `beat_this_bpm` is one number for a whole
+// take, and a grid laid out from it drifts away from the audio on anything that is not
+// metronomic -- which is exactly what "the onsets are not aligning with the bars" was.
+// The browser has drawn real detected downbeats rather than a BPM-derived grid since its
+// bar ruler was written, for this reason and in those words. The canvas now agrees.
+//
+// `barOnePos` still decides WHICH downbeat is bar 1, in both modes. That is what keeps it
+// one concept: with no measurement it sets the phase of a guess, and with one it picks the
+// downbeat you count from. Dragging it means the same thing either way.
+CanvasView::GridLines CanvasView::gridLinesOf(const Visual& v, double from, double to) const
 {
-    const double cells = (t - phase) / cell;
-    return std::abs(cells - std::round(cells)) <= 0.18;
+    GridLines out;
+    const int meter = juce::jmax(1, v.block.meter);
+
+    // Measured lines only when the measurement was ADOPTED. A take whose grid the
+    // confidence gate refused keeps the dashed grid it was ASKED for, because otherwise the
+    // block would draw measured bar lines while its header showed the prompt's tempo -- two
+    // different grids on one block, which is worse than either. The beats are still kept,
+    // so overruling the gate by hand costs nothing.
+    if (!v.beats.empty() && v.block.tempoSource == "measured")
+    {
+        out.measured = true;
+        // A beat is a downbeat if a detected downbeat sits on it. Matched by proximity
+        // rather than by identity because the two lists are produced by separate passes of
+        // the DBN and are equal only to floating-point luck.
+        auto isDownbeat = [&v](double t) {
+            for (const auto d : v.downbeats) if (std::abs(d - t) < 0.02) return true;
+            return false;
+        };
+        // Bar 1 is the first downbeat at or after `barOnePos`, so nudging bar 1 renumbers
+        // rather than moving anything: the lines are where the audio says they are, and
+        // the only thing a human gets to choose is where the count starts.
+        int seen = 0;
+        for (const auto t : v.beats)
+        {
+            const bool bar = isDownbeat(t);
+            if (bar && t >= v.block.barOnePos - 1.0e-6) ++seen;
+            if (t < from - 1.0e-6 || t > to + 1.0e-6) continue;
+            out.beats.push_back(t);
+            out.isBar.push_back(bar ? 1 : 0);
+            // Downbeats BEFORE bar 1 are drawn but not numbered -- a pickup is not bar 0.
+            out.barNo.push_back(bar && t >= v.block.barOnePos - 1.0e-6 ? seen : 0);
+        }
+        return out;
+    }
+
+    // No measurement: the grid the block was ASKED for. Drawn dashed by the painters,
+    // because a period extrapolated from a prompt is a guess about this audio and has no
+    // reason to land on any of it.
+    if (v.block.tempo <= 0.0) return out;
+    const double spb = 60.0 / v.block.tempo;
+    const long long firstBeat = (long long) std::floor((from - v.block.barOnePos) / spb);
+    const long long lastBeat  = (long long) std::ceil((to - v.block.barOnePos) / spb);
+    if (lastBeat - firstBeat > 20000) return out;   // a tempo of 0.01 asks for millions
+    for (long long n = firstBeat; n <= lastBeat; ++n)
+    {
+        // Floored division, so bars keep counting the right way to the LEFT of bar 1 --
+        // a pickup before the downbeat is negative, not bar 1 twice.
+        const long long bar = (n >= 0 ? n / meter : -(((-n) + meter - 1) / meter));
+        const bool isBar = (n - bar * meter) == 0;
+        out.beats.push_back(v.block.barOnePos + (double) n * spb);
+        out.isBar.push_back(isBar ? 1 : 0);
+        out.barNo.push_back(isBar && bar >= 0 ? (int) (bar + 1) : 0);
+    }
+    return out;
 }
 
-// Whether the onset ticks are worth drawing at this zoom -- the same kind of density
+// Within 18% of a 16th of THE BEAT IT FALLS IN -- not of a period extrapolated from bar 1.
+// On a grid that breathes even slightly those are different questions by the end of a take,
+// and the second one reports a drummer as sloppy when it is the ruler that moved.
+//
+// The tolerance is the browser's own (WaveformView.cpp's onset lane): a 16th at 80 BPM is
+// 187 ms, so 18% is ~34 ms -- tight enough to mean something, loose enough to survive the
+// ~11.6 ms quantisation of the onset detector's own hop.
+bool CanvasView::onsetOnGrid(double t, const GridLines& g)
+{
+    if (g.beats.size() < 2) return false;
+    // The beat interval containing t. Binary search: a take has thousands of onsets and
+    // hundreds of beats, and a linear scan per onset is the product of the two.
+    auto it = std::upper_bound(g.beats.begin(), g.beats.end(), t);
+    if (it == g.beats.begin() || it == g.beats.end()) return false;
+    const double b0 = *(it - 1), b1 = *it;
+    const double span = b1 - b0;
+    if (span <= 0.0) return false;
+    const double sixteenths = (t - b0) / (span / 4.0);
+    return std::abs(sixteenths - std::round(sixteenths)) <= 0.18;
+}
+
+// Whether the onset ticks are worth drawing at this zoom// Whether the onset ticks are worth drawing at this zoom -- the same kind of density
 // decision the beats and bars already make, and asked in ONE place for the same reason:
 // gridFooterHeight reserves the strip and paintBlockGrid fills it, and if they disagreed
 // the block would grow an empty band or lose the ticks it made room for.
@@ -2527,84 +2631,66 @@ void CanvasView::paintBlockGrid(juce::Graphics& g, const Visual& v, juce::Rectan
 {
     if (gridFooterHeight(v, r.getHeight()) <= 0) return;
 
-    // The footer can exist for the onsets alone, so the strip and its ticks are drawn
-    // before anything asks about a tempo -- there may not be one.
-    {
-        auto foot = r.withTop(r.getBottom() - kGridFooterHeight).reduced(1, 0);
-        g.setColour(tint.withAlpha(0.18f));
-        g.fillRect(foot);
+    auto foot = r.withTop(r.getBottom() - kGridFooterHeight).reduced(1, 0);
+    juce::Graphics::ScopedSaveState clip (g);
+    g.reduceClipRegion(foot);
+    g.setColour(tint.withAlpha(0.18f));
+    g.fillRect(foot);
 
-        if (onsetTicksVisible(v))
+    const double from = v.block.sourceOffset;
+    const double to   = from + juce::jmax(0.0, v.block.length);
+    auto xOf = [&](double sourceSeconds) {
+        return (float) secondsToX(v.block.start + (sourceSeconds - from));
+    };
+    const float top = (float) foot.getY(), bottom = (float) foot.getBottom();
+
+    // ONSETS along the bottom of the footer as well as over the wave, because the footer
+    // is the strip you read when the block is too short to show a waveform worth reading.
+    if (onsetTicksVisible(v))
+    {
+        g.setColour(MiraLookAndFeel::accent.withAlpha(isSelected ? 0.45f : 0.3f));
+        for (const auto t : v.onsets)
         {
-            // ONSETS, drawn from the BOTTOM up and shorter than a beat line, so a tick
-            // that happens to land on a beat reads as two marks rather than one longer
-            // one. They are the slice points step 5 will cut at: seeing them is how you
-            // know in advance whether slicing this take will work.
-            juce::Graphics::ScopedSaveState clip (g);
-            g.reduceClipRegion(foot);
-            g.setColour(MiraLookAndFeel::accent.withAlpha(isSelected ? 0.55f : 0.38f));
-            const double from = v.block.sourceOffset;
-            const double to   = from + juce::jmax(0.0, v.block.length);
-            const float bottom = (float) foot.getBottom();
-            const float top    = bottom - foot.getHeight() * 0.38f;
-            for (const auto t : v.onsets)
-            {
-                if (t < from || t > to) continue;
-                const float x = (float) secondsToX(v.block.start + (t - from));
-                if (x < (float) foot.getX() - 1.0f || x > (float) foot.getRight()) continue;
-                g.drawLine(x, top, x, bottom, 1.0f);
-            }
+            if (t < from || t > to) continue;
+            const float x = xOf(t);
+            if (x < (float) foot.getX() - 1.0f || x > (float) foot.getRight()) continue;
+            g.drawLine(x, bottom - foot.getHeight() * 0.38f, x, bottom, 1.0f);
         }
     }
 
-    if (v.block.tempo <= 0.0) return;
-    const double spb = 60.0 / v.block.tempo;
-    const double pxPerBeat = spb * pixelsPerSecond;
+    const auto grid = gridLinesOf(v, from, to);
+    if (grid.beats.empty()) return;
+
+    // Density, asked of the lines that EXIST rather than of a tempo -- a measured grid can
+    // be uneven, so "how far apart is a beat" is an average, not an arithmetic identity.
+    const double pxPerBeat = (to > from && grid.beats.size() > 1)
+        ? ((to - from) * pixelsPerSecond) / (double) (grid.beats.size() - 1) : 1.0e9;
     const bool beats = pxPerBeat >= 5.0;
     const int meter = juce::jmax(1, v.block.meter);
-
-    // The strip is already filled above; this is the grid drawn INTO it.
-    auto foot = r.removeFromBottom(kGridFooterHeight).reduced(1, 0);
-    juce::Graphics::ScopedSaveState clip (g);
-    g.reduceClipRegion(foot);
-
-    // Bar 1 on the TIMELINE, and the first beat at or left of the block's left edge. The
-    // floor is done in beats rather than by walking from bar 1, so a block whose bar 1
-    // sits far off screen costs the same as one whose does not.
-    const double barOneOnTimeline = v.block.start + (v.block.barOnePos - v.block.sourceOffset);
-    const double blockEnd = v.block.end();
-    const long long firstBeat = (long long) std::floor((v.block.start - barOneOnTimeline) / spb);
-    const long long lastBeat  = (long long) std::ceil((blockEnd - barOneOnTimeline) / spb);
-    // A tempo typed as 0.01 would ask for millions of lines. The cap is a refusal to draw
-    // rather than a clamp on the tempo: the number you typed is still the number shown.
-    if (lastBeat - firstBeat > 20000) return;
-
-    const float top = (float) foot.getY(), bottom = (float) foot.getBottom();
     const bool numbers = pxPerBeat * meter >= 26.0 && foot.getHeight() >= 11;
+    const float dashes[] = { 3.0f, 3.0f };
 
-    for (long long n = firstBeat; n <= lastBeat; ++n)
+    for (size_t i = 0; i < grid.beats.size(); ++i)
     {
-        // Floored division, so bars keep counting the right way to the LEFT of bar 1 --
-        // a pickup before the downbeat is negative, not bar 1 twice.
-        const long long bar = (n >= 0 ? n / meter : -(((-n) + meter - 1) / meter));
-        const bool isBar = (n - bar * meter) == 0;
+        const bool isBar = grid.isBar[i] != 0;
         if (!isBar && !beats) continue;
-
-        const float x = (float) secondsToX(barOneOnTimeline + (double) n * spb);
+        const float x = xOf(grid.beats[i]);
         if (x < (float) foot.getX() - 1.0f || x > (float) foot.getRight()) continue;
 
         g.setColour(isBar ? tint.brighter(0.5f).withAlpha(isSelected ? 0.95f : 0.7f)
                           : tint.brighter(0.2f).withAlpha(isSelected ? 0.5f : 0.35f));
-        g.drawLine(x, isBar ? top : top + foot.getHeight() * 0.45f, x, bottom, isBar ? 1.2f : 0.8f);
+        const float y0 = isBar ? top : top + foot.getHeight() * 0.45f;
+        if (grid.measured) g.drawLine(x, y0, x, bottom, isBar ? 1.2f : 0.8f);
+        else               g.drawDashedLine({ x, y0, x, bottom }, dashes, 2, isBar ? 1.2f : 0.8f);
 
         // Bars BEFORE bar 1 are drawn but not numbered, the same way the waveform's bars
         // ruler leaves a pickup unnumbered: "bar 0" and "bar -1" are arithmetic, not
         // things anyone says out loud about music.
-        if (isBar && numbers && bar >= 0)
+        if (isBar && numbers && grid.barNo[i] > 0)
         {
             g.setColour(MiraLookAndFeel::text.withAlpha(isSelected ? 0.7f : 0.45f));
             g.setFont(laf.sansRegular(MiraLookAndFeel::textSize(8.5f)));
-            g.drawText(juce::String((long long) (bar + 1)),
+            g.drawText(juce::String(grid.barNo[i]),
                         juce::Rectangle<float>(x + 2.0f, top, 22.0f, (float) foot.getHeight())
                             .toNearestInt(),
                         juce::Justification::centredLeft, false);
@@ -2641,77 +2727,61 @@ void CanvasView::paintBlockOverlay(juce::Graphics& g, const Visual& v, juce::Rec
         return (float) secondsToX(v.block.start + (sourceSeconds - from));
     };
 
-    const bool haveGrid = v.block.tempo > 0.0;
-    const double spb = haveGrid ? 60.0 / v.block.tempo : 0.0;
-    const int meter = juce::jmax(1, v.block.meter);
-    // A GRID YOU HAVE NOT MEASURED IS DRAWN DASHED. This is the answer to "why doesn't the
-    // bar move onto the onsets" made visible instead of written down: until you press
-    // ANALYSE the grid is the tempo you ASKED SA3 for, laid out from the start of the file,
-    // and it has no reason to land on anything. Dashed says provisional; solid says this
-    // was measured off the audio underneath it. Nothing else in the block has to explain it.
-    const bool measured = v.block.tempoSource == "measured";
+    const auto grid = gridLinesOf(v, from, to);
 
-    if (haveGrid)
+    if (!grid.beats.empty())
     {
-        const double pxPerBeat = spb * pixelsPerSecond;
-        const bool beats = pxPerBeat >= 9.0;
-        const bool bars  = pxPerBeat * meter >= 6.0;
+        const double pxPerBeat = (to > from && grid.beats.size() > 1)
+            ? ((to - from) * pixelsPerSecond) / (double) (grid.beats.size() - 1) : 1.0e9;
+        const bool beats = pxPerBeat >= 9.0;          // stricter than the footer: this is
+        const bool bars  = pxPerBeat * juce::jmax(1, v.block.meter) >= 6.0;  // over the audio
         const float dashes[] = { 3.0f, 3.0f };
         if (bars)
-        {
-            const long long firstBeat = (long long) std::floor((from - v.block.barOnePos) / spb);
-            const long long lastBeat  = (long long) std::ceil((to - v.block.barOnePos) / spb);
-            if (lastBeat - firstBeat <= 20000)
-                for (long long n = firstBeat; n <= lastBeat; ++n)
-                {
-                    const long long bar = (n >= 0 ? n / meter : -(((-n) + meter - 1) / meter));
-                    const bool isBar = (n - bar * meter) == 0;
-                    if (!isBar && !beats) continue;
-                    const float x = xOf(v.block.barOnePos + (double) n * spb);
-                    if (x < (float) wave.getX() - 1.0f || x > (float) wave.getRight()) continue;
+            for (size_t i = 0; i < grid.beats.size(); ++i)
+            {
+                const bool isBar = grid.isBar[i] != 0;
+                if (!isBar && !beats) continue;
+                const float x = xOf(grid.beats[i]);
+                if (x < (float) wave.getX() - 1.0f || x > (float) wave.getRight()) continue;
 
-                    // THE GRID IS THE ONLY THING THAT SPANS THE WHOLE WAVE. That is the
-                    // whole visual rule, and it exists because the first version broke it:
-                    // an on-grid onset was drawn full height in amber, so two completely
-                    // different claims -- "a bar starts here" and "a transient is here" --
-                    // were the same mark, and the block became unreadable.
-                    //
-                    // The block's own TINT, not white. White at 24% over a bright waveform
-                    // is invisible, which is what the first version actually shipped.
-                    const auto c = isBar ? tint.brighter(0.9f).withAlpha(isSelected ? 0.85f : 0.65f)
-                                         : tint.brighter(0.6f).withAlpha(isSelected ? 0.34f : 0.24f);
-                    g.setColour(c);
-                    const float y0 = isBar ? top : top + h * 0.3f;
-                    const float y1 = isBar ? bottom : bottom - h * 0.3f;
-                    if (measured) g.drawLine(x, y0, x, y1, isBar ? 1.4f : 1.0f);
-                    else          g.drawDashedLine({ x, y0, x, y1 }, dashes, 2, isBar ? 1.4f : 1.0f);
-                }
-        }
+                // THE GRID IS THE ONLY THING THAT SPANS THE WHOLE WAVE. That is the whole
+                // visual rule, and it exists because the first version broke it: an
+                // on-grid onset was drawn full height in amber, so "a bar starts here" and
+                // "a transient is here" were the same mark.
+                //
+                // The block's own TINT, not white: white at 24% over a bright waveform is
+                // invisible, which is what the first version actually shipped.
+                g.setColour(isBar ? tint.brighter(0.9f).withAlpha(isSelected ? 0.85f : 0.65f)
+                                  : tint.brighter(0.6f).withAlpha(isSelected ? 0.34f : 0.24f));
+                const float y0 = isBar ? top : top + h * 0.3f;
+                const float y1 = isBar ? bottom : bottom - h * 0.3f;
+                // SOLID means these lines were measured off the audio underneath them.
+                // DASHED means this is the tempo you ASKED SA3 for, laid out from bar 1,
+                // and it has no reason to land on anything -- which is the answer to "so
+                // the bar doesn't shift according to the onset?", drawn instead of written.
+                if (grid.measured) g.drawLine(x, y0, x, y1, isBar ? 1.4f : 1.0f);
+                else               g.drawDashedLine({ x, y0, x, y1 }, dashes, 2, isBar ? 1.4f : 1.0f);
+            }
     }
 
     // THE ONSETS, and they NEVER reach the top. They rise from the bottom, so "grows up
     // from the floor" means a transient and "spans the block" means the grid -- two marks
     // you can tell apart without being told which is which.
     //
-    // Two tiers, on deliberately the browser's own numbers (a 16th cell, 18% of it counts
-    // as on the grid), so the two windows cannot say different things about one file. The
-    // on-grid ones are amber and taller; the off-grid ones are dim and short -- DIM, not
-    // red, because an onset that does not land on the grid is not an error, it is just a
-    // note played somewhere the grid did not predict, and most music is full of them.
+    // On-grid ones are amber and taller; off-grid ones dim and short -- DIM, not red,
+    // because an onset that does not land on the grid is not an error, it is a note played
+    // where the grid did not predict, and most music is full of them.
     //
     // What the split is FOR: if almost nothing is amber, the grid is not this audio's grid.
-    // That is the fastest read there is of whether the tempo in the header is real, and it
-    // is exactly what an unmeasured (dashed) grid looks like over a generated take.
     if (!onsetTicksVisible(v)) return;
 
-    const double cell = haveGrid ? spb / 4.0 : 0.0;
     for (const auto t : v.onsets)
     {
         if (t < from || t > to) continue;
         const float x = xOf(t);
         if (x < (float) wave.getX() - 1.0f || x > (float) wave.getRight()) continue;
 
-        const bool onGrid = haveGrid && cell > 0.0 && isOnGrid(t, v.block.barOnePos, cell);
+        const bool onGrid = onsetOnGrid(t, grid);
         g.setColour(onGrid ? MiraLookAndFeel::accent.withAlpha(isSelected ? 0.95f : 0.8f)
                            : MiraLookAndFeel::textDim.withAlpha(isSelected ? 0.6f : 0.45f));
         g.drawLine(x, bottom - h * (onGrid ? 0.55f : 0.26f), x, bottom, 1.0f);
@@ -2725,16 +2795,17 @@ void CanvasView::paintBlockOverlay(juce::Graphics& g, const Visual& v, juce::Rec
 // picture can never disagree.
 double CanvasView::onGridShareOf(const Visual& v) const
 {
-    if (v.block.tempo <= 0.0 || v.onsets.empty()) return -1.0;
-    const double cell = (60.0 / v.block.tempo) / 4.0;
+    if (v.onsets.empty()) return -1.0;
     const double from = v.block.sourceOffset;
     const double to   = from + juce::jmax(0.0, v.block.length);
+    const auto grid = gridLinesOf(v, from, to);
+    if (grid.beats.size() < 2) return -1.0;
     int n = 0, on = 0;
     for (const auto t : v.onsets)
     {
         if (t < from || t > to) continue;
         ++n;
-        if (isOnGrid(t, v.block.barOnePos, cell)) ++on;
+        if (onsetOnGrid(t, grid)) ++on;
     }
     return n == 0 ? -1.0 : (double) on / (double) n;
 }
@@ -3354,7 +3425,9 @@ void CanvasView::paint(juce::Graphics& g)
     }
 }
 
-void CanvasView::resized() {}
+// The window growing can leave the canvas parked below its own content -- so the one
+// thing resizing has to do is re-ask how far down it is allowed to be.
+void CanvasView::resized() { clampScroll(); }
 
 // ---- interaction -------------------------------------------------------------------
 
@@ -3402,6 +3475,23 @@ CanvasView::Visual* CanvasView::hitTest(juce::Point<int> p, Drag& what)
             foot > 0 && b.tempo > 0.0 && p.y >= r.getBottom() - foot
             && p.x - r.getX() > kEdgeGrab && r.getRight() - p.x > kEdgeGrab)
         { what = Drag::BarOne; return it->get(); }
+
+        // GRAB A BAR LINE ITSELF. The 14-pixel footer is a small target at the very bottom
+        // of a block, and a miss starts a MOVE -- which is why "once i analyse i am not
+        // able to nudge the grid" was true even though the gesture existed. Now that the
+        // bar lines are drawn across the waveform, the line you want to move is a thing
+        // you can point at, which is the gesture anyone would try first.
+        if (b.tempo > 0.0 && p.x - r.getX() > kEdgeGrab && r.getRight() - p.x > kEdgeGrab)
+        {
+            const double from = b.sourceOffset, to = from + juce::jmax(0.0, b.length);
+            const auto grid = gridLinesOf(**it, from, to);
+            for (size_t i = 0; i < grid.beats.size(); ++i)
+            {
+                if (grid.isBar[i] == 0) continue;
+                const int x = secondsToX(b.start + (grid.beats[i] - from));
+                if (std::abs(p.x - x) <= kBarLineGrab) { what = Drag::BarOne; return it->get(); }
+            }
+        }
         if (p.x - r.getX() <= kEdgeGrab)        what = Drag::TrimLeft;
         else if (r.getRight() - p.x <= kEdgeGrab) what = Drag::TrimRight;
         else                                     what = Drag::Move;
@@ -3887,15 +3977,25 @@ void CanvasView::mouseUp(const juce::MouseEvent&)
 
 void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
-    // A MOUSE WHEEL HAS ONE AXIS, and that is the whole bug. A trackpad reports deltaX and
-    // deltaY, so panning read deltaX and felt right; a wheel only ever reports deltaY, so
-    // the pan branch was handed 0.0 on every event and the canvas simply would not move.
-    // Everything below works off whichever axis actually moved instead of a fixed one.
+    // A MOUSE WHEEL HAS ONE AXIS, and that is the whole bug the first version fixed: a
+    // trackpad reports deltaX and deltaY, a wheel only ever reports deltaY.
     //
-    // (macOS turns a shift-held wheel into deltaX itself, which is a second way the same
-    // assumption broke: shift-zoom read deltaY and got nothing.)
+    // WHAT CHANGED, and why: the plain wheel used to PAN THE TIMELINE, which meant this
+    // canvas had no vertical scrolling at all -- tracks below the window were unreachable
+    // and the waveform could not be made bigger to look at. Scrolling down is what a wheel
+    // does everywhere else, and a surface that spends the unmodified wheel on something
+    // else has spent the only gesture every input device agrees on.
+    //
+    //   wheel            -> scroll the tracks vertically
+    //   shift + wheel    -> pan the timeline
+    //   option + wheel   -> zoom vertically (taller tracks, taller waveform)
+    //   cmd + wheel      -> zoom the timeline, around the pointer
+    //
+    // A TRACKPAD still pans sideways with a real sideways swipe, because that is a
+    // deliberate horizontal gesture and not the wheel's one axis being reinterpreted.
     const float dx = wheel.deltaX, dy = wheel.deltaY;
-    const float d  = std::abs (dx) > std::abs (dy) ? dx : dy;
+    const bool sideways = std::abs (dx) > std::abs (dy);
+    const float d = sideways ? dx : dy;
     if (d == 0.0f) return;
 
     // A notched wheel sends a few big events; a trackpad sends a stream of small ones.
@@ -3904,17 +4004,19 @@ void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWhee
     const double step = wheel.isSmooth ? (double) d
                                        : (d > 0.0f ? 1.0 : -1.0) * 0.28;
 
-    // Shift zooms VERTICALLY: taller lanes mean a taller waveform, which is the only way
+    // Option zooms VERTICALLY: taller lanes mean a taller waveform, which is the only way
     // to judge a quiet take against a loud one by eye. Separate from the horizontal zoom
     // because time and amplitude are separate questions.
-    if (e.mods.isShiftDown())    { zoomVertical (step * 22.0); return; }
+    if (e.mods.isAltDown())      { zoomVertical (step * 22.0); return; }
     if (e.mods.isCommandDown() || e.mods.isCtrlDown())
                                  { zoomBy (std::pow (1.6, step), e.x); return; }
+    // macOS turns a shift-held wheel into deltaX itself, so shift arrives here already
+    // sideways on some devices and not on others -- both mean pan, and `d` has already
+    // picked whichever axis actually moved.
+    if (e.mods.isShiftDown() || sideways)
+                                 { panBy (-step * 520.0 / pixelsPerSecond); return; }
 
-    // Plain wheel pans the timeline. A wheel user has no other way to get there, and a
-    // canvas that only scrolls for trackpads is a canvas half the input devices cannot
-    // navigate.
-    panBy (-step * 520.0 / pixelsPerSecond);
+    scrollVerticallyBy (juce::roundToInt (-step * 120.0));
 }
 
 void CanvasView::panBy (double seconds)
@@ -3925,14 +4027,47 @@ void CanvasView::panBy (double seconds)
 
 int CanvasView::laneToY(int lane) const
 {
-    int y = lanesTop();
+    int y = lanesTop() - scrollY;
     for (int i = 0; i < lane; ++i) y += laneHeightOf(i);
     return y;
 }
 
+// How tall the stack of tracks is, and how far down it you can go. The ruler, the marker
+// row and the video strip are ABOVE `lanesTop()` and deliberately do not scroll: a time
+// axis that slid away from the blocks it numbers would be worse than no time axis.
+int CanvasView::lanesTotalHeight() const
+{
+    int h = 0;
+    for (int i = 0; i < laneCount; ++i) h += laneHeightOf(i);
+    return h;
+}
+
+int CanvasView::maxScrollY() const
+{
+    // One lane of slack past the end, so the bottom track is not jammed against the frame
+    // and there is somewhere to drop a block onto a new one.
+    return juce::jmax(0, lanesTotalHeight() + 24 - juce::jmax(1, getHeight() - lanesTop()));
+}
+
+void CanvasView::scrollVerticallyBy(int pixels)
+{
+    const int was = scrollY;
+    scrollY = juce::jlimit(0, maxScrollY(), scrollY + pixels);
+    if (scrollY != was) repaint();
+}
+
+// Called whenever anything that decides the content height changes -- a track removed, a
+// lane height dropped, the window grown. Without it, scrolling to the bottom of twelve
+// tracks and then deleting ten leaves the canvas parked below everything it has.
+void CanvasView::clampScroll()
+{
+    const int clamped = juce::jlimit(0, maxScrollY(), scrollY);
+    if (clamped != scrollY) { scrollY = clamped; repaint(); }
+}
+
 int CanvasView::yToLane(int y) const
 {
-    int top = lanesTop();
+    int top = lanesTop() - scrollY;
     // Bounded rather than open: yToLane is asked about clicks well below the last track,
     // and a walk that only stops when it finds the row would never stop down there.
     for (int lane = 0; lane < CanvasAudioSource::kMaxLanes; ++lane)
@@ -3956,6 +4091,7 @@ void CanvasView::setLaneHeight(int lane, int height)
     laneH[(size_t) lane] = juce::jlimit(kLaneMin, kLaneMax, height);
     markDirty();
     repaint();
+    clampScroll();
 }
 
 void CanvasView::setLaneHeightLocked(int lane, bool locked)

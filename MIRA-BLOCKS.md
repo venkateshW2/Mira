@@ -463,6 +463,48 @@ it still needed one.** A visual language nobody is ever told is a language nobod
 and the report that surfaced it was not "this is wrong", it was "I am confused", which is
 the cheaper of the two and only arrives if someone is actually looking.
 
+**Fourth pass — navigation, resolution, and the misalignment (2026-09-20).**
+
+- **The plain mouse wheel now scrolls the tracks vertically.** It used to pan the timeline,
+  which meant this canvas had **no vertical scrolling at all** — tracks below the window
+  were unreachable and the waveform could not be made bigger to look at. Spending the one
+  gesture every input device agrees on before implementing the thing it normally does was
+  the mistake. Now: **wheel** scrolls, **shift** pans the timeline, **option** zooms
+  vertically, **cmd** zooms the timeline around the pointer. A real sideways trackpad swipe
+  still pans, because that is a deliberate horizontal gesture rather than one axis
+  reinterpreted. The ruler, marker row and video strip stay put — a time axis that slid away
+  from the blocks it numbers would be worse than none.
+- **The waveform is four times the detail**: 128 source samples per thumbnail point instead
+  of 512 — 2.9 ms rather than 11.6 at 44.1 kHz. The take stack and the inpaint strip already
+  used 256; the canvas is the surface you zoom furthest into and had the coarsest.
+- **Bar 1 can be nudged by grabbing a bar LINE**, not only the 14-pixel footer. The gesture
+  existed and was unusable: a small target at the very bottom of a block, where a miss
+  starts a *move*. Now that the bars are drawn across the waveform, the line you want to
+  move is a thing you can point at — the gesture anyone tries first. `kBarLineGrab` is 4 px,
+  deliberately narrower than a trim edge, because moving a block by accident costs more than
+  missing the grid by three pixels.
+- **THE REAL FIX: the bars were a synthetic grid, and it drifted.** `beat_this_bpm` is one
+  number for a whole take, and a grid laid out from it walks away from the audio on anything
+  that is not metronomic — which is exactly what *"the onsets are not actually aligning with
+  the bars"* was. The canvas now draws **the measured beats and downbeats themselves**. The
+  browser's bar ruler has done this since it was written, in these words: *"a synthetic grid
+  drifts away from the audio on anything that isn't metronomic, which is exactly the
+  material a bar ruler is most needed for."* The canvas was repeating a mistake this project
+  had already written down.
+- **`gridLinesOf()` is now the ONE answer** consumed by the footer, the overlay, the onset
+  colouring and the percentage. Four painters deriving a grid four ways is how a bar line, a
+  bar number and an "on the grid" tick end up disagreeing about the same beat.
+- **"On the grid" is measured against the beat an onset FALLS IN**, not against a period
+  extrapolated from bar 1. On a grid that breathes even slightly those are different
+  questions by the end of a take, and the second one reports a drummer as sloppy when it is
+  the ruler that moved.
+- **`barOnePos` means one thing in both modes**, which is what keeps it one concept: with no
+  measurement it sets the phase of a guess; with one it picks which detected downbeat you
+  count bar 1 from. Dragging it means the same thing either way.
+- **A refused grid stays dashed and stays the one you asked for**, even though the beats were
+  measured and are kept. Drawing measured bar lines under a header showing the prompt's
+  tempo would be two different grids on one block, which is worse than either.
+
 - [ ] **2.6** Verify on screen. Analyse a generated take; watch the chip and the tempo box
       while it runs; check the adopted tempo against the recipe's; find a take the gate
       refuses and read what it says; confirm a hand-dragged bar 1 survives an analysis;
