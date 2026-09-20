@@ -653,8 +653,32 @@ actually for: conforming a **separate** take to a block's tempo.
       that was earned. Stamping "typed" here would throw away a measurement to record a
       relabelling.
       The click and the on-grid percentage follow for free, because both read `gridLinesOf`.
-- [ ] **3.1** `signalsmith-stretch` vendored — one line in `scripts/fetch-vendor.sh`, MIT,
-      header-only.
+- [x] **3.1** `signalsmith-stretch` vendored, and **measured before anything depends on it**
+      (`spike/08_stretch_latency`, the eighth spike in this project and the same shape as
+      the other seven: prove the risky assumption standalone first).
+      **It was not one line.** `signalsmith-linear` — the FFT library the stretch header
+      includes — is a **separate clone, not a submodule**: `--recursive` pulls only the demo
+      tool and still leaves `#include "signalsmith-linear/stft.h"` unresolvable. Found by
+      compiling it, which was the only way that was ever going to surface.
+      **And the thing worth having measured: the stretcher has 120 ms of latency at ratio
+      1.0.** That is about a third of a beat at 143 bpm, and it would have shipped invisibly
+      as "the stretch is slightly late" — which is exactly the failure 3.4 exists to prevent.
+      The delay is **`inputLatency() * ratio + outputLatency()`**, exactly (both 2646 samples
+      at 44.1 kHz), predicted against measured over five ratios and agreeing to within
+      **0.5 ms** — the residual is the test click's own width. So 3.4's alignment is
+      arithmetic rather than a search.
+
+| ratio | click expected | measured | offset | `inLat*r + outLat` |
+|---|---|---|---|---|
+| 0.90 | 39690 | 44740 | 5050 | 5027 |
+| 0.95 | 41895 | 47068 | 5173 | 5160 |
+| 1.00 | 44100 | 49392 | **5292** | **5292** |
+| 1.05 | 46305 | 51736 | 5431 | 5424 |
+| 1.10 | 48510 | 54066 | 5556 | 5557 |
+
+      `SIGNALSMITH_USE_ACCELERATE` is on: measured to change **nothing** about the output
+      (identical to the sample at all five ratios), so it is purely a speed flag and mira is
+      Apple-only.
 - [ ] **3.2** **Stretch to \<tempo\>** in the block menu. Target from a typed field or from
       the parent. Shows the ratio before it runs (`+9.7%`).
 - [ ] **3.3** Renders to a **new take** in the block's folder, named with its tempo, with a

@@ -226,3 +226,22 @@ Three real bugs found and fixed along the way (Essentia/ffmpeg 7.1 API removal,
 `beat_this_cpp` header/impl mismatch, `beat_this_cpp`'s broken `find_package(onnxruntime)`
 path) — all in vendored, gitignored code, documented above so they can be reapplied or
 checked against upstream on a fresh clone.
+
+## 08_stretch_latency — MIRA-BLOCKS.md step 3.1 (2026-09-20)
+
+**Does `signalsmith-stretch` do what step 3 needs, and what does it cost in latency?**
+
+The question that mattered was never "does it stretch". It was: a stretched take that comes
+back late is a take that lands behind the grid it was stretched TO, which is the one failure
+step 3.4 exists to prevent. At 44.1 kHz with `presetDefault` the answer is **120 ms at ratio
+1.0** — about a third of a beat at 143 bpm — and it would have shipped invisibly.
+
+The delay is **`inputLatency() * ratio + outputLatency()`**, exactly (both are 2646 samples).
+Predicted against measured over five ratios, agreeing to within 0.5 ms — the residual is the
+test click's own width. So the compensation is arithmetic, not a search.
+
+Also settled here: **`signalsmith-linear` is a separate clone, not a submodule.** A
+`--recursive` clone of signalsmith-stretch pulls only its demo tool and still leaves
+`#include "signalsmith-linear/stft.h"` unresolvable. Found by compiling it, which was the
+only way that was ever going to surface. And `SIGNALSMITH_USE_ACCELERATE` changes the output
+not at all (identical to the sample across all five ratios) — it is a speed flag.

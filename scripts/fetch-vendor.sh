@@ -49,6 +49,31 @@ clone_if_missing() {
   fi
 }
 
+# MIRA-BLOCKS.md step 3 — signalsmith-stretch, the time-stretcher. MIT, header-only,
+# and already trusted by the author. Needs --recursive: the repo carries a `cmd/util`
+# submodule (only the command-line tool uses it, but a plain clone leaves the tree
+# incomplete and the next person wondering why).
+#
+# mira includes ONLY `signalsmith-stretch.h` and `include/signalsmith-stretch/`. The
+# `cmd/` and `web/` trees are the upstream demo apps and are not built.
+if [ ! -f signalsmith-stretch/signalsmith-stretch.h ]; then
+  echo "== cloning signalsmith-stretch =="
+  git clone --depth 1 --recursive https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+else
+  echo "== signalsmith-stretch already present, skipping =="
+fi
+
+# ...and the FFT library it includes, which is NOT a submodule of it. A --recursive clone
+# of signalsmith-stretch pulls only `cmd/util` (its demo tool) and still leaves
+# `#include "signalsmith-linear/stft.h"` unresolvable -- found by compiling it, which is
+# the only way that fact was ever going to surface. MIT, header-only, same author.
+if [ ! -f signalsmith-linear/stft.h ]; then
+  echo "== cloning signalsmith-linear (signalsmith-stretch's FFT dependency) =="
+  git clone --depth 1 https://github.com/Signalsmith-Audio/linear.git signalsmith-linear
+else
+  echo "== signalsmith-linear already present, skipping =="
+fi
+
 # Phase 0, day 1-2 — Essentia C++. Verified building arm64 --no-tensorflow static
 # (spike/01_essentia_link). One local patch needed, see header comment above.
 clone_if_missing essentia https://github.com/MTG/essentia.git

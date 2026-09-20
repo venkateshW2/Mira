@@ -84,6 +84,20 @@ set_source_files_properties(Source/NativeBlur.mm Source/NativeWindowChrome.mm So
 
 target_include_directories(mira_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+# MIRA-BLOCKS.md step 3 -- signalsmith-stretch, header-only (MIT). Nothing to link and
+# nothing to build: the whole library is `signalsmith-stretch.h` plus the headers under
+# include/. Only the UI stretches, so the CLI never sees this.
+target_include_directories(mira_ui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/signalsmith-stretch
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/signalsmith-stretch/include
+    # ...and the FFT library the stretch header includes, which is NOT a submodule of it:
+    # a --recursive clone still leaves `signalsmith-linear/stft.h` unresolvable.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/signalsmith-linear
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/signalsmith-linear/include)
+# Optional per upstream and measured to change NOTHING about the output (identical to the
+# sample across five ratios, spike/08). It is a speed flag; mira is Apple-only, so it is on.
+target_compile_definitions(mira_ui PRIVATE SIGNALSMITH_USE_ACCELERATE)
+
 target_compile_definitions(mira_ui PRIVATE
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
