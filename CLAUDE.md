@@ -179,9 +179,41 @@ Newest first. Keep this current — it is how the next session finds the thread.
 
 ### 2026-09-20 (latest) — the block can be analysed, and four takes in ten are refused
 
-[MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 2, tasks 2.1–2.5. **Built, builds clean, launches —
-and NOT YET SEEN ON SCREEN.** 2.6 is open, and convention 8 says that is the whole
-difference between this entry and the one below it.
+[MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 2, **complete and verified on screen by the user** —
+*"yes now look correct and works"*.
+
+**It took four passes, and every fault was found by the user looking at it.** The first
+build compiled clean, launched, and was wrong in four separate ways no compiler and no
+amount of re-reading would have caught. That is convention 8 demonstrated rather than
+quoted, and the four are worth keeping because the next step will be tempted to repeat them:
+
+1. **A button drawn underneath the block's name.** Where the header text may start was
+   computed in TWO places, and the copy that draws the name did not know a third chip had
+   been added — so `ANALYSE` was painted over and the report was simply "the button is
+   hidden". `blockHeaderRow()` is one definition now. Also: a 15-px "A" beside two other
+   15-px squares was the wrong control anyway. M and gain can be glyphs because you already
+   know them; **a verb nobody has met has to be spelled**, and the word is now the state —
+   ANALYSE / READING / MEASURED / UNSURE / FAILED.
+2. **Two different claims drawn as the same mark.** An on-grid onset and a bar line were
+   both full-height lines, so *"a bar starts here"* and *"a transient is here"* were
+   indistinguishable — *"so what is what… iam confused"*. The rule now: **the grid is the
+   only thing that spans the wave, onsets grow up from the floor, and an unmeasured grid is
+   DASHED.** That last one answers *"so the bar doesn't shift according to the onset?"* in
+   the picture instead of in prose. Off-grid onsets went from red to dim, because an onset
+   that misses the grid is not an error, it is most of music.
+3. **The one gesture every input device agrees on, spent on the wrong thing.** The plain
+   wheel panned the timeline, so the canvas had **no vertical scrolling at all** — tracks
+   below the window unreachable, waveform impossible to enlarge. Now wheel scrolls, shift
+   pans, option zooms vertically, cmd zooms the timeline. The waveform also went from 512 to
+   **128 source samples per thumbnail point** (11.6 ms → 2.9), and bar 1 became draggable by
+   grabbing a bar LINE rather than only a 14-px footer where a miss starts a move.
+4. **A synthetic grid, where a measured one was already in the database.** The bars were laid
+   out from `beat_this_bpm` — one number for a whole take — so they drifted off the audio on
+   anything not metronomic: *"the onsets are not actually aligning with the bars"*. The
+   canvas now draws **the measured beats and downbeats themselves**. The browser's bar ruler
+   has done this since it was written and carries a comment saying why in almost the user's
+   words. **The canvas was repeating a mistake this project had already written down**, which
+   is the strongest argument there is for reading the map before adding to it.
 
 Step 1 drew the grid a block was ASKED for. This is the grid it actually GOT.
 
@@ -753,21 +785,20 @@ separate faults, each fixed and each re-measured against the same six.
 
 ## ⛔ Start here next session
 
-### Next — verify MIRA-BLOCKS step 2 on screen (2.6), then step 2b
+### Next — [MIRA-BLOCKS.md](MIRA-BLOCKS.md) step 2b, the measurement step 2 made possible
 
-**Step 2 is written and unverified (2026-09-20).** It builds clean and the app launches;
-nothing has been watched doing it. Analyse a generated take; watch the **A** chip and the
-tempo box while it runs; check the adopted tempo against the recipe's; find a take the gate
-refuses and read what it says; confirm a hand-dragged bar 1 survives an analysis; reopen the
-project and confirm the onsets come back without re-measuring.
+**Steps 1 and 2 are done and verified on screen (2026-09-20).** A block can now be asked
+what it actually is, and it answers or says why it will not.
 
-Then **step 2b — the measurement step 2 makes possible: does an SA3 extension hold tempo?**
-Extend a block, analyse both halves, compare. Nobody knows, and until now there has been no
-instrument to ask. Write the answer into MIRA-BLOCKS.md §7 with a date.
+**Step 2b: does an SA3 extension hold tempo?** Extend a block, analyse both halves, compare.
+Nobody knows — SA3 gets 30 s of context so it *tends* to continue in tempo, but nothing
+guarantees it and there has never been an instrument to ask. Write the answer into
+MIRA-BLOCKS.md §7 with a date.
 
-**Step 3 (stretch to) should not start before 2b.** What a stretch is FOR depends on how far
-an extension actually drifts, and 3.5 refuses a stretch on the strength of the very
-confidence number step 2 has only just started producing.
+**Do 2b before step 3.** What a stretch is FOR depends on how far an extension actually
+drifts, and 3.5 refuses a stretch on the strength of the very confidence number step 2 has
+only just started producing. If extensions hold tempo well, step 3 is a smaller feature than
+the plan assumes.
 
 ---
 

@@ -341,11 +341,12 @@ until step 2 measures one.
 **Done when** a generated block draws a usable grid with no analysis at all, and you can put
 bar 1 where your ear says it goes. ✔
 
-### Step 2 — Analyse — **built 2026-09-20, NOT YET SEEN ON SCREEN**
+### Step 2 — Analyse — **DONE 2026-09-20, verified on screen**
 
-2.1–2.5 are written and the app builds and launches. **2.6 is open**, and until it is done
-this is the same state MIRA-VIDEO Phase 1 was in when the whole Canvas menu turned out to
-have been dead since the day it shipped. Compiling is not verifying.
+Four passes to get there, and **every one of the four was found by looking at it** — none by
+the compiler, and none by me. Worth keeping as the shape of the thing: the first version
+built cleanly, ran, and was wrong in four separate ways that only a person in front of it
+could report. Convention 8, demonstrated rather than quoted.
 
 - [x] **2.1** An **A** chip in the block header, third after M and the gain box, plus
       **Analyse take** in the block menu — both landing in `analyseSelection()`, so they
@@ -505,19 +506,17 @@ the cheaper of the two and only arrives if someone is actually looking.
   measured and are kept. Drawing measured bar lines under a header showing the prompt's
   tempo would be two different grids on one block, which is worse than either.
 
-- [ ] **2.6** Verify on screen. Analyse a generated take; watch the chip and the tempo box
-      while it runs; check the adopted tempo against the recipe's; find a take the gate
-      refuses and read what it says; confirm a hand-dragged bar 1 survives an analysis;
-      reopen the project and confirm the onsets come back without re-measuring.
+- [x] **2.6 Verified on screen by the user** — *"yes now look correct and works"*. The bar
+      lines sit on the music, the onsets read against them, and Analyse does what it says.
+
+**Done when** clicking Analyse on a generated take tells you what you actually made, as
+opposed to what you asked for. ✔
 
 Also built, because the alternative was a block stuck saying `analysing…` forever: the
 analyze queue grew **watchers** — who is waiting for which file — fired from the CLI's own
 `progress:` line and **swept as failed when the queue drains without one**. Matched with
 `pathsEquivalent` and never with `==`: the CLI echoes the path back as the DATABASE holds
 it, and the canvas asked with JUCE's bytes (convention 9, the bug that cost most of a day).
-
-**Done when** clicking Analyse on a generated take tells you what you actually made, as
-opposed to what you asked for.
 
 ### Step 2b — the measurement step 2 makes possible
 
@@ -610,14 +609,31 @@ The big one, and the reason the rest exists. Only after 1–4 are real.
 
 ## 12. Where to start next
 
-**Verify step 2 on screen (2.6).** 2.1–2.5 are written, build clean and the app launches;
-nothing has been watched doing it. That is the state MIRA-VIDEO Phase 1 was in when the
-Canvas menu turned out to have been dead since the day it shipped — convention 8.
+**Step 2 is done and verified (2026-09-20).** A block can now be asked what it actually is,
+and it answers or says why it will not.
 
-Then **step 2b**, the measurement step 2 makes possible: extend a block, analyse both
-halves, and find out whether an SA3 extension holds tempo. Nobody knows, and until now the
-project has had no instrument to ask.
+**Next: step 2b — does an SA3 extension hold tempo?** Extend a block, analyse both halves,
+compare. Nobody knows, and until step 2 there was no instrument to ask. Write the answer
+into §7 with a date.
 
-Step 3 (stretch to) should not start before 2b: what a stretch is FOR depends on how far
-an extension actually drifts, and 3.5 refuses a stretch on the strength of the very
-confidence number step 2 has just started producing.
+**Do 2b before step 3.** What a stretch is FOR depends on how far an extension actually
+drifts, and 3.5 refuses a stretch on the strength of the very confidence number step 2 has
+only just started producing. If extensions turn out to hold tempo well, step 3 is a smaller
+feature than this plan assumes.
+
+### The four faults the first build of step 2 shipped with
+
+All four were reported by the user looking at the screen, and all four are the same lesson
+at different sizes. Kept because the next step will be tempted to repeat them.
+
+1. **A button drawn under the block's name.** Where the header text may start was computed in
+   two places and the copy that draws the name did not know a third chip had been added.
+2. **Two different claims drawn as the same mark** — an on-grid onset and a bar line were
+   both full-height. *"so what is what… iam confused"*. The rule now: the grid spans the
+   wave, onsets grow from the floor, and an unmeasured grid is dashed.
+3. **The one gesture every input device has, spent on the wrong thing.** The plain wheel
+   panned the timeline, so the canvas had no vertical scrolling and the waveform could not
+   be enlarged at all.
+4. **A synthetic grid where a measured one was already sitting in the database.** The bars
+   were laid out from one BPM scalar and drifted off the audio — the exact mistake the
+   browser's bar ruler carries a comment warning about.
