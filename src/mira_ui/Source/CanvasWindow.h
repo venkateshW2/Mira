@@ -188,6 +188,39 @@ public:
     // reorder at all.
     void moveLane(int from, int to);
     void moveSelectedLane(int delta);
+    // ---- moving BLOCKS from the keyboard --------------------------------------------
+    // Dragging was the only way a block had ever been movable, and a block covered in grid
+    // lines is a block whose drag has competition. The keyboard has none, lands exactly
+    // where asked, and repeats.
+    void nudgeSelection(double seconds);
+    void moveSelectionByLane(int delta);
+    // How far one arrow press moves a block. On the toolbar because the right amount is a
+    // property of the music and the job, not of the app.
+    //
+    // A BEAT and a BAR are in the list because this canvas knows them now -- that is the
+    // whole of step 2 paying for itself. They resolve against the SELECTED BLOCK's own
+    // grid, which is the only tempo in the room: there is no project tempo here to nudge
+    // by, and inventing one would be the global grid coming back through the toolbar.
+    enum class Nudge { Frame, Ms10, Ms100, Sec1, Beat, Bar };
+    Nudge nudgeUnit = Nudge::Ms100;
+    void setNudgeUnit(Nudge n) { nudgeUnit = n; }
+    Nudge getNudgeUnit() const { return nudgeUnit; }
+    // Resolved at the moment of the press, not when the menu changed: a beat means
+    // whatever the block you are nudging says a beat is, and you may have analysed it
+    // since. Falls back to 100 ms when a beat is asked for and nothing knows one.
+    double nudgeAmount() const;
+
+    // ---- the metronome ----------------------------------------------------------------
+    // "generated at 140 bpm, analysed 142.9, but no way to know which is right since there
+    // is no click." This is that. It clicks the SELECTED block's grid -- the measured beats
+    // when it has been analysed -- so what you hear is the same answer `gridLinesOf` draws,
+    // and the question "are those bar lines on the music" becomes one you can ask with your
+    // ears instead of your eyes.
+    void toggleMetronome();
+    bool metronomeIsOn() const { return metronomeOn; }
+    // Rebuilt whenever the selection, the grid or the geometry changes -- it is a list of
+    // instants, so anything that moves a block moves its clicks.
+    void rebuildClickTrack();
     // Removes a track and everything on it, and closes the gap -- blocks on the tracks
     // below move up, because a track numbered 4 with nothing above it is not a hole you
     // meant to leave.
@@ -575,6 +608,7 @@ private:
     // never from the block's live position -- accumulating a delta per mouse event makes
     // a slow drag travel further than a fast one over the same distance.
     std::map<juce::int64, std::pair<double, int>> dragOrigins;   // id -> {start, lane}
+    bool metronomeOn = false;
     double panFromView = 0.0;
     juce::Rectangle<int> marquee;
 

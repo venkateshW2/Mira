@@ -33,6 +33,55 @@ void CanvasAudioSource::renderOffline(juce::AudioBuffer<float>& destination,
     renderRange(info, from, numSamples);
 }
 
+// A short decaying sine per click. Generated rather than sampled: it is thirty
+// milliseconds of arithmetic, it needs no file to ship or find, and a click has to survive
+// being played over a full mix -- which a sine at a fixed frequency does and a recorded
+// tick of unknown spectrum does not.
+//
+// The accent is a FIFTH up rather than louder. Louder competes with the music for level;
+// a pitch change is audible at any level and tells you where the bar is even when the
+// click is quiet enough to be tolerable.
+void CanvasAudioSource::mixClicks(const juce::AudioSourceChannelInfo& info,
+                                  juce::int64 from, int numSamples)
+{
+    ClickTrack::Ptr c = clicks;
+    if (c == nullptr || c->samples.empty()) return;
+    const float gain = clickGain.load();
+    if (gain <= 0.0f) return;
+
+    // The TIMELINE's rate, because `from` and the click positions are timeline samples --
+    // the device rate is the resampler's business and nothing this reasons in.
+    const double rate = kTimelineRate;
+    const int len = (int) (0.03 * rate);            // 30 ms
+    const juce::int64 to = from + numSamples;
+    const int outChannels = info.buffer->getNumChannels();
+
+    // Start at the first click that could still be sounding, not at the first one in the
+    // block: a click that began just before `from` has most of its tail inside it.
+    auto it = std::lower_bound(c->samples.begin(), c->samples.end(), from - len);
+    for (; it != c->samples.end() && *it < to; ++it)
+    {
+        const size_t idx = (size_t) (it - c->samples.begin());
+        const bool accented = idx < c->accent.size() && c->accent[idx] != 0;
+        const double freq = accented ? 1500.0 : 1000.0;
+        const juce::int64 start = *it;
+
+        const juce::int64 a = juce::jmax(from, start);
+        const juce::int64 b = juce::jmin(to, start + len);
+        for (juce::int64 n = a; n < b; ++n)
+        {
+            const double t = (double) (n - start) / rate;
+            // Exponential decay, and a 1 ms raised-cosine attack so the click does not
+            // start with a step -- a step is a click of its own, at every frequency.
+            const double attack = t < 0.001 ? 0.5 - 0.5 * std::cos(juce::MathConstants<double>::pi * t / 0.001) : 1.0;
+            const float s = (float) (std::sin(juce::MathConstants<double>::twoPi * freq * t)
+                                      * std::exp(-t * 90.0) * attack) * gain;
+            for (int ch = 0; ch < outChannels; ++ch)
+                info.buffer->addSample(ch, info.startSample + (int) (n - from), s);
+        }
+    }
+}
+
 void CanvasAudioSource::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
 {
     juce::ignoreUnused(sampleRate);
@@ -152,8 +201,12 @@ void CanvasAudioSource::getNextAudioBlock(const juce::AudioSourceChannelInfo& in
 void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
                                     juce::int64 from, int numSamples)
 {
+    // Picked up here, on the audio thread, so the UI never touches a pointer the audio
+    // thread is reading -- the same handover the arrangement uses.
+    if (clickSwap.exchange(false)) clicks = pendingClick;
+
     Arrangement::Ptr a = active;
-    if (a == nullptr) return;
+    if (a == nullptr) { mixClicks(info, from, numSamples); return; }
 
     const juce::int64 to = from + numSamples;
     const int outChannels = info.buffer->getNumChannels();
@@ -280,6 +333,10 @@ void CanvasAudioSource::renderRange(const juce::AudioSourceChannelInfo& info,
                        && !lanePeak[v.lane][ch].compare_exchange_weak(seen, voicePeak[ch])) {}
             }
     }
+
+    // BEFORE the master fader, so the click rides with the mix rather than over it: a
+    // metronome that stays loud while you pull the music down is a metronome you turn off.
+    mixClicks(info, from, numSamples);
 
     // The master fader, applied to the SUM -- after the tracks, before the meter, which is
     // the only order in which a master meter answers "what is leaving mira".

@@ -518,6 +518,40 @@ analyze queue grew **watchers** — who is waiting for which file — fired from
 `pathsEquivalent` and never with `==`: the CLI echoes the path back as the DATABASE holds
 it, and the canvas asked with JUCE's bytes (convention 9, the bug that cost most of a day).
 
+### Step 2a — what step 2 turned out to need (2026-09-20, after use)
+
+Added once the analysis was real and being used, because using it is what showed they were
+missing. None of this was in the plan.
+
+- [x] **The bar-line grab took the block away.** Bar lines are everywhere, so the hand
+      cursor was everywhere, and *"not able to move the blocks"* was the result. The two
+      gestures are separated by POSITION, not by a modifier: **the upper two thirds of a
+      block always moves it**, and the grid lives in the bottom third, next to the footer it
+      already had. Moving a block is the commonest thing anyone does here and must never
+      have to be aimed.
+- [x] **Arrows move blocks.** ←/→ nudge, ↑/↓ change track, shift for ten. The `Cmd-up`
+      comment written in the canvas's first week already reserved plain up/down for exactly
+      this. The selection moves **together or not at all** — the shape of an arrangement is
+      the distances between its blocks, so a nudge that clamped each block separately at
+      zero would destroy the thing it was asked to move.
+- [x] **A nudge amount on the toolbar, including *beat* and *bar*.** Those two are step 2
+      paying for itself: the canvas knows them now. They resolve against the **selected
+      block's own grid**, because there is no project tempo here and inventing one would be
+      the global grid coming back in through the toolbar. Resolved at the moment of the
+      press, so a beat means whatever the block says a beat is — you may have analysed it
+      since. No tempo means the 100 ms default rather than a fabricated 120.
+- [x] **A metronome — and it clicks a LIST OF INSTANTS, not a tempo.** That is the whole
+      point of it. *"Generated at 140, analysed 142.9, no way to know which is right since
+      there is no click."* What is worth hearing is not what 142.9 sounds like but **whether
+      the beats mira found are on the music**, and those are positions. It is built from
+      `gridLinesOf` — the same one answer the bars are drawn from — so a click can never
+      land where no line is. One block at a time, the selected one: blocks are at different
+      tempos by design, and several metronomes at once is a noise, not a reference.
+      The accent is **a fifth up, not louder**, because louder competes with the music for
+      level and a pitch change is audible at any level. **Never exported** — and cleared by
+      `renderOffline` itself rather than trusted to be off somewhere else, because a
+      metronome in a delivered cue is not something anyone notices before they send it.
+
 ### Step 2b — the measurement step 2 makes possible
 
 - [ ] **2b.1** **Does an SA3 extension hold tempo?** Extend a block, analyse both halves,

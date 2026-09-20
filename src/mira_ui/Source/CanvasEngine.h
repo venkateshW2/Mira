@@ -197,6 +197,34 @@ public:
 
     void setLoopRange(double startSeconds, double endSeconds);
 
+    // ---- the metronome ---------------------------------------------------------------
+    // A LIST OF INSTANTS, not a tempo. That is the whole point of it: once a block has been
+    // analysed, the thing worth hearing is not "what 142.9 bpm sounds like" but whether the
+    // beats mira FOUND are on the music -- and those are positions, not a period. It is the
+    // audible version of the bar lines, generated from the same `gridLinesOf` answer, so
+    // what you hear and what you see cannot drift apart.
+    //
+    // Published the way an Arrangement is: built on the UI thread, swapped in whole, read
+    // without locking.
+    struct ClickTrack : juce::ReferenceCountedObject
+    {
+        using Ptr = juce::ReferenceCountedObjectPtr<ClickTrack>;
+        std::vector<juce::int64> samples;   // sorted, ascending
+        std::vector<char> accent;           // parallel: a downbeat
+    };
+    void setClickTrack(ClickTrack::Ptr t) { pendingClick = std::move(t); clickSwap = true; }
+    // For export: take the current one away and hand it back, so the caller cannot forget
+    // to restore it and cannot export a click by forgetting to clear it.
+    ClickTrack::Ptr takeClickTrack()
+    {
+        auto held = pendingClick;
+        pendingClick = nullptr;
+        clickSwap = true;
+        return held;
+    }
+    void setClickGain(float g) { clickGain = juce::jlimit(0.0f, 2.0f, g); }
+
+
     // OFFLINE RENDER, on the calling thread. Export goes through this so the file is
     // mixed by exactly the code that plays it -- crossfades between overlapping blocks,
     // fade shapes, per-block gain, mute, solo and the per-voice resampler included --
@@ -263,6 +291,14 @@ private:
     int blockSize = 512;
 
     void renderRange(const juce::AudioSourceChannelInfo& info, juce::int64 from, int numSamples);
+    // Mixed in by renderRange, and by renderOffline only because it shares it -- which is
+    // why EXPORT clears the click track before it renders rather than relying on a flag
+    // somewhere else to be right. A metronome in a delivered cue is not a bug you notice
+    // before you send it.
+    void mixClicks(const juce::AudioSourceChannelInfo& info, juce::int64 from, int numSamples);
+    ClickTrack::Ptr clicks, pendingClick;
+    std::atomic<bool> clickSwap { false };
+    std::atomic<float> clickGain { 0.5f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CanvasAudioSource)
 };
@@ -308,7 +344,17 @@ public:
     // For export. See CanvasAudioSource::renderOffline -- the point is that the file and
     // the speakers come out of one mixer.
     void renderOffline(juce::AudioBuffer<float>& destination, juce::int64 from, int numSamples)
-    { canvasSource.renderOffline(destination, from, numSamples); }
+    {
+        // THE CLICK IS NEVER EXPORTED, and it is cleared here rather than trusted to be off:
+        // a metronome in a delivered cue is not a thing anyone notices before they send it.
+        // Cleared and restored around the render, so turning the click on does not silently
+        // stop working after an export.
+        auto held = canvasSource.takeClickTrack();
+        canvasSource.renderOffline(destination, from, numSamples);
+        canvasSource.setClickTrack(held);
+    }
+    void setClickTrack(CanvasAudioSource::ClickTrack::Ptr t) { canvasSource.setClickTrack(std::move(t)); }
+    void setClickGain(float g) { canvasSource.setClickGain(g); }
 
 private:
     juce::TimeSliceThread readThread { "canvas file reader" };

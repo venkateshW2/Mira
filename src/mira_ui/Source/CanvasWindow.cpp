@@ -1,4 +1,6 @@
 #include "CanvasWindow.h"
+#include <numeric>
+#include <algorithm>
 #include "VideoWindow.h"
 #include <iostream>
 #include "mira/db/PathNormalise.h"
@@ -149,6 +151,11 @@ void CanvasView::rebuildAudio()
     for (const auto& i : items) blocks.push_back(i->block);
     player.rebuild(blocks, formats);
     if (onStateChanged) onStateChanged();
+    // The clicks are INSTANTS on the timeline, so anything that moves a block moves them.
+    // Hooked here rather than at each caller because rebuildAudio is already the one place
+    // every geometry change goes through -- a second list of callers to remember is how
+    // the click ends up a bar behind the block that made it.
+    rebuildClickTrack();
 }
 
 // The header is a mixer strip: the name across the top, M/S and the fader under it, the
@@ -1843,6 +1850,7 @@ void CanvasView::announceSelection()
     if (onBlockGeometry == nullptr) return;
     const auto g = selectionGeometry();
     onBlockGeometry(g.length, g.tail, g.hasAudio);
+    rebuildClickTrack();   // the click follows the SELECTED block's grid
 }
 
 void CanvasView::syncPanelSettings()
@@ -3476,12 +3484,19 @@ CanvasView::Visual* CanvasView::hitTest(juce::Point<int> p, Drag& what)
             && p.x - r.getX() > kEdgeGrab && r.getRight() - p.x > kEdgeGrab)
         { what = Drag::BarOne; return it->get(); }
 
-        // GRAB A BAR LINE ITSELF. The 14-pixel footer is a small target at the very bottom
-        // of a block, and a miss starts a MOVE -- which is why "once i analyse i am not
-        // able to nudge the grid" was true even though the gesture existed. Now that the
-        // bar lines are drawn across the waveform, the line you want to move is a thing
-        // you can point at, which is the gesture anyone would try first.
-        if (b.tempo > 0.0 && p.x - r.getX() > kEdgeGrab && r.getRight() - p.x > kEdgeGrab)
+        // GRAB A BAR LINE ITSELF -- but only in the BOTTOM THIRD of the block.
+        //
+        // The first version offered it over the whole height and took the block away: bar
+        // lines are everywhere, so the hand cursor was everywhere, and "not able to move
+        // the blocks" was the result. Moving a block is the commonest thing anyone does
+        // here and it must never have to be aimed.
+        //
+        // So the two gestures are separated by POSITION rather than by a modifier: the
+        // upper two thirds -- the part of the waveform you actually read -- always moves
+        // the block, and the grid lives down by the footer it already had. One rule, and
+        // you can see where it applies because the footer is drawn there.
+        const bool gridBand = p.y >= r.getY() + (r.getHeight() * 2) / 3;
+        if (gridBand && b.tempo > 0.0 && p.x - r.getX() > kEdgeGrab && r.getRight() - p.x > kEdgeGrab)
         {
             const double from = b.sourceOffset, to = from + juce::jmax(0.0, b.length);
             const auto grid = gridLinesOf(**it, from, to);
@@ -4019,6 +4034,147 @@ void CanvasView::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWhee
     scrollVerticallyBy (juce::roundToInt (-step * 120.0));
 }
 
+void CanvasView::toggleMetronome()
+{
+    metronomeOn = !metronomeOn;
+    rebuildClickTrack();
+    if (onTakeNote)
+        onTakeNote(metronomeOn ? "click on - it follows the selected block's grid"
+                               : "click off");
+    repaint();
+}
+
+// The click track IS the bar lines, made audible. Built from `gridLinesOf` -- the same one
+// answer the footer, the overlay and the percentage use -- so a click can never land
+// somewhere no line is drawn.
+//
+// ONE BLOCK's grid at a time, the selected one. Not every block on the canvas: they can be
+// at different tempos by design (that is the whole point of putting tempo on the block),
+// and several metronomes at once is a noise, not a reference.
+void CanvasView::rebuildClickTrack()
+{
+    if (!metronomeOn) { player.setClickTrack(nullptr); return; }
+
+    const Visual* v = nullptr;
+    for (const auto& i : items)
+        if (selected.count(i->block.id) && i->block.tempo > 0.0) { v = i.get(); break; }
+    if (v == nullptr)
+    {
+        player.setClickTrack(nullptr);
+        if (onTakeNote) onTakeNote("select a block with a tempo - the click follows its grid");
+        return;
+    }
+
+    const double from = v->block.sourceOffset;
+    const double to   = from + juce::jmax(0.0, v->block.length);
+    const auto grid = gridLinesOf(*v, from, to);
+
+    auto track = new CanvasAudioSource::ClickTrack();
+    const double rate = CanvasPlayer::getTimelineRate();
+    for (size_t i = 0; i < grid.beats.size(); ++i)
+    {
+        // Source time -> timeline time, through the block's own placement. A block dragged
+        // later takes its clicks with it, because they were never in timeline time.
+        const double timeline = v->block.start + (grid.beats[i] - from);
+        if (timeline < 0.0) continue;
+        track->samples.push_back((juce::int64) (timeline * rate));
+        track->accent.push_back(grid.isBar[i]);
+    }
+    // lower_bound in the audio thread needs these sorted. A measured beat list already is;
+    // a synthetic one is by construction -- but sorting costs nothing here and an unsorted
+    // list would silently drop clicks rather than fail.
+    if (!std::is_sorted(track->samples.begin(), track->samples.end()))
+    {
+        std::vector<size_t> order(track->samples.size());
+        std::iota(order.begin(), order.end(), size_t (0));
+        std::sort(order.begin(), order.end(),
+                   [&](size_t a, size_t b) { return track->samples[a] < track->samples[b]; });
+        std::vector<juce::int64> s2; std::vector<char> a2;
+        for (auto o : order) { s2.push_back(track->samples[o]); a2.push_back(track->accent[o]); }
+        track->samples = std::move(s2); track->accent = std::move(a2);
+    }
+    player.setClickTrack(track);
+}
+
+double CanvasView::nudgeAmount() const
+{
+    switch (nudgeUnit)
+    {
+        // ONE frame of the picture, at whatever rate the ruler is counting -- so a nudge
+        // and a timecode cannot disagree about what a frame is.
+        case Nudge::Frame: return 1.0 / juce::jmax(1.0, timecodeFormat().fps);
+        case Nudge::Ms10:  return 0.01;
+        case Nudge::Sec1:  return 1.0;
+        case Nudge::Beat:
+        case Nudge::Bar:
+        {
+            // The FIRST selected block that has a tempo. Not an average and not the first
+            // block on the canvas: you are nudging a thing, and the thing you are nudging
+            // is what "a beat" means here.
+            for (const auto& i : items)
+                if (selected.count(i->block.id) && i->block.tempo > 0.0)
+                    return (60.0 / i->block.tempo)
+                         * (nudgeUnit == Nudge::Bar ? juce::jmax(1, i->block.meter) : 1);
+            return 0.1;   // convention 6: no tempo means no beat, so say the default rather
+                          // than invent 120 and move by a distance nothing measured
+        }
+        case Nudge::Ms100:
+        default:           return 0.1;
+    }
+}
+
+// Nudge every selected block along the timeline. ONE undo per press, and never past zero:
+// a block at 0.0 nudged left stays at 0.0 rather than the selection drifting apart against
+// the wall, which is what clamping each block separately would do.
+void CanvasView::nudgeSelection(double seconds)
+{
+    if (selected.empty() || seconds == 0.0) return;
+    double earliest = 1.0e12;
+    for (const auto& i : items)
+        if (selected.count(i->block.id)) earliest = juce::jmin(earliest, i->block.start);
+    if (earliest > 1.0e11) return;
+    // The whole selection moves together or not at all -- the shape of an arrangement is
+    // the distances between its blocks, and a nudge that silently squashed them would
+    // destroy the thing it was asked to move.
+    const double delta = juce::jmax(seconds, -earliest);
+    if (delta == 0.0) return;
+
+    pushUndo();
+    for (auto& i : items)
+        if (selected.count(i->block.id)) i->block.start += delta;
+    rebuildAudio();
+    markDirty();
+    announceSelection();
+    repaint();
+}
+
+// Move the selected blocks up or down a track. Refuses at the ends and refuses to cross the
+// REFERENCE lane, which belongs to the film and is not a place to arrange into.
+void CanvasView::moveSelectionByLane(int delta)
+{
+    if (selected.empty() || delta == 0) return;
+    for (const auto& i : items)
+        if (selected.count(i->block.id))
+        {
+            const int target = i->block.lane + delta;
+            if (target < 0 || target >= laneCount || isReferenceLane(target))
+            {
+                if (onTakeNote)
+                    onTakeNote(target < 0 || target >= laneCount
+                                   ? "no track that way - add one first"
+                                   : "that is the reference track, which belongs to the film");
+                return;
+            }
+        }
+    pushUndo();
+    for (auto& i : items)
+        if (selected.count(i->block.id)) i->block.lane += delta;
+    rebuildAudio();
+    markDirty();
+    announceSelection();
+    repaint();
+}
+
 void CanvasView::panBy (double seconds)
 {
     viewStart = juce::jmax (0.0, viewStart + seconds);
@@ -4225,6 +4381,25 @@ bool CanvasView::keyPressed(const juce::KeyPress& key)
         const bool in = key.getKeyCode() == 'H';
         if (key.getModifiers().isShiftDown()) zoomVertical (in ? 10.0 : -10.0);
         else                                  zoomBy (in ? 1.25 : 1.0 / 1.25, zoomAnchorX());
+        return true;
+    }
+    // ARROWS MOVE THE SELECTED BLOCKS. Left/right nudge along the timeline by the amount
+    // in the toolbar, up/down move between tracks -- which is what the Cmd-up comment above
+    // already reserved them for.
+    //
+    // This is not a convenience. Dragging is the only way a block has ever been movable, and
+    // a block covered in grid lines is a block whose drag has competition; the keyboard has
+    // none, lands exactly where you asked, and repeats. Shift multiplies by ten, the way a
+    // nudge does everywhere.
+    if (key.getKeyCode() == juce::KeyPress::leftKey || key.getKeyCode() == juce::KeyPress::rightKey)
+    {
+        const double dir = key.getKeyCode() == juce::KeyPress::rightKey ? 1.0 : -1.0;
+        nudgeSelection(dir * nudgeAmount() * (key.getModifiers().isShiftDown() ? 10.0 : 1.0));
+        return true;
+    }
+    if (key.getKeyCode() == juce::KeyPress::upKey || key.getKeyCode() == juce::KeyPress::downKey)
+    {
+        moveSelectionByLane(key.getKeyCode() == juce::KeyPress::downKey ? 1 : -1);
         return true;
     }
     if (key == juce::KeyPress::spaceKey)       { togglePlay(); return true; }
@@ -5786,7 +5961,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         fitButton.onClick    = [this] { view.fit(); };
         deleteButton.onClick = [this] { view.removeSelected(); };
 
-        hint.setText("space play - L loop - M/S mute solo - F fit - G/H zoom - [ ] wave height - cmd-E cut - cmd-Z undo",
+        hint.setText("space play - arrows move blocks (shift x10) - M/S mute solo - "
+                      "F fit - G/H zoom - wheel scroll, shift pan, opt zoom",
                       juce::dontSendNotification);
         hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
@@ -5808,6 +5984,43 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             panel->onRemix  = [this] { view.extendSelection(true);  };
         }
         button(addTrackButton, "+ Track");
+
+        // NUDGE, beside the buttons it belongs to. A beat and a bar are on this list
+        // because the canvas knows them now; they resolve against the selected block's own
+        // grid, because there is no project tempo here and inventing one would be the
+        // global grid coming back in through the toolbar.
+        nudgeBox.addItem("frame", 1);
+        nudgeBox.addItem("10 ms", 2);
+        nudgeBox.addItem("100 ms", 3);
+        nudgeBox.addItem("1 s", 4);
+        nudgeBox.addItem("beat", 5);
+        nudgeBox.addItem("bar", 6);
+        nudgeBox.setSelectedId(3, juce::dontSendNotification);
+        nudgeBox.setTooltip("How far the left/right arrows move the selected blocks. "
+                             "Shift for ten of them.");
+        nudgeBox.onChange = [this] {
+            using N = CanvasView::Nudge;
+            switch (nudgeBox.getSelectedId())
+            {
+                case 1: view.setNudgeUnit(N::Frame); break;
+                case 2: view.setNudgeUnit(N::Ms10);  break;
+                case 4: view.setNudgeUnit(N::Sec1);  break;
+                case 5: view.setNudgeUnit(N::Beat);  break;
+                case 6: view.setNudgeUnit(N::Bar);   break;
+                default: view.setNudgeUnit(N::Ms100); break;
+            }
+            // The canvas has to get the keys back, or the next arrow press goes to the
+            // combo box and changes the nudge amount instead of moving the block.
+            view.grabKeyboardFocus();
+        };
+        addAndMakeVisible(nudgeBox);
+
+        button(clickButton, "Click");
+        clickButton.setTooltip("Click the selected block's grid -- the beats mira measured, "
+                                "once it has been analysed. Never exported.");
+        clickButton.onClick = [this] { view.toggleMetronome(); refreshClickButton(); };
+        addAndMakeVisible(clickButton);
+
         addAndMakeVisible(tabs);
         master = std::make_unique<MasterStrip>(laf, view);
         files  = std::make_unique<FilesPanel>(laf, view, formats);
@@ -6054,6 +6267,10 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         addBlockButton.setBounds(bar.removeFromLeft(74));
         bar.removeFromLeft(6);
         duplicateButton.setBounds(bar.removeFromLeft(86));
+        bar.removeFromLeft(6);
+        nudgeBox.setBounds(bar.removeFromLeft(86));
+        bar.removeFromLeft(6);
+        clickButton.setBounds(bar.removeFromLeft(58));
         bar.removeFromLeft(6);
         panelToggle.setBounds(bar.removeFromRight(96));
         bar.removeFromRight(8);
@@ -6531,6 +6748,15 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::File currentBlockFolder;
     juce::Label blockLabel, emptyHint;
     int lastBlockCount = -1;
+    juce::ComboBox nudgeBox;
+    void refreshClickButton()
+    {
+        clickButton.setColour(juce::TextButton::buttonColourId,
+                               view.metronomeIsOn() ? MiraLookAndFeel::accent.withAlpha(0.8f)
+                                                    : MiraLookAndFeel::surface3);
+        clickButton.repaint();
+    }
+    juce::TextButton clickButton;
     juce::TextButton playButton, loopButton, fitButton, deleteButton,
                      addBlockButton, addTrackButton, duplicateButton,
                      newProjectButton, openProjectButton, saveProjectButton, panelToggle;
