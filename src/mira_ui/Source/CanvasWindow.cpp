@@ -1514,7 +1514,12 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
 
     // Read before the new block is added -- `items` reallocates, and a pointer into it does
     // not survive the push_back below.
-    const auto parentSettings = parent->settings;
+    // CLONED HERE, not later. `var` is a handle: holding the parent's var and cloning it
+    // after `addEmptyBlock` has run means cloning whatever the panel-sync inside that call
+    // left behind. Taking the deep copy before anything else runs makes this immune to the
+    // ordering, rather than correct-by-argument about it.
+    const auto parentSettings = parent->settings.clone();
+    const auto parentName = parent->block.name;
     const double parentTempo = parent->block.tempo;
     const int parentMeter = juce::jmax(1, parent->block.meter);
     const auto bars = parentBarGrid(*parent, 0.0, contentEnd() + 600.0);
@@ -1526,7 +1531,7 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
     // The parent's whole generator, not just its numbers. The LoRA, the cfg, the steps and
     // the prompt are the expensive things to retype, and "generating a second block against
     // the first needs no retyping" is step 4's own done-when.
-    child->settings = parentSettings.clone();
+    child->settings = parentSettings;
     child->block.followsBlockId = parentId;
 
     if (parentTempo > 0.0)
@@ -1559,7 +1564,11 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
 
     // ...and NOT through the panel, which is still showing the empty recipe this block was
     // born with one call ago.
-    adoptParentMusic(*child, false);
+    // If there is no tempo to pass on, adoptParentMusic declines -- but the settings were
+    // still copied, and the panel must be shown them either way. Without this the panel
+    // goes on displaying the block it was on BEFORE, which reads as "it copied some other
+    // block's prompt".
+    if (!adoptParentMusic(*child, false)) showPanelFor(child);
 
     // adoptParentMusic has already pushed it through showPanelFor, which is the one path
     // that does not read the panel back first.
@@ -1580,11 +1589,17 @@ void CanvasView::addBlockFollowing(juce::int64 parentId)
         {
             const auto prompt = o->getProperty("prompt").toString();
             const auto* loras = o->getProperty("loras").getArray();
-            carried = " Carried " + juce::String(prompt.length()) + " chars of prompt";
+            // The FIRST WORDS of the prompt, because every LoRA prompt in this project
+            // begins with its trigger -- so this names which block the settings actually
+            // came from, which is the only question "it copied the wrong one" can be
+            // settled by. A count alone cannot tell two prompts apart.
+            carried = " Copied from " + parentName + ": \"" + prompt.substring(0, 28)
+                    + (prompt.length() > 28 ? "..." : "") + "\" (" + juce::String(prompt.length())
+                    + " chars";
             if (loras != nullptr && loras->size() > 0)
-                carried += " and " + juce::String(loras->size()) + " LoRA"
+                carried += ", " + juce::String(loras->size()) + " LoRA"
                          + (loras->size() == 1 ? "" : "s");
-            carried += ".";
+            carried += ").";
         }
         onTakeNote(child->block.name + " follows " + (p != nullptr ? p->block.name : juce::String("?"))
                     + (parentTempo > 0.0
