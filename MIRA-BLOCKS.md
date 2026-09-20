@@ -799,6 +799,42 @@ this canvas crossfades same-lane overlaps. It is allowed to happen and said out 
 than refused — the move is always less than half a bar, it is one Cmd-Z, and refusing would
 be the tool overruling a placement that may well have been meant.
 
+### Step 3c — snap a trim to the grid
+
+Asked for after conform landed: *"once the file is analysed, closing the block from left or
+right can be snapped according to bars or beats or the quantized value, so it's easy to make
+loops."*
+
+- [x] **3c.1** A **Snap** control on the toolbar — off / bar / beat / ½ beat / ¼ beat — and
+      it is a **different question from Nudge beside it**: nudge is how far one press moves a
+      block, snap is where an edge is allowed to land.
+- [x] **3c.2** Both trims snap. The right edge in source time is `sourceOffset + length`, so
+      snapping it is the same question asked at the other end — which is what makes *"trim to
+      a whole number of bars"* fall out rather than needing arithmetic of its own.
+- [x] **3c.3** **Snapped in SOURCE time, not timeline time.** That is where the grid lives:
+      bar 1 is stored in source time precisely so that moving the block, dropping it on
+      another track or trimming its left edge all leave the phase where it was. Snapping in
+      timeline time would undo that on the first drag.
+- [x] **3c.4** **Sub-beat divisions are interpolated between the two beats the edge falls
+      between**, never laid out from a period. On a measured grid the beats are not evenly
+      spaced, and a sixteenth extrapolated from bar 1 is in the wrong place by the end of a
+      take — the same reason the onset test asks about the beat an onset falls IN.
+- [x] **3c.5** **By PIXELS, not seconds** (18 px), the rule marker snapping already follows:
+      what "close" means depends on the zoom, and a snap a second wide zoomed out and a frame
+      wide zoomed in is one nobody can predict. And **alt bypasses it mid-drag** — a snap you
+      cannot get out of eventually costs you the take you were trying to make.
+
+**This is the one place the canvas enforces anything**, and it stays honest with §1's rule by
+being off by default, snapping only to the **block's own** grid (there is no project grid to
+snap to and never will be), doing nothing at all on a block with no tempo, and letting go
+when you hold alt.
+
+**Also:** a block with a tempo but no detected downbeats still snaps to bars — every
+`meter`th beat from bar 1 — because refusing would make the setting silently do nothing on
+exactly the takes it is most wanted for.
+
+- [ ] **3c.6** Verify on screen.
+
 ### Step 4 — the child
 
 - [ ] **4.1** **Follows block N** in the block menu, stored as `followsBlockId`. Drawn on the

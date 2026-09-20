@@ -4199,9 +4199,20 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
         {
             // Trimming the left edge moves where in the FILE the block starts, so the
             // audio under the block stays put on the canvas instead of sliding.
-            const double want = juce::jlimit(dragOriginStart - dragOriginOffset,
-                                              dragOriginStart + dragOriginLength - 0.05,
-                                              dragOriginStart + deltaSeconds);
+            double want = juce::jlimit(dragOriginStart - dragOriginOffset,
+                                        dragOriginStart + dragOriginLength - 0.05,
+                                        dragOriginStart + deltaSeconds);
+            // SNAP, on the edge's position in the FILE. Alt bypasses it for the length of
+            // the drag, the way every host does -- a snap you cannot get out of is a snap
+            // that eventually costs you the take you were trying to make.
+            if (!e.mods.isAltDown())
+            {
+                const double edgeInSource = dragOriginOffset + (want - dragOriginStart);
+                const double snapped = snapSourceTime(*i, edgeInSource);
+                want += snapped - edgeInSource;
+                want = juce::jlimit(dragOriginStart - dragOriginOffset,
+                                     dragOriginStart + dragOriginLength - 0.05, want);
+            }
             const double moved = want - dragOriginStart;
             b.start = want;
             b.sourceOffset = juce::jmax(0.0, dragOriginOffset + moved);
@@ -4216,7 +4227,17 @@ void CanvasView::mouseDrag(const juce::MouseEvent& e)
             //
             // Cutting is Cmd-E, and only Cmd-E: a deliberate "the audio ends here", which
             // is the thing an extend needs to know and a trim never meant to say.
-            b.length = juce::jmax(0.05, dragOriginLength + deltaSeconds);
+            double length = juce::jmax(0.05, dragOriginLength + deltaSeconds);
+            if (!e.mods.isAltDown())
+            {
+                // The RIGHT edge in source time is offset + length, so snapping it is the
+                // same question asked at the other end -- which is what makes "trim to a
+                // whole number of bars" fall out rather than needing its own arithmetic.
+                const double edgeInSource = b.sourceOffset + length;
+                length += snapSourceTime(*i, edgeInSource) - edgeInSource;
+                length = juce::jmax(0.05, length);
+            }
+            b.length = length;
         }
         else if (drag == Drag::Gain && b.id == dragTarget)
         {
@@ -4707,6 +4728,62 @@ void CanvasView::rebuildClickTrack()
         track->samples = std::move(s2); track->accent = std::move(a2);
     }
     player.setClickTrack(track);
+}
+
+// Snap a SOURCE-time position onto this block's own grid.
+//
+// SOURCE time, not timeline time, because that is where the grid lives: bar 1 is stored in
+// source time so that moving the block, dropping it on another track or trimming its left
+// edge all leave the phase where it was. Snapping in timeline time would undo that on the
+// first drag.
+//
+// Sub-beat divisions are interpolated BETWEEN the two beats the position falls between,
+// rather than laid out from a period. On a measured grid the beats are not evenly spaced,
+// and a sixteenth extrapolated from bar 1 is in the wrong place by the end of a take -- the
+// same reason the onset "on the grid" test asks about the beat an onset falls IN.
+double CanvasView::snapSourceTime(const Visual& v, double sourceSeconds) const
+{
+    if (snapUnit == Snap::Off || v.block.tempo <= 0.0) return sourceSeconds;
+
+    // A window either side, wide enough to hold the neighbours of the position whatever the
+    // tempo. Asking gridLinesOf for the whole take would be fine too, but this is a drag --
+    // it runs on every mouse move.
+    const double barSeconds = (60.0 / v.block.tempo) * juce::jmax(1, v.block.meter);
+    const auto grid = gridLinesOf(v, sourceSeconds - barSeconds * 2.0,
+                                   sourceSeconds + barSeconds * 2.0);
+    if (grid.beats.size() < 2) return sourceSeconds;
+
+    std::vector<double> candidates;
+    if (snapUnit == Snap::Bar)
+    {
+        for (size_t i = 0; i < grid.beats.size(); ++i)
+            if (grid.isBar[i]) candidates.push_back(grid.beats[i]);
+        // A block whose downbeats are not detected still has bars -- every `meter`th beat
+        // from bar 1 -- and refusing to snap because the DBN found no downbeat would make
+        // the setting silently do nothing on exactly the takes it is most wanted for.
+        if (candidates.size() < 2) candidates = grid.beats;
+    }
+    else
+    {
+        const int per = snapUnit == Snap::Beat ? 1 : snapUnit == Snap::Half ? 2 : 4;
+        for (size_t i = 0; i + 1 < grid.beats.size(); ++i)
+            for (int k = 0; k < per; ++k)
+                candidates.push_back(grid.beats[i]
+                                      + (grid.beats[i + 1] - grid.beats[i]) * (double) k / per);
+        candidates.push_back(grid.beats.back());
+    }
+    if (candidates.empty()) return sourceSeconds;
+
+    double best = candidates.front();
+    for (const auto t : candidates)
+        if (std::abs(t - sourceSeconds) < std::abs(best - sourceSeconds)) best = t;
+
+    // SNAPPING IS BY PIXELS, not by seconds -- the same rule marker snapping already
+    // follows. What "close" means depends on the zoom, and a snap that is a second wide
+    // zoomed out and a frame wide zoomed in is one nobody can predict.
+    constexpr double kGrabPixels = 18.0;
+    if (std::abs(best - sourceSeconds) * pixelsPerSecond > kGrabPixels) return sourceSeconds;
+    return best;
 }
 
 double CanvasView::nudgeAmount() const
@@ -6579,8 +6656,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         fitButton.onClick    = [this] { view.fit(); };
         deleteButton.onClick = [this] { view.removeSelected(); };
 
-        hint.setText("space play - arrows move blocks (shift x10) - M/S mute solo - "
-                      "F fit - G/H zoom - wheel scroll, shift pan, opt zoom",
+        hint.setText("space play - arrows move blocks - alt-drag ignores snap - "
+                      "M/S mute solo - F fit - wheel scroll, shift pan, opt zoom",
                       juce::dontSendNotification);
         hint.setFont(laf.sansRegular(MiraLookAndFeel::textSize(10.5f)));
         hint.setColour(juce::Label::textColourId, MiraLookAndFeel::textFaint);
@@ -6632,6 +6709,33 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
             view.grabKeyboardFocus();
         };
         addAndMakeVisible(nudgeBox);
+
+        // SNAP, and it is a different question from Nudge beside it: nudge is HOW FAR one
+        // press moves a block, snap is WHERE an edge is allowed to land. Off by default,
+        // because "the grid is drawn, never enforced" is the rule this whole canvas exists
+        // for -- this is the one place it bends, and it bends only when asked, only on a
+        // block that has a grid, and alt gets you out of it mid-drag.
+        snapBox.addItem("snap off", 1);
+        snapBox.addItem("bar", 2);
+        snapBox.addItem("beat", 3);
+        snapBox.addItem("1/2 beat", 4);
+        snapBox.addItem("1/4 beat", 5);
+        snapBox.setSelectedId(1, juce::dontSendNotification);
+        snapBox.setTooltip("Snap a trimmed edge to the block's own grid -- so a loop is a "
+                            "whole number of bars. Hold alt while dragging to ignore it.");
+        snapBox.onChange = [this] {
+            using S = CanvasView::Snap;
+            switch (snapBox.getSelectedId())
+            {
+                case 2: view.setSnapUnit(S::Bar);     break;
+                case 3: view.setSnapUnit(S::Beat);    break;
+                case 4: view.setSnapUnit(S::Half);    break;
+                case 5: view.setSnapUnit(S::Quarter); break;
+                default: view.setSnapUnit(S::Off);    break;
+            }
+            view.grabKeyboardFocus();   // or the next arrow press goes to the combo box
+        };
+        addAndMakeVisible(snapBox);
 
         button(clickButton, "Click");
         clickButton.setTooltip("Click the selected block's grid -- the beats mira measured, "
@@ -6887,6 +6991,8 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
         duplicateButton.setBounds(bar.removeFromLeft(86));
         bar.removeFromLeft(6);
         nudgeBox.setBounds(bar.removeFromLeft(86));
+        bar.removeFromLeft(6);
+        snapBox.setBounds(bar.removeFromLeft(86));
         bar.removeFromLeft(6);
         clickButton.setBounds(bar.removeFromLeft(58));
         bar.removeFromLeft(6);
@@ -7366,7 +7472,7 @@ struct CanvasWindow::Content : juce::Component, private juce::Timer
     juce::File currentBlockFolder;
     juce::Label blockLabel, emptyHint;
     int lastBlockCount = -1;
-    juce::ComboBox nudgeBox;
+    juce::ComboBox nudgeBox, snapBox;
     void refreshClickButton()
     {
         clickButton.setColour(juce::TextButton::buttonColourId,

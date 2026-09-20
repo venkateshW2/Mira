@@ -209,6 +209,20 @@ public:
     // since. Falls back to 100 ms when a beat is asked for and nothing knows one.
     double nudgeAmount() const;
 
+    // ---- snapping an edge to the grid -------------------------------------------------
+    // "once the file is analysed, closing the block from left or right can be snapped
+    // according to bars or beats or the quantized value, so it's easy to make loops."
+    //
+    // This is the ONE place the canvas enforces anything, and it stays consistent with
+    // "the grid is drawn, never enforced" by being OFF by default, per-block (it snaps to
+    // the block's OWN grid, never a project one -- there is no project one), doing nothing
+    // at all on a block with no tempo, and bypassable with alt while you drag.
+    enum class Snap { Off, Bar, Beat, Half, Quarter };
+    Snap snapUnit = Snap::Off;
+    void setSnapUnit(Snap s) { snapUnit = s; }
+    Snap getSnapUnit() const { return snapUnit; }
+
+
     // ---- the metronome ----------------------------------------------------------------
     // "generated at 140 bpm, analysed 142.9, but no way to know which is right since there
     // is no click." This is that. It clicks the SELECTED block's grid -- the measured beats
@@ -825,6 +839,10 @@ private:
     // outside, covering at least [coverFrom, coverTo]. Declared here and not beside
     // conformSelectionTo because it takes a Visual, which is private and declared below.
     std::vector<double> parentBarGrid(const Visual& parent, double coverFrom, double coverTo) const;
+    // Snap a SOURCE-time position to this block's grid. Returns `sourceSeconds` unchanged
+    // when snapping is off, the block has no grid, or nothing is near enough to be meant.
+    // Here rather than beside `snapUnit` because it takes a Visual, declared below.
+    double snapSourceTime(const Visual&, double sourceSeconds) const;
     // Whether an onset lands on the grid: within 18% of a 16th, measured against the BEAT
     // IT FALLS IN rather than against a period extrapolated from bar 1. On a grid that
     // breathes even slightly those are different questions by the end of a take.
